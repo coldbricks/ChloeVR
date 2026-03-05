@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# APK / build artifacts
+*.apk
+*.aab
+*.dex
+*.class
+
+# Logs
+*.log
+
+# Claude Code
+.claude/
