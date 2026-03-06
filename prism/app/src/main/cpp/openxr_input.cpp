@@ -266,6 +266,8 @@ bool OpenXRInput::createActions() {
                  XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
     createAction(actionSet_, gripPoseAction_, "grip-pose",
                  XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
+    createAction(actionSet_, aimPoseAction_, "aim-pose",
+                 XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
 
     // Suggest bindings for Oculus Touch Controller (Galaxy XR uses this profile)
     auto path = [this](const char* p) -> XrPath {
@@ -290,6 +292,8 @@ bool OpenXRInput::createActions() {
         {menuClickAction_, path("/user/hand/left/input/menu/click")},
         {gripPoseAction_, path("/user/hand/left/input/grip/pose")},
         {gripPoseAction_, path("/user/hand/right/input/grip/pose")},
+        {aimPoseAction_, path("/user/hand/left/input/aim/pose")},
+        {aimPoseAction_, path("/user/hand/right/input/aim/pose")},
     };
 
     XrInteractionProfileSuggestedBinding suggested{
@@ -306,13 +310,16 @@ bool OpenXRInput::createActions() {
     attachInfo.actionSets = &actionSet_;
     XR_CHECK(xrAttachSessionActionSets(session_, &attachInfo));
 
-    // Create hand action spaces for pose tracking
+    // Create hand action spaces for pose tracking (grip + aim)
     for (int hand = 0; hand < 2; hand++) {
         XrActionSpaceCreateInfo spaceCI{XR_TYPE_ACTION_SPACE_CREATE_INFO};
         spaceCI.action = gripPoseAction_;
         spaceCI.subactionPath = handPaths_[hand];
         spaceCI.poseInActionSpace = {{0, 0, 0, 1}, {0, 0, 0}};
         XR_CHECK(xrCreateActionSpace(session_, &spaceCI, &handSpaces_[hand]));
+
+        spaceCI.action = aimPoseAction_;
+        XR_CHECK(xrCreateActionSpace(session_, &spaceCI, &aimSpaces_[hand]));
     }
 
     LOGI("OpenXR actions created and attached");
@@ -464,6 +471,22 @@ bool OpenXRInput::poll(ControllerState& state) {
             }
         }
     }
+    // Aim poses
+    for (int hand = 0; hand < 2; hand++) {
+        if (aimSpaces_[hand] == XR_NULL_HANDLE) continue;
+        XrSpaceLocation aimLoc{XR_TYPE_SPACE_LOCATION};
+        XrResult ar = xrLocateSpace(aimSpaces_[hand], appSpace_, now, &aimLoc);
+        if (XR_SUCCEEDED(ar)) {
+            bool oriValid = (aimLoc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+            state.aimValid[hand] = oriValid ? 1.0f : 0.0f;
+            if (oriValid) {
+                state.aimRotX[hand] = aimLoc.pose.orientation.x;
+                state.aimRotY[hand] = aimLoc.pose.orientation.y;
+                state.aimRotZ[hand] = aimLoc.pose.orientation.z;
+                state.aimRotW[hand] = aimLoc.pose.orientation.w;
+            }
+        }
+    }
     logCounter++;
 
     return true;
@@ -501,6 +524,10 @@ void OpenXRInput::shutdown() {
         if (handSpaces_[i] != XR_NULL_HANDLE) {
             xrDestroySpace(handSpaces_[i]);
             handSpaces_[i] = XR_NULL_HANDLE;
+        }
+        if (aimSpaces_[i] != XR_NULL_HANDLE) {
+            xrDestroySpace(aimSpaces_[i]);
+            aimSpaces_[i] = XR_NULL_HANDLE;
         }
     }
     if (appSpace_ != XR_NULL_HANDLE) {

@@ -39,8 +39,14 @@ struct ControllerState {
     float handRotZ[2];        // indices 25,26
     float handRotW[2];        // indices 27,28
     float handValid[2];       // indices 29,30 (1.0 = valid pose)
+    // Aim pose rotation (for laser pointer direction)
+    float aimRotX[2];         // indices 31,32
+    float aimRotY[2];         // indices 33,34
+    float aimRotZ[2];         // indices 35,36
+    float aimRotW[2];         // indices 37,38
+    float aimValid[2];        // indices 39,40
 
-    static constexpr int SIZE = 31;
+    static constexpr int SIZE = 41;
 
     float* data() { return &thumbstickX[0]; }
 };
@@ -91,5 +97,7 @@ private:
     XrAction menuClickAction_ = XR_NULL_HANDLE;
     XrAction thumbstickClickAction_ = XR_NULL_HANDLE;
     XrAction gripPoseAction_ = XR_NULL_HANDLE;
+    XrAction aimPoseAction_ = XR_NULL_HANDLE;
     XrSpace handSpaces_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    XrSpace aimSpaces_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
 };

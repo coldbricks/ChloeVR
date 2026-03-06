@@ -10,7 +10,7 @@ class OpenXRInput(private val activity: Activity) {
     companion object {
         init { System.loadLibrary("openxr_input") }
         private const val TAG = "ChloeVR-OpenXR"
-        private const val STATE_SIZE = 31
+        private const val STATE_SIZE = 41
         private const val POLL_INTERVAL_MS = 8L // ~120Hz for responsive buttons
     }
 
@@ -38,6 +38,12 @@ class OpenXRInput(private val activity: Activity) {
     var rightHandRot = floatArrayOf(0f, 0f, 0f, 1f); private set
     var leftHandValid = false; private set
     var rightHandValid = false; private set
+
+    // Aim pose rotation (laser pointer direction)
+    var leftAimRot = floatArrayOf(0f, 0f, 0f, 1f); private set
+    var rightAimRot = floatArrayOf(0f, 0f, 0f, 1f); private set
+    var leftAimValid = false; private set
+    var rightAimValid = false; private set
 
     private val stateBuffer = FloatArray(STATE_SIZE)
     private val handler = Handler(Looper.getMainLooper())
@@ -95,6 +101,10 @@ class OpenXRInput(private val activity: Activity) {
                 rightHandRot = floatArrayOf(stateBuffer[22], stateBuffer[24], stateBuffer[26], stateBuffer[28])
                 leftHandValid = stateBuffer[29] > 0.5f
                 rightHandValid = stateBuffer[30] > 0.5f
+                leftAimRot = floatArrayOf(stateBuffer[31], stateBuffer[33], stateBuffer[35], stateBuffer[37])
+                rightAimRot = floatArrayOf(stateBuffer[32], stateBuffer[34], stateBuffer[36], stateBuffer[38])
+                leftAimValid = stateBuffer[39] > 0.5f
+                rightAimValid = stateBuffer[40] > 0.5f
                 listener?.onControllerState(this@OpenXRInput)
             }
             handler.postDelayed(this, POLL_INTERVAL_MS)

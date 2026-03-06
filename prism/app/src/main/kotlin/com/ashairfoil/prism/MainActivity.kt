@@ -67,10 +67,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // Thumbstick seek increment (seconds)
     private var seekIncrementSec = 10
 
-    // Grab-to-reposition: grip+trigger, hand position drives movement, wrist drives roll
+    // Grab-to-reposition: grip+trigger, aim direction drives movement, wrist drives roll
     private var isGrabbing = false
     private var grabStartHandPos = floatArrayOf(0f, 0f, 0f)
-    private var grabStartControllerRoll = 0f
+    private var grabStartAimDir = floatArrayOf(0f, 0f, -1f)
+    private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var grabStartScreenRoll = 0f
     private var grabStartScreenYaw = 0f
     private var grabStartScreenPitch = 0f
@@ -90,6 +91,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     // Scrub bar (quick B button access)
     private var scrubBarVisible = false
+
+    // A/B repeat loop
+    private var abRepeatA: Long? = null
+    private var abRepeatB: Long? = null
+    private var abLabel: TextView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -165,18 +171,20 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(0xFF111111.toInt())
         }
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 48, 48, 48)
+            setPadding(40, 32, 40, 40)
         }
 
+        // Header
         layout.addView(TextView(this).apply {
             text = "ChloeVR"
-            textSize = 32f
+            textSize = 28f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 32)
+            setPadding(0, 0, 0, 4)
             gravity = Gravity.CENTER
         })
 
@@ -186,44 +194,134 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 textSize = 18f
                 setTextColor(0xFFAAAAAA.toInt())
                 gravity = Gravity.CENTER
+                setPadding(0, 48, 0, 0)
             })
         } else {
             layout.addView(TextView(this).apply {
-                text = "${files.size} videos found"
-                textSize = 16f
-                setTextColor(0xFF888888.toInt())
-                setPadding(0, 0, 0, 24)
+                text = "${files.size} videos"
+                textSize = 14f
+                setTextColor(0xFF666666.toInt())
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 20)
             })
 
-            for (file in files) {
-                val metadata = FileNameParser.parse(file)
-                val stereoLabel = when (metadata.stereoMode) {
-                    StereoMode.SIDE_BY_SIDE -> "SBS"
-                    StereoMode.TOP_BOTTOM -> "TB"
-                    StereoMode.MONO -> "Mono"
+            // Group files by parent directory
+            val grouped = files.groupBy { it.parentFile?.absolutePath ?: "" }
+                .toSortedMap()
+
+            for ((dirPath, dirFiles) in grouped) {
+                // Folder header
+                val dirName = dirPath.let { path ->
+                    // Show relative to storage root for readability
+                    val storageRoot = android.os.Environment.getExternalStorageDirectory()?.absolutePath ?: ""
+                    if (path.startsWith(storageRoot)) {
+                        path.removePrefix(storageRoot).removePrefix("/").ifEmpty { "Internal Storage" }
+                    } else {
+                        path.substringAfterLast("/").ifEmpty { "Storage" }
+                    }
                 }
-                val sizeLabel = formatFileSize(file.length())
 
                 layout.addView(TextView(this).apply {
-                    text = "${file.name}\n${metadata.screenType.displayName}  $stereoLabel  |  $sizeLabel"
-                    textSize = 18f
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setPadding(24, 20, 24, 20)
-                    setBackgroundColor(0xFF222222.toInt())
+                    text = dirName
+                    textSize = 13f
+                    setTextColor(0xFF4FC3F7.toInt())
+                    setPadding(8, 16, 0, 8)
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     )
-                    params.setMargins(0, 0, 0, 8)
                     layoutParams = params
-                    setOnClickListener { playVideo(file) }
                 })
+
+                for (file in dirFiles) {
+                    val metadata = FileNameParser.parse(file)
+                    val stereoLabel = when (metadata.stereoMode) {
+                        StereoMode.SIDE_BY_SIDE -> "SBS"
+                        StereoMode.TOP_BOTTOM -> "TB"
+                        StereoMode.MONO -> "2D"
+                    }
+                    val sizeLabel = formatFileSize(file.length())
+                    val projLabel = metadata.screenType.displayName
+
+                    layout.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setBackgroundColor(0xFF1E1E1E.toInt())
+                        setPadding(28, 20, 28, 20)
+                        val params = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        )
+                        params.setMargins(0, 0, 0, 6)
+                        layoutParams = params
+                        isClickable = true
+                        isFocusable = true
+                        setOnClickListener { playVideo(file) }
+
+                        // File name
+                        addView(TextView(this@MainActivity).apply {
+                            text = file.nameWithoutExtension
+                            textSize = 16f
+                            setTextColor(0xFFE0E0E0.toInt())
+                            maxLines = 2
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        })
+
+                        // Tags row
+                        addView(LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            setPadding(0, 8, 0, 0)
+
+                            // Projection tag
+                            addView(makeTag(projLabel, 0xFF1565C0.toInt()))
+                            // Stereo tag
+                            addView(makeTag(stereoLabel,
+                                if (stereoLabel == "2D") 0xFF555555.toInt() else 0xFF2E7D32.toInt()))
+                            // Size
+                            addView(TextView(this@MainActivity).apply {
+                                text = sizeLabel
+                                textSize = 12f
+                                setTextColor(0xFF888888.toInt())
+                                setPadding(12, 0, 0, 0)
+                                gravity = Gravity.CENTER_VERTICAL
+                                val lp = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                )
+                                layoutParams = lp
+                            })
+                            // Extension
+                            addView(TextView(this@MainActivity).apply {
+                                text = file.extension.uppercase()
+                                textSize = 12f
+                                setTextColor(0xFF666666.toInt())
+                                setPadding(12, 0, 0, 0)
+                                gravity = Gravity.CENTER_VERTICAL
+                            })
+                        })
+                    })
+                }
             }
         }
 
         scrollView.addView(layout)
         setContentView(scrollView)
         setPanelVisible(true)
+    }
+
+    private fun makeTag(text: String, bgColor: Int): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 11f
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(bgColor)
+            setPadding(14, 4, 14, 4)
+            val lp = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            lp.setMargins(0, 0, 6, 0)
+            layoutParams = lp
+        }
     }
 
     // ── Control Panel (shown during playback) ──
@@ -285,9 +383,24 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         layout.addView(makeButtonRow(
             "-30s" to { videoPlayer?.seekBy(-30000) },
             "-10s" to { videoPlayer?.seekBy(-10000) },
-            "⏯" to { videoPlayer?.togglePlayPause() },
+            "Play/Pause" to { videoPlayer?.togglePlayPause() },
             "+10s" to { videoPlayer?.seekBy(10000) },
             "+30s" to { videoPlayer?.seekBy(30000) }
+        ))
+
+        // A/B repeat
+        abLabel = TextView(this).apply {
+            textSize = 13f
+            setTextColor(0xFF66BB6A.toInt())
+            gravity = Gravity.CENTER
+            setPadding(0, 4, 0, 4)
+        }
+        layout.addView(abLabel)
+        updateAbLabel()
+        layout.addView(makeButtonRow(
+            "Set A" to { abRepeatA = videoPlayer?.currentPositionMs; abRepeatB = null; updateAbLabel() },
+            "Set B" to { if (abRepeatA != null) { abRepeatB = videoPlayer?.currentPositionMs; updateAbLabel() } },
+            "Clear A/B" to { abRepeatA = null; abRepeatB = null; updateAbLabel() }
         ))
 
         // Speed control + seek increment
@@ -598,28 +711,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     // ── Screen Adjustments ──
 
-    // Pitch correction: grip pose forward is tilted ~45° up from laser pointer
-    // Apply -45° local X rotation to approximate aim pose
-    private val AIM_COS = 0.9239 // cos(-22.5°)
-    private val AIM_SIN = -0.3827 // sin(-22.5°)
-
-    private fun correctedRotation(rot: FloatArray): FloatArray {
-        val gw = rot[3].toDouble(); val gx = rot[0].toDouble()
-        val gy = rot[1].toDouble(); val gz = rot[2].toDouble()
-        // grip * Quaternion(AIM_COS, AIM_SIN, 0, 0)
-        return floatArrayOf(
-            (-gw * AIM_SIN + gx * AIM_COS).toFloat(),
-            (gy * AIM_COS - gz * AIM_SIN).toFloat(),
-            (gz * AIM_COS + gy * AIM_SIN).toFloat(),
-            (gw * AIM_COS + gx * AIM_SIN).toFloat()
-        )
-    }
-
-    private fun aimDirection(rot: FloatArray): FloatArray {
-        val corrected = correctedRotation(rot)
-        val x = corrected[0].toDouble(); val y = corrected[1].toDouble()
-        val z = corrected[2].toDouble(); val w = corrected[3].toDouble()
-        // Forward = rotate (0,0,-1) by quaternion
+    // Get forward direction (-Z) from a quaternion
+    private fun quatForward(rot: FloatArray): FloatArray {
+        val x = rot[0].toDouble(); val y = rot[1].toDouble()
+        val z = rot[2].toDouble(); val w = rot[3].toDouble()
         return floatArrayOf(
             (-2.0 * (x * z + w * y)).toFloat(),
             (2.0 * (w * x - y * z)).toFloat(),
@@ -627,11 +722,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         )
     }
 
-    private fun controllerUp(rot: FloatArray): FloatArray {
-        val corrected = correctedRotation(rot)
-        val x = corrected[0].toDouble(); val y = corrected[1].toDouble()
-        val z = corrected[2].toDouble(); val w = corrected[3].toDouble()
-        // Rotate (0,1,0) by quaternion
+    // Get up direction (+Y) from a quaternion
+    private fun quatUp(rot: FloatArray): FloatArray {
+        val x = rot[0].toDouble(); val y = rot[1].toDouble()
+        val z = rot[2].toDouble(); val w = rot[3].toDouble()
         return floatArrayOf(
             (2.0 * (x * y + w * z)).toFloat(),
             (1.0 - 2.0 * (x * x + z * z)).toFloat(),
@@ -639,34 +733,26 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         )
     }
 
-    private fun controllerRollDeg(rot: FloatArray): Float {
-        val aim = aimDirection(rot)
-        val up = controllerUp(rot)
-        // Project world-up (0,1,0) onto plane perpendicular to aim
-        val dAimUp = aim[1].toDouble() // dot(aim, worldUp)
-        var refX = -aim[0] * dAimUp
-        var refY = 1.0 - aim[1] * dAimUp
-        var refZ = -aim[2] * dAimUp
-        val refLen = Math.sqrt(refX * refX + refY * refY + refZ * refZ)
-        if (refLen < 0.05) return Float.NaN // controller near vertical — can't measure roll
-        refX /= refLen; refY /= refLen; refZ /= refLen
+    // Extract wrist twist (roll) between two aim orientations using twist-swing decomposition.
+    // Returns the rotation around the aim forward axis only, ignoring pitch/yaw changes.
+    private fun relativeRollDeg(startRot: FloatArray, currentRot: FloatArray): Float {
+        // Q_rel = Q_current * inverse(Q_start)
+        val isx = -startRot[0].toDouble(); val isy = -startRot[1].toDouble()
+        val isz = -startRot[2].toDouble(); val isw = startRot[3].toDouble()
+        val cx = currentRot[0].toDouble(); val cy = currentRot[1].toDouble()
+        val cz = currentRot[2].toDouble(); val cw = currentRot[3].toDouble()
 
-        // Project controller up onto same plane
-        val dAimCtrlUp = (aim[0] * up[0] + aim[1] * up[1] + aim[2] * up[2]).toDouble()
-        var pX = up[0] - aim[0] * dAimCtrlUp
-        var pY = up[1] - aim[1] * dAimCtrlUp
-        var pZ = up[2] - aim[2] * dAimCtrlUp
-        val pLen = Math.sqrt(pX * pX + pY * pY + pZ * pZ)
-        if (pLen < 0.05) return Float.NaN
-        pX /= pLen; pY /= pLen; pZ /= pLen
+        val rw = cw*isw - cx*isx - cy*isy - cz*isz
+        val rx = cw*isx + cx*isw + cy*isz - cz*isy
+        val ry = cw*isy - cx*isz + cy*isw + cz*isx
+        val rz = cw*isz + cx*isy - cy*isx + cz*isw
 
-        // Signed angle between normalized vectors (via aim axis)
-        val cosA = refX * pX + refY * pY + refZ * pZ
-        val crossX = refY * pZ - refZ * pY
-        val crossY = refZ * pX - refX * pZ
-        val crossZ = refX * pY - refY * pX
-        val sinA = crossX * aim[0] + crossY * aim[1] + crossZ * aim[2]
-        return Math.toDegrees(Math.atan2(sinA, cosA)).toFloat()
+        // Twist-swing decomposition: project Q_rel vector onto current aim forward
+        val fwd = quatForward(currentRot)
+        val dot = rx * fwd[0] + ry * fwd[1] + rz * fwd[2]
+
+        // Twist angle = 2 * atan2(projected_length, w_component)
+        return Math.toDegrees(2.0 * Math.atan2(dot, rw)).toFloat()
     }
 
     private fun updateScreenPose() {
@@ -696,6 +782,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         screenX = 0f
         screenY = 0f
         screenZ = if (currentScreenType == ScreenType.FLAT) -8f else 0f
+        abRepeatA = null
+        abRepeatB = null
         updateScreenPose()
         updateScreenScale()
     }
@@ -708,17 +796,61 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             override fun run() {
                 if (!isPlaying) return
                 val player = videoPlayer ?: return
-                if (!isSeekBarTracking) {
-                    val pos = player.currentPositionMs
-                    val dur = player.durationMs
-                    if (dur > 0) {
-                        seekBar?.progress = ((pos * 1000) / dur).toInt()
-                        seekLabel?.text = "${formatTime(pos)} / ${formatTime(dur)}"
-                    }
+                val pos = player.currentPositionMs
+                val dur = player.durationMs
+
+                // A/B repeat: loop back to A when past B
+                val a = abRepeatA
+                val b = abRepeatB
+                if (a != null && b != null && pos >= b) {
+                    player.seekTo(a)
                 }
-                handler.postDelayed(this, 500)
+
+                if (!isSeekBarTracking && dur > 0) {
+                    seekBar?.progress = ((pos * 1000) / dur).toInt()
+                    seekLabel?.text = "${formatTime(pos)} / ${formatTime(dur)}"
+                }
+                updateAbLabel()
+
+                // Poll faster when A/B is active for tighter looping
+                val interval = if (a != null && b != null) 100L else 500L
+                handler.postDelayed(this, interval)
             }
         })
+    }
+
+    private fun toggleAbRepeat() {
+        val pos = videoPlayer?.currentPositionMs ?: return
+        when {
+            abRepeatA == null -> {
+                abRepeatA = pos
+            }
+            abRepeatB == null -> {
+                val a = abRepeatA!!
+                if (pos > a) {
+                    abRepeatB = pos
+                } else {
+                    // B before A — swap
+                    abRepeatB = a
+                    abRepeatA = pos
+                }
+            }
+            else -> {
+                abRepeatA = null
+                abRepeatB = null
+            }
+        }
+        updateAbLabel()
+    }
+
+    private fun updateAbLabel() {
+        val a = abRepeatA
+        val b = abRepeatB
+        abLabel?.text = when {
+            a != null && b != null -> "A: ${formatTime(a)}  B: ${formatTime(b)}"
+            a != null -> "A: ${formatTime(a)}  B: ?"
+            else -> ""
+        }
     }
 
     // ── Playback ──
@@ -817,7 +949,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
         bar.addView(seekBar)
 
-        // Transport + Menu row
+        // A/B repeat label
+        abLabel = TextView(this).apply {
+            textSize = 12f
+            setTextColor(0xFF66BB6A.toInt())
+            gravity = Gravity.CENTER
+            setPadding(0, 2, 0, 2)
+        }
+        bar.addView(abLabel)
+        updateAbLabel()
+
+        // Transport + A/B + Menu row
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -826,30 +968,34 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         for ((label, action) in listOf(
             "-10s" to { videoPlayer?.seekBy(-10000) },
             "Play/Pause" to { videoPlayer?.togglePlayPause() },
-            "+10s" to { videoPlayer?.seekBy(10000) }
+            "+10s" to { videoPlayer?.seekBy(10000) },
+            "A/B" to { toggleAbRepeat() }
         )) {
             btnRow.addView(Button(this).apply {
                 text = label
                 textSize = 14f
-                minWidth = 120
+                minWidth = 100
                 minHeight = 64
-                setPadding(16, 12, 16, 12)
+                setPadding(12, 12, 12, 12)
+                if (label == "A/B") setBackgroundColor(
+                    if (abRepeatA != null) 0xFF2E7D32.toInt() else 0xFF333333.toInt()
+                )
                 val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                lp.setMargins(4, 0, 4, 0)
+                lp.setMargins(3, 0, 3, 0)
                 layoutParams = lp
                 setOnClickListener { action() }
             })
         }
         btnRow.addView(Button(this).apply {
             text = "Menu"
-            textSize = 16f
-            minWidth = 160
+            textSize = 14f
+            minWidth = 100
             minHeight = 64
-            setPadding(24, 12, 24, 12)
+            setPadding(12, 12, 12, 12)
             setBackgroundColor(0xFF1565C0.toInt())
             setTextColor(0xFFFFFFFF.toInt())
             val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            lp.setMargins(8, 0, 4, 0)
+            lp.setMargins(3, 0, 3, 0)
             layoutParams = lp
             setOnClickListener {
                 scrubBarVisible = false
@@ -987,8 +1133,13 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private val NATIVE_SEEK_THROTTLE_MS = 400
     private val NATIVE_STICK_DEADZONE = 0.25f
 
+    private var loggedAimState = false
     override fun onControllerState(input: OpenXRInput) {
         if (!isPlaying) return
+        if (!loggedAimState && (input.rightHandValid || input.leftHandValid)) {
+            loggedAimState = true
+            android.util.Log.i("ChloeVR", "Aim pose: leftValid=${input.leftAimValid} rightValid=${input.rightAimValid}")
+        }
 
         val now = SystemClock.uptimeMillis()
 
@@ -1006,54 +1157,81 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val grabHandPos = if (rightGrab) input.rightHandPos
                           else if (leftGrab) input.leftHandPos
                           else null
-        val grabHandRot = if (rightGrab) input.rightHandRot
-                          else if (leftGrab) input.leftHandRot
-                          else null
+        // Aim rotation (for laser pointer direction)
+        val grabAimRot = if (rightGrab) input.rightAimRot
+                         else if (leftGrab) input.leftAimRot
+                         else null
+        val grabAimValid = if (rightGrab) input.rightAimValid
+                           else if (leftGrab) input.leftAimValid
+                           else false
 
         val triggerHandPos = if (rightTriggerOnly) input.rightHandPos
                              else if (leftTriggerOnly) input.leftHandPos
                              else null
 
-        if (grabbing && grabHandPos != null && grabHandRot != null) {
-            // Hand position drives movement, wrist rotation drives roll only
+        if (grabbing && grabHandPos != null) {
+            // Aim direction drives screen movement, wrist twist drives roll
             isTriggerZooming = false
+            val useAim = grabAimValid && grabAimRot != null
+            val rollRot = if (useAim) grabAimRot!! else (if (rightGrab) input.rightHandRot else input.leftHandRot)
+
             if (!isGrabbing) {
                 isGrabbing = true
-                grabStartHandPos = grabHandPos.copyOf()
-                grabStartControllerRoll = controllerRollDeg(grabHandRot)
+                grabStartAimDir = if (useAim) quatForward(grabAimRot!!) else floatArrayOf(0f, 0f, -1f)
+                grabStartAimRot = rollRot.copyOf()
                 grabStartScreenRoll = screenRoll
                 grabStartScreenYaw = screenYaw
                 grabStartScreenPitch = screenPitch
                 grabStartScreenX = screenX
                 grabStartScreenY = screenY
                 grabStartScreenZ = screenZ
+                grabStartHandPos = grabHandPos.copyOf()
             } else {
-                val smooth = 0.7f
+                val smooth = 0.5f
 
-                // Roll from wrist twist (geometric)
-                var rollDelta = controllerRollDeg(grabHandRot) - grabStartControllerRoll
+                // Roll via twist-swing decomposition (immune to pitch/yaw changes)
+                var rollDelta = relativeRollDeg(grabStartAimRot, rollRot)
                 while (rollDelta > 180f) rollDelta -= 360f
                 while (rollDelta < -180f) rollDelta += 360f
                 if (!rollDelta.isNaN()) {
-                    val targetRoll = grabStartScreenRoll + rollDelta
+                    val targetRoll = grabStartScreenRoll - rollDelta
                     screenRoll += (targetRoll - screenRoll) * smooth
                 }
 
-                if (currentScreenType == ScreenType.FLAT) {
-                    val dx = grabHandPos[0] - grabStartHandPos[0]
-                    val dy = grabHandPos[1] - grabStartHandPos[1]
-                    val scale = kotlin.math.abs(grabStartScreenZ) * 3f // adapts to distance
-                    val targetX = grabStartScreenX + dx * scale
-                    val targetY = grabStartScreenY + dy * scale
-                    screenX += (targetX - screenX) * smooth
-                    screenY += (targetY - screenY) * smooth
+                if (useAim) {
+                    // Aim direction delta for screen movement (laser pointer tracking)
+                    val aimDir = quatForward(grabAimRot!!)
+                    val dAimX = aimDir[0] - grabStartAimDir[0]
+                    val dAimY = aimDir[1] - grabStartAimDir[1]
+
+                    if (currentScreenType == ScreenType.FLAT) {
+                        val dist = kotlin.math.abs(grabStartScreenZ)
+                        val targetX = grabStartScreenX + dAimX * dist
+                        val targetY = grabStartScreenY + dAimY * dist
+                        screenX += (targetX - screenX) * smooth
+                        screenY += (targetY - screenY) * smooth
+                    } else {
+                        val targetYaw = grabStartScreenYaw - Math.toDegrees(dAimX.toDouble()).toFloat()
+                        val targetPitch = grabStartScreenPitch + Math.toDegrees(dAimY.toDouble()).toFloat()
+                        screenYaw += (targetYaw - screenYaw) * smooth
+                        screenPitch += (targetPitch - screenPitch) * smooth
+                    }
                 } else {
+                    // Fallback: hand position delta (no aim pose available)
                     val dx = grabHandPos[0] - grabStartHandPos[0]
                     val dy = grabHandPos[1] - grabStartHandPos[1]
-                    val targetYaw = grabStartScreenYaw - dx * 120f
-                    val targetPitch = grabStartScreenPitch + dy * 120f
-                    screenYaw += (targetYaw - screenYaw) * smooth
-                    screenPitch += (targetPitch - screenPitch) * smooth
+                    if (currentScreenType == ScreenType.FLAT) {
+                        val scale = kotlin.math.abs(grabStartScreenZ) * 3f
+                        val targetX = grabStartScreenX + dx * scale
+                        val targetY = grabStartScreenY + dy * scale
+                        screenX += (targetX - screenX) * smooth
+                        screenY += (targetY - screenY) * smooth
+                    } else {
+                        val targetYaw = grabStartScreenYaw - dx * 120f
+                        val targetPitch = grabStartScreenPitch + dy * 120f
+                        screenYaw += (targetYaw - screenYaw) * smooth
+                        screenPitch += (targetPitch - screenPitch) * smooth
+                    }
                 }
                 updateScreenPose()
             }
@@ -1109,6 +1287,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             videoPlayer?.togglePlayPause()
         }
         lastAState = input.aButton
+
+        // X button → A/B repeat toggle (edge detection)
+        if (input.xButton && !lastXState) {
+            runOnUiThread { toggleAbRepeat() }
+        }
+        lastXState = input.xButton
 
         lastBState = input.bButton
     }
