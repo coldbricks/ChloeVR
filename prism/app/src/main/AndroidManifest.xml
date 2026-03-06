@@ -17,6 +17,9 @@
         android:icon="@android:drawable/ic_media_play"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
 
+        <!-- OpenXR native runtime -->
+        <uses-native-library android:name="libopenxr.google.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

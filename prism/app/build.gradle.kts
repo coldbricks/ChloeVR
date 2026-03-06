@@ -13,6 +13,17 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
+
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+                arguments += "-DANDROID_STL=c++_shared"
+            }
+        }
     }
 
     buildTypes {
@@ -29,6 +40,16 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
+    buildFeatures {
+        prefab = true
+    }
 }
 
 dependencies {
@@ -37,6 +58,9 @@ dependencies {
     implementation("androidx.xr.scenecore:scenecore:1.0.0-alpha12")
     implementation("androidx.xr.arcore:arcore:1.0.0-alpha11")
     implementation("com.google.guava:listenablefuture:1.0")
+
+    // OpenXR loader (native, via prefab)
+    implementation("org.khronos.openxr:openxr_loader_for_android:1.1.49")
 
     // Media3 (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.5.1")
