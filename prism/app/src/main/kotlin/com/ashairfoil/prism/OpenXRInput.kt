@@ -12,6 +12,9 @@ class OpenXRInput(private val activity: Activity) {
         private const val TAG = "ChloeVR-OpenXR"
         private const val STATE_SIZE = 41
         private const val POLL_INTERVAL_MS = 8L // ~120Hz for responsive buttons
+
+        @JvmStatic
+        external fun nativeSetSurfaceSize(surface: android.view.Surface, width: Int, height: Int)
     }
 
     // Current controller state

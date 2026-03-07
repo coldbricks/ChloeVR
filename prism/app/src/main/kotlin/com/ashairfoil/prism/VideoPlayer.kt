@@ -4,9 +4,11 @@ import android.content.Context
 import android.view.Surface
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import java.io.File
 
+@UnstableApi
 class VideoPlayer(private val context: Context) {
 
     private var player: ExoPlayer? = null
@@ -15,9 +17,24 @@ class VideoPlayer(private val context: Context) {
     val currentPositionMs: Long get() = player?.currentPosition ?: 0
     val durationMs: Long get() = player?.duration ?: 0
 
-    fun start(file: File, surface: Surface) {
+    fun start(
+        file: File,
+        surface: Surface,
+        useDeoAlphaPacking: Boolean = false,
+        chromaKeyState: ChromaKeyState? = null
+    ) {
         release()
         player = ExoPlayer.Builder(context).build().apply {
+            val effects = mutableListOf<androidx.media3.common.Effect>()
+            if (useDeoAlphaPacking) {
+                effects.add(DeoVrAlphaPackedEffect())
+            }
+            if (chromaKeyState != null && chromaKeyState.enabled) {
+                effects.add(ChromaKeyEffect(chromaKeyState))
+            }
+            if (effects.isNotEmpty()) {
+                setVideoEffects(effects)
+            }
             setVideoSurface(surface)
             setMediaItem(MediaItem.fromUri(file.toURI().toString()))
             prepare()
@@ -27,6 +44,14 @@ class VideoPlayer(private val context: Context) {
 
     fun togglePlayPause() {
         player?.let { it.playWhenReady = !it.isPlaying }
+    }
+
+    fun play() {
+        player?.playWhenReady = true
+    }
+
+    fun pause() {
+        player?.playWhenReady = false
     }
 
     fun seekBy(deltaMs: Long) {

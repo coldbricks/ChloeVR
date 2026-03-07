@@ -1,4 +1,6 @@
 #include <jni.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 #include "openxr_input.h"
 
 static OpenXRInput gInput;
@@ -29,4 +31,14 @@ Java_com_ashairfoil_prism_OpenXRInput_nativePoll(
 
     env->SetFloatArrayRegion(outState, 0, ControllerState::SIZE, state.data());
     return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_OpenXRInput_nativeSetSurfaceSize(
+    JNIEnv* env, jobject thiz, jobject surface, jint width, jint height) {
+    ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
+    if (window) {
+        ANativeWindow_setBuffersGeometry(window, width, height, 0);
+        ANativeWindow_release(window);
+    }
 }

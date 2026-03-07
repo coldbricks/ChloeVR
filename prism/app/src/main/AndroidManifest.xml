@@ -4,6 +4,7 @@
     <!-- Storage access for local video files -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <!-- XR permissions -->
     <uses-permission android:name="android.permission.HAND_TRACKING" />
