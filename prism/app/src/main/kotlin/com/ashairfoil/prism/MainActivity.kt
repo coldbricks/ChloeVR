@@ -2838,23 +2838,19 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                           else if (input.leftHandValid) input.leftHandPos
                           else null
             if (headPos != null) {
-                if (!depthSimulation.enabled) {
-                    // no-op, already checked above
-                } else {
-                    val adj = depthSimulation.compute(headPos[0], headPos[1], headPos[2])
-                    // Apply offset to surface entity pose
-                    val entity = surfaceEntity
-                    if (entity != null && (adj.offsetX != 0f || adj.offsetY != 0f || adj.scaleZ != 1f)) {
-                        val baseRot = Quaternion.fromEulerAngles(screenPitch, screenYaw, screenRoll)
-                        val basePos = if (currentScreenType == ScreenType.FLAT) {
-                            Vector3(screenX + adj.offsetX, screenY + adj.offsetY, screenZ)
-                        } else {
-                            Vector3(adj.offsetX, screenHeight + adj.offsetY, screenDepth)
-                        }
-                        entity.setPose(Pose(basePos, baseRot))
-                        if (adj.scaleZ != 1f) {
-                            entity.setScale(screenZoom * adj.scaleZ)
-                        }
+                val adj = depthSimulation.compute(headPos[0], headPos[1], headPos[2])
+                // Apply offset to surface entity pose
+                val entity = surfaceEntity
+                if (entity != null && (adj.offsetX != 0f || adj.offsetY != 0f || adj.scaleZ != 1f)) {
+                    val baseRot = Quaternion.fromEulerAngles(screenPitch, screenYaw, screenRoll)
+                    val basePos = if (currentScreenType == ScreenType.FLAT) {
+                        Vector3(screenX + adj.offsetX, screenY + adj.offsetY, screenZ)
+                    } else {
+                        Vector3(adj.offsetX, screenHeight + adj.offsetY, screenDepth)
+                    }
+                    entity.setPose(Pose(basePos, baseRot))
+                    if (adj.scaleZ != 1f) {
+                        entity.setScale(screenZoom * adj.scaleZ)
                     }
                 }
             }
