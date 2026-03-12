@@ -1304,6 +1304,312 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
     }
 
+    // ── Color Grading UI ──
+
+    private fun makeColorGradingSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+
+            // Enable toggle
+            val toggleBtn = Button(this@MainActivity).apply {
+                text = if (colorGradingState.enabled) "Color Grading: ON" else "Color Grading: OFF"
+                textSize = 16f
+                minHeight = 72
+                setBackgroundColor(if (colorGradingState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding(20, 16, 20, 16)
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(4, 4, 4, 4)
+                layoutParams = lp
+            }
+            toggleBtn.setOnClickListener {
+                colorGradingState.enabled = !colorGradingState.enabled
+                toggleBtn.text = if (colorGradingState.enabled) "Color Grading: ON" else "Color Grading: OFF"
+                toggleBtn.setBackgroundColor(if (colorGradingState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                saveColorGradingSettings()
+            }
+            addView(toggleBtn)
+
+            // Preset buttons
+            addView(makeSpacer(8))
+            val presets = SettingsManager.getColorGradingPresets()
+            val presetRow1 = presets.take(3)
+            val presetRow2 = presets.drop(3).take(3)
+            if (presetRow1.isNotEmpty()) {
+                addView(makeButtonRow(*presetRow1.map { preset ->
+                    preset.name to {
+                        colorGradingState.brightness = preset.brightness
+                        colorGradingState.contrast = preset.contrast
+                        colorGradingState.saturation = preset.saturation
+                        colorGradingState.sharpening = preset.sharpening
+                        colorGradingState.gamma = preset.gamma
+                        colorGradingState.hueShift = preset.hueShift
+                        colorGradingState.toneMapMode = preset.toneMapMode
+                        colorGradingState.enabled = true
+                        saveColorGradingSettings()
+                        // Rebuild panel to update sliders
+                        showControlPanel()
+                    }
+                }.toTypedArray()))
+            }
+            if (presetRow2.isNotEmpty()) {
+                addView(makeButtonRow(*presetRow2.map { preset ->
+                    preset.name to {
+                        colorGradingState.brightness = preset.brightness
+                        colorGradingState.contrast = preset.contrast
+                        colorGradingState.saturation = preset.saturation
+                        colorGradingState.sharpening = preset.sharpening
+                        colorGradingState.gamma = preset.gamma
+                        colorGradingState.hueShift = preset.hueShift
+                        colorGradingState.toneMapMode = preset.toneMapMode
+                        colorGradingState.enabled = true
+                        saveColorGradingSettings()
+                        showControlPanel()
+                    }
+                }.toTypedArray()))
+            }
+
+            // Brightness slider: -1 to 1, default 0
+            addView(makeSpacer(8))
+            addView(makeEffectSlider("Brightness", -100, 100, (colorGradingState.brightness * 100).toInt()) { value ->
+                colorGradingState.brightness = value / 100f
+            })
+
+            // Contrast slider: 0 to 2, default 1
+            addView(makeEffectSlider("Contrast", 0, 200, (colorGradingState.contrast * 100).toInt()) { value ->
+                colorGradingState.contrast = value / 100f
+            })
+
+            // Saturation slider: 0 to 2, default 1
+            addView(makeEffectSlider("Saturation", 0, 200, (colorGradingState.saturation * 100).toInt()) { value ->
+                colorGradingState.saturation = value / 100f
+            })
+
+            // Sharpening slider: 0 to 1, default 0
+            addView(makeEffectSlider("Sharpening", 0, 100, (colorGradingState.sharpening * 100).toInt()) { value ->
+                colorGradingState.sharpening = value / 100f
+            })
+
+            // Gamma slider: 0.2 to 3.0, default 1.0 — map 20..300
+            addView(makeEffectSlider("Gamma", 20, 300, (colorGradingState.gamma * 100).toInt()) { value ->
+                colorGradingState.gamma = value / 100f
+            })
+        }
+    }
+
+    /**
+     * Helper: creates a labeled SeekBar for effect parameters.
+     * Calls onChanged during drag; saves color grading settings on release.
+     */
+    private fun makeEffectSlider(
+        label: String,
+        min: Int,
+        max: Int,
+        initial: Int,
+        onChanged: (Int) -> Unit
+    ): LinearLayout {
+        val range = max - min
+        val valueLabel = TextView(this).apply {
+            text = "$label: $initial"
+            textSize = 14f
+            setTextColor(0xFFCCCCCC.toInt())
+            gravity = Gravity.CENTER
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            params.setMargins(0, 2, 0, 2)
+            layoutParams = params
+
+            addView(valueLabel)
+            addView(SeekBar(this@MainActivity).apply {
+                this.max = range
+                progress = (initial - min).coerceIn(0, range)
+                setPadding(0, 4, 0, 4)
+                setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val value = progress + min
+                        valueLabel.text = "$label: $value"
+                        onChanged(value)
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) { saveColorGradingSettings() }
+                })
+            })
+        }
+    }
+
+    // ── 6DOF Depth Simulation UI ──
+
+    private fun makeDepthSimulationSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+
+            // Enable toggle
+            val toggleBtn = Button(this@MainActivity).apply {
+                text = if (depthSimulation.enabled) "6DOF Depth: ON" else "6DOF Depth: OFF"
+                textSize = 16f
+                minHeight = 72
+                setBackgroundColor(if (depthSimulation.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding(20, 16, 20, 16)
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(4, 4, 4, 4)
+                layoutParams = lp
+            }
+            toggleBtn.setOnClickListener {
+                depthSimulation.enabled = !depthSimulation.enabled
+                toggleBtn.text = if (depthSimulation.enabled) "6DOF Depth: ON" else "6DOF Depth: OFF"
+                toggleBtn.setBackgroundColor(if (depthSimulation.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+            }
+            addView(toggleBtn)
+
+            // X sensitivity: 0 to 0.4
+            addView(makeEffectSliderNoSave("X Sensitivity", 0, 40, (depthSimulation.sensitivityX * 100).toInt()) { value ->
+                depthSimulation.sensitivityX = value / 100f
+            })
+
+            // Y sensitivity: 0 to 0.4
+            addView(makeEffectSliderNoSave("Y Sensitivity", 0, 40, (depthSimulation.sensitivityY * 100).toInt()) { value ->
+                depthSimulation.sensitivityY = value / 100f
+            })
+
+            // Z sensitivity: 0 to 0.4
+            addView(makeEffectSliderNoSave("Z Sensitivity", 0, 40, (depthSimulation.sensitivityZ * 100).toInt()) { value ->
+                depthSimulation.sensitivityZ = value / 100f
+            })
+
+            // Recenter button
+            addView(makeSpacer(8))
+            addView(makeButtonRow(
+                "Recenter" to { depthSimulation.reset() }
+            ))
+        }
+    }
+
+    /**
+     * Slider variant that doesn't save color grading on release.
+     */
+    private fun makeEffectSliderNoSave(
+        label: String,
+        min: Int,
+        max: Int,
+        initial: Int,
+        onChanged: (Int) -> Unit
+    ): LinearLayout {
+        val range = max - min
+        val valueLabel = TextView(this).apply {
+            text = "$label: $initial"
+            textSize = 14f
+            setTextColor(0xFFCCCCCC.toInt())
+            gravity = Gravity.CENTER
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            params.setMargins(0, 2, 0, 2)
+            layoutParams = params
+
+            addView(valueLabel)
+            addView(SeekBar(this@MainActivity).apply {
+                this.max = range
+                progress = (initial - min).coerceIn(0, range)
+                setPadding(0, 4, 0, 4)
+                setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val value = progress + min
+                        valueLabel.text = "$label: $value"
+                        onChanged(value)
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                })
+            })
+        }
+    }
+
+    // ── Spatial Audio UI ──
+
+    private fun makeSpatialAudioSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+
+            // Enable toggle
+            val toggleBtn = Button(this@MainActivity).apply {
+                text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
+                textSize = 16f
+                minHeight = 72
+                setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding(20, 16, 20, 16)
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(4, 4, 4, 4)
+                layoutParams = lp
+            }
+            toggleBtn.setOnClickListener {
+                spatialAudio.setEnabled(!spatialAudio.enabled)
+                toggleBtn.text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
+                toggleBtn.setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+            }
+            addView(toggleBtn)
+
+            // Strength slider: 0 to 1
+            addView(makeEffectSliderNoSave("Strength", 0, 100, (spatialAudio.strength * 100).toInt()) { value ->
+                spatialAudio.setStrength(value / 100f)
+            })
+        }
+    }
+
+    // ── Subtitle UI ──
+
+    private fun makeSubtitleSection(): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+
+            val renderer = subtitleRenderer
+            val hasSubs = renderer?.hasSubtitles() == true
+
+            val toggleBtn = Button(this@MainActivity).apply {
+                text = when {
+                    !hasSubs -> "Subtitles: No file found"
+                    renderer?.isVisible == true -> "Subtitles: ON"
+                    else -> "Subtitles: OFF"
+                }
+                textSize = 16f
+                minHeight = 72
+                isEnabled = hasSubs
+                setBackgroundColor(
+                    when {
+                        !hasSubs -> 0xFF555555.toInt()
+                        renderer?.isVisible == true -> 0xFF1565C0.toInt()
+                        else -> 0xFF333333.toInt()
+                    }
+                )
+                setTextColor(0xFFFFFFFF.toInt())
+                setPadding(20, 16, 20, 16)
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                lp.setMargins(4, 4, 4, 4)
+                layoutParams = lp
+            }
+            if (hasSubs) {
+                toggleBtn.setOnClickListener {
+                    renderer?.isVisible = !(renderer?.isVisible ?: false)
+                    toggleBtn.text = if (renderer?.isVisible == true) "Subtitles: ON" else "Subtitles: OFF"
+                    toggleBtn.setBackgroundColor(if (renderer?.isVisible == true) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                }
+            }
+            addView(toggleBtn)
+        }
+    }
+
     // ── Shape / Stereo Mapping ──
 
     private fun shapeForScreenType(type: ScreenType): SurfaceEntity.Shape {
@@ -2114,7 +2420,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         setAlphaPassthroughEnabled(useDeoAlphaPacking || chromaKeyState.enabled)
         videoPlayer?.release()
         videoPlayer = VideoPlayer(this).also {
-            it.start(file, surfaceEntity!!.getSurface(), useDeoAlphaPacking = useDeoAlphaPacking, chromaKeyState = chromaKeyState)
+            it.start(
+                file, surfaceEntity!!.getSurface(),
+                useDeoAlphaPacking = useDeoAlphaPacking,
+                chromaKeyState = chromaKeyState,
+                colorGradingState = colorGradingState,
+                lensDistortionState = lensDistortionState,
+                stereoAdjustmentState = stereoAdjustmentState
+            )
             it.seekTo(pos)
             it.speed = playbackSpeed
             if (!wasPlaying) it.pause()
@@ -2194,15 +2507,74 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         } else {
             currentDeoAlphaActive = useDeoAlphaPacking
             setAlphaPassthroughEnabled(useDeoAlphaPacking || chromaKeyState.enabled)
-            videoPlayer = VideoPlayer(this).also {
-                it.start(file, surfaceEntity!!.getSurface(), useDeoAlphaPacking = useDeoAlphaPacking, chromaKeyState = chromaKeyState)
+
+            // Set stereo layout for IPD adjustment
+            stereoAdjustmentState.stereoLayout = when (currentStereoMode) {
+                StereoMode.TOP_BOTTOM -> 1
+                else -> 0
             }
+
+            videoPlayer = VideoPlayer(this).also {
+                it.start(
+                    file, surfaceEntity!!.getSurface(),
+                    useDeoAlphaPacking = useDeoAlphaPacking,
+                    chromaKeyState = chromaKeyState,
+                    colorGradingState = colorGradingState,
+                    lensDistortionState = lensDistortionState,
+                    stereoAdjustmentState = stereoAdjustmentState
+                )
+
+                // Resume from saved position
+                val resumePos = mediaLibrary?.getResumePosition(file) ?: 0L
+                if (resumePos > 0) {
+                    it.seekTo(resumePos)
+                }
+
+                it.speed = playbackSpeed
+            }
+
+            // Record playback in media library
+            mediaLibrary?.recordPlayback(file)
+
+            // Save as last played file
+            SettingsManager.lastPlayedFile = file.absolutePath
+
+            // Attach spatial audio
+            try {
+                spatialAudio.is360 = (currentScreenType == ScreenType.SPHERE_360)
+                videoPlayer?.let { vp ->
+                    // Delay briefly to ensure audio session is ready
+                    lifecycleScope.launch {
+                        delay(200)
+                        // ExoPlayer exposes audioSessionId through the underlying player
+                        // For now, attach with session 0 which uses output mix
+                        spatialAudio.attach(0)
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("ChloeVR", "Spatial audio attach failed", e)
+            }
+
+            // Load subtitles
+            subtitleRenderer?.clear()
+            subtitleRenderer?.loadForVideo(file)
+
+            // Calibrate depth simulation
+            depthSimulation.reset()
+
+            // Start periodic resume position saving
+            startResumeSaveLoop(file)
         }
 
         isPlaying = true
         menuVisible = false
         scrubBarVisible = false
         setPanelVisible(false)
+
+        // Show video info overlay
+        if (!currentFileIsImage) {
+            showVideoInfoOverlay(file)
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -2270,6 +2642,36 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun stopPlayback() {
+        // Save resume position before releasing
+        val file = currentFile
+        val pos = videoPlayer?.currentPositionMs ?: 0
+        val dur = videoPlayer?.durationMs ?: 0
+        if (file != null && pos > 0 && dur > 0) {
+            // Only save if not near the end (within 5% of duration = consider finished)
+            if (pos < dur * 0.95) {
+                mediaLibrary?.saveResumePosition(file, pos)
+                SettingsManager.setResumePosition(file.absolutePath, pos)
+            } else {
+                // Finished — clear resume
+                mediaLibrary?.saveResumePosition(file, 0)
+                SettingsManager.clearResumePosition(file.absolutePath)
+            }
+        }
+
+        // Stop resume save loop
+        resumeSaveJob?.cancel()
+        resumeSaveJob = null
+
+        // Release spatial audio
+        spatialAudio.release()
+
+        // Clear subtitles
+        subtitleRenderer?.clear()
+
+        // Dismiss video info overlay
+        videoInfoOverlay = null
+        videoInfoVisible = false
+
         setAlphaPassthroughEnabled(false)
         currentDeoAlphaActive = false
         videoPlayer?.release()
