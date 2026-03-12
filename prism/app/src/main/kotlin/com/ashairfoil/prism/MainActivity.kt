@@ -3120,6 +3120,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         filePickerActive = false
         filePickerScanJob?.cancel()
         filePickerScanJob = null
+        resumeSaveJob?.cancel()
+        resumeSaveJob = null
+        spatialAudio.release()
         openXRInput?.stop()
         openXRInput = null
         stopPlayback()

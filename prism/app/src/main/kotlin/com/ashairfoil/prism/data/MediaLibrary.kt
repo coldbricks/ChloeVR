@@ -3,6 +3,8 @@ package com.ashairfoil.prism.data
 import android.content.Context
 import android.util.Log
 import com.ashairfoil.prism.FileNameParser
+import com.ashairfoil.prism.ScreenType
+import com.ashairfoil.prism.StereoMode
 import com.ashairfoil.prism.VideoMetadata
 import kotlinx.coroutines.*
 import java.io.File
@@ -213,8 +215,8 @@ class MediaLibrary(private val context: Context) {
             entry.displayName.lowercase().contains(q) ||
             entry.folderName.lowercase().contains(q) ||
             entry.tags.any { it.contains(q) } ||
-            entry.metadata.projection.lowercase().contains(q) ||
-            entry.metadata.stereoMode.lowercase().contains(q)
+            entry.metadata.screenType.displayName.lowercase().contains(q) ||
+            entry.metadata.stereoMode.name.lowercase().contains(q)
         }
     }
 
@@ -234,13 +236,18 @@ class MediaLibrary(private val context: Context) {
         return when (by) {
             FilterBy.ALL -> list
             FilterBy.FAVORITES -> list.filter { it.isFavorite }
-            FilterBy.VR180 -> list.filter { it.metadata.projection.contains("180", ignoreCase = true) }
-            FilterBy.VR360 -> list.filter { it.metadata.projection.contains("360", ignoreCase = true) }
-            FilterBy.FISHEYE -> list.filter { it.metadata.projection.contains("fisheye", ignoreCase = true) }
-            FilterBy.FLAT -> list.filter { it.metadata.projection.equals("flat", ignoreCase = true) || it.metadata.projection.isEmpty() }
-            FilterBy.SBS -> list.filter { it.metadata.stereoMode.contains("sbs", ignoreCase = true) || it.metadata.stereoMode.contains("lr", ignoreCase = true) }
-            FilterBy.TOP_BOTTOM -> list.filter { it.metadata.stereoMode.contains("tb", ignoreCase = true) }
-            FilterBy.MONO -> list.filter { it.metadata.stereoMode.equals("mono", ignoreCase = true) || it.metadata.stereoMode.isEmpty() }
+            FilterBy.VR180 -> list.filter { it.metadata.screenType == ScreenType.DOME_180 }
+            FilterBy.VR360 -> list.filter { it.metadata.screenType == ScreenType.SPHERE_360 }
+            FilterBy.FISHEYE -> list.filter {
+                it.metadata.screenType == ScreenType.FISHEYE ||
+                it.metadata.screenType == ScreenType.MKX200 ||
+                it.metadata.screenType == ScreenType.RF52 ||
+                it.metadata.screenType == ScreenType.VRCA220
+            }
+            FilterBy.FLAT -> list.filter { it.metadata.screenType == ScreenType.FLAT }
+            FilterBy.SBS -> list.filter { it.metadata.stereoMode == StereoMode.SIDE_BY_SIDE }
+            FilterBy.TOP_BOTTOM -> list.filter { it.metadata.stereoMode == StereoMode.TOP_BOTTOM }
+            FilterBy.MONO -> list.filter { it.metadata.stereoMode == StereoMode.MONO }
             FilterBy.HAS_SUBTITLES -> list.filter { it.hasSubtitles }
             FilterBy.UNPLAYED -> list.filter { it.playCount == 0 }
         }
