@@ -538,9 +538,20 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val filteredFiles = filePickerFiles.filter { matchesFilePickerFilters(it) }
         val sortedFiles = sortFilePickerFiles(filteredFiles)
 
+        // Apply MediaLibrary filter if active
+        val lib = mediaLibrary
+        val displayFiles = if (lib != null && filePickerFilterBy != MediaLibrary.FilterBy.ALL) {
+            val filteredEntries = lib.filter(mediaEntries.filter { e ->
+                sortedFiles.any { it.absolutePath == e.file.absolutePath }
+            }, filePickerFilterBy)
+            sortedFiles.filter { f -> filteredEntries.any { it.file.absolutePath == f.absolutePath } }
+        } else {
+            sortedFiles
+        }
+
         filePickerCountLabel?.text = when {
-            filePickerLoading -> "${filteredFiles.size} shown / ${filePickerFiles.size} found"
-            else -> "${filteredFiles.size} files"
+            filePickerLoading -> "${displayFiles.size} shown / ${filePickerFiles.size} found"
+            else -> "${displayFiles.size} files"
         }
 
         val statusText = when {
@@ -549,18 +560,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             filePickerLoading && filePickerStatusText.isNotBlank() -> filePickerStatusText
             filePickerFiles.isEmpty() -> "No media files found.\nSupported: MP4, MKV, WebM, JPG, PNG, WebP\nCheck internal storage or connect a USB drive."
-            filteredFiles.isEmpty() -> "No files match your current search or filters."
+            displayFiles.isEmpty() -> "No files match your current search or filters."
             else -> ""
         }
 
         filePickerStatusLabel?.text = statusText
         filePickerStatusLabel?.visibility =
-            if (statusText.isBlank()) android.view.View.GONE else android.view.View.VISIBLE
+            if (statusText.isBlank()) View.GONE else View.VISIBLE
 
         container.removeAllViews()
-        if (filePickerFiles.isEmpty() || filteredFiles.isEmpty()) return
+        if (filePickerFiles.isEmpty() || displayFiles.isEmpty()) return
 
-        val grouped = sortedFiles.groupBy { it.parentFile?.absolutePath ?: "" }.toSortedMap()
+        val grouped = displayFiles.groupBy { it.parentFile?.absolutePath ?: "" }.toSortedMap()
         for ((dirPath, dirFiles) in grouped) {
             val dirName = dirPath.let { path ->
                 val storageRoot = android.os.Environment.getExternalStorageDirectory()?.absolutePath ?: ""
@@ -592,9 +603,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val sizeLabel = formatFileSize(file.length())
                 val projLabel = metadata.screenType.displayName
 
+                // MediaLibrary entry for resume/favorite badges
+                val entry = mediaEntries.find { it.file.absolutePath == file.absolutePath }
+                val hasResume = (entry?.resumePositionMs ?: 0) > 0
+                val isFavorite = entry?.isFavorite == true
+
                 container.addView(LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setBackgroundColor(0xFF1E1E1E.toInt())
+                    setBackgroundColor(if (isFavorite) 0xFF1A2A1A.toInt() else 0xFF1E1E1E.toInt())
                     setPadding(32, 28, 32, 28)
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
@@ -605,13 +621,37 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     isClickable = true
                     isFocusable = true
                     setOnClickListener { openFileFromPicker(file) }
+                    setOnLongClickListener {
+                        // Long press = toggle favorite
+                        val newFav = lib?.toggleFavorite(file) ?: false
+                        // Update entry in local list
+                        entry?.isFavorite = newFav
+                        refreshFilePickerResults()
+                        true
+                    }
 
-                    addView(TextView(this@MainActivity).apply {
-                        text = file.nameWithoutExtension
-                        textSize = 16f
-                        setTextColor(0xFFE0E0E0.toInt())
-                        maxLines = 2
-                        ellipsize = android.text.TextUtils.TruncateAt.END
+                    // Title row with favorite star
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+
+                        if (isFavorite) {
+                            addView(TextView(this@MainActivity).apply {
+                                text = "*"
+                                textSize = 18f
+                                setTextColor(0xFFFFD600.toInt())
+                                setPadding(0, 0, 8, 0)
+                            })
+                        }
+
+                        addView(TextView(this@MainActivity).apply {
+                            text = file.nameWithoutExtension
+                            textSize = 16f
+                            setTextColor(0xFFE0E0E0.toInt())
+                            maxLines = 2
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        })
                     })
 
                     addView(LinearLayout(this@MainActivity).apply {
@@ -625,11 +665,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                                 if (stereoLabel == "2D") 0xFF555555.toInt() else 0xFF2E7D32.toInt()
                             )
                         )
+                        if (hasResume) {
+                            addView(makeTag("RESUME", 0xFF6A1B9A.toInt()))
+                        }
                         if (FilePicker.isImageFile(file)) {
                             addView(makeTag("IMG", 0xFF7B1FA2.toInt()))
                         }
                         if (metadata.hasAlpha) {
                             addView(makeTag("ALPHA", 0xFFD84315.toInt()))
+                        }
+                        if (entry?.hasSubtitles == true) {
+                            addView(makeTag("SUB", 0xFF00838F.toInt()))
                         }
                         addView(TextView(this@MainActivity).apply {
                             text = sizeLabel
@@ -674,6 +720,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             FilePickerSort.NAME -> files.sortedBy { it.name.lowercase() }
             FilePickerSort.NEWEST -> files.sortedByDescending { it.lastModified() }
             FilePickerSort.SIZE -> files.sortedByDescending { it.length() }
+            FilePickerSort.LAST_PLAYED -> {
+                files.sortedByDescending { f ->
+                    mediaEntries.find { it.file.absolutePath == f.absolutePath }?.lastPlayedMs ?: 0
+                }
+            }
+            FilePickerSort.RATING -> {
+                files.sortedByDescending { f ->
+                    mediaEntries.find { it.file.absolutePath == f.absolutePath }?.rating ?: 0
+                }
+            }
         }
     }
 
@@ -786,7 +842,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         layout.addView(makeToggleRow(
             listOf(10 to "10s", 20 to "20s", 30 to "30s"),
             selected = { it.first == seekIncrementSec }
-        ) { chosen -> seekIncrementSec = chosen.first })
+        ) { chosen ->
+            seekIncrementSec = chosen.first
+            SettingsManager.seekIncrementMs = chosen.first * 1000L
+        })
 
         // ── Projection & Stereo Mode ──
         layout.addView(makeSpacer(16))
@@ -815,6 +874,26 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         ) { chosen ->
             applyStereoMode(chosen.first)
         })
+
+        // ── Color Grading ──
+        layout.addView(makeSpacer(16))
+        layout.addView(makeSectionLabel("Color"))
+        layout.addView(makeColorGradingSection())
+
+        // ── 6DOF Depth Simulation ──
+        layout.addView(makeSpacer(16))
+        layout.addView(makeSectionLabel("6DOF Depth"))
+        layout.addView(makeDepthSimulationSection())
+
+        // ── Spatial Audio ──
+        layout.addView(makeSpacer(16))
+        layout.addView(makeSectionLabel("Spatial Audio"))
+        layout.addView(makeSpatialAudioSection())
+
+        // ── Subtitles ──
+        layout.addView(makeSpacer(16))
+        layout.addView(makeSectionLabel("Subtitles"))
+        layout.addView(makeSubtitleSection())
 
         // ── Chroma Key ──
         layout.addView(makeSpacer(16))
@@ -957,7 +1036,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     }
 
                     override fun onStartTrackingTouch(sb: SeekBar?) {}
-                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {
+                        SettingsManager.playbackSpeed = playbackSpeed
+                    }
                 })
             })
 
