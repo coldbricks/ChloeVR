@@ -9,9 +9,11 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -20,6 +22,7 @@ import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import androidx.media3.common.util.UnstableApi
 import androidx.xr.runtime.Session
 import androidx.xr.runtime.SessionCreateSuccess
 import androidx.xr.runtime.math.Pose
@@ -32,12 +35,22 @@ import androidx.xr.scenecore.SpatialCapability
 import androidx.xr.scenecore.SpatialEnvironment
 import androidx.xr.scenecore.SurfaceEntity
 import androidx.xr.scenecore.scene
+import com.ashairfoil.prism.data.MediaLibrary
+import com.ashairfoil.prism.effects.ColorGradingState
+import com.ashairfoil.prism.effects.DepthSimulation
+import com.ashairfoil.prism.effects.LensDistortionState
+import com.ashairfoil.prism.effects.SpatialAudioEffect
+import com.ashairfoil.prism.effects.StereoAdjustmentState
+import com.ashairfoil.prism.playback.SubtitleRenderer
+import com.ashairfoil.prism.settings.SettingsManager
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@UnstableApi
 class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private var xrSession: Session? = null
@@ -49,6 +62,28 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     // Native OpenXR controller input
     private var openXRInput: OpenXRInput? = null
+
+    // ── Feature modules ──
+    private var mediaLibrary: MediaLibrary? = null
+    private val colorGradingState = ColorGradingState()
+    private val lensDistortionState = LensDistortionState()
+    private val stereoAdjustmentState = StereoAdjustmentState()
+    private val depthSimulation = DepthSimulation()
+    private val spatialAudio = SpatialAudioEffect()
+    private var subtitleRenderer: SubtitleRenderer? = null
+
+    // MediaLibrary state for file picker
+    private var mediaEntries: List<MediaLibrary.MediaEntry> = emptyList()
+    private var filePickerFilterBy = MediaLibrary.FilterBy.ALL
+    private var filePickerSortBy = MediaLibrary.SortBy.NAME
+    private var filePickerSortAscending = true
+
+    // Resume position save job
+    private var resumeSaveJob: Job? = null
+
+    // Video info overlay
+    private var videoInfoOverlay: TextView? = null
+    private var videoInfoVisible = false
 
     // Current playback modes (auto-detected, user-overridable)
     private var currentScreenType = ScreenType.DOME_180
@@ -153,7 +188,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private enum class FilePickerSort {
         NAME,
         NEWEST,
-        SIZE
+        SIZE,
+        LAST_PLAYED,
+        RATING
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -189,10 +226,62 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun onPermissionGranted() {
+        // Initialize settings persistence
+        SettingsManager.init(this)
+        loadGlobalSettings()
+
         // Try native OpenXR first (before Jetpack claims the session)
         initOpenXRInput()
         initXrSession()
         showFilePicker()
+    }
+
+    private fun loadGlobalSettings() {
+        playbackSpeed = SettingsManager.playbackSpeed
+        seekIncrementSec = (SettingsManager.seekIncrementMs / 1000).toInt().coerceIn(5, 60)
+        screenZoom = SettingsManager.zoomLevel
+
+        // Load color grading state
+        colorGradingState.brightness = SettingsManager.cgBrightness
+        colorGradingState.contrast = SettingsManager.cgContrast
+        colorGradingState.saturation = SettingsManager.cgSaturation
+        colorGradingState.sharpening = SettingsManager.cgSharpening
+        colorGradingState.gamma = SettingsManager.cgGamma
+        colorGradingState.hueShift = SettingsManager.cgHueShift
+        colorGradingState.toneMapMode = SettingsManager.cgToneMapMode
+        colorGradingState.enabled = SettingsManager.cgEnabled
+
+        // Load lens distortion state
+        lensDistortionState.k1 = SettingsManager.lensK1
+        lensDistortionState.k2 = SettingsManager.lensK2
+        lensDistortionState.fov = SettingsManager.lensFov
+        lensDistortionState.centerX = SettingsManager.lensCx
+        lensDistortionState.centerY = SettingsManager.lensCy
+        lensDistortionState.enabled = SettingsManager.lensEnabled
+
+        // Load stereo adjustment state
+        stereoAdjustmentState.horizontalOffset = SettingsManager.ipdOffset
+        stereoAdjustmentState.verticalOffset = SettingsManager.stereoVerticalOffset
+        stereoAdjustmentState.enabled = SettingsManager.stereoEnabled
+
+        // Load chroma key state
+        chromaKeyState.keyR = SettingsManager.chromaKeyR
+        chromaKeyState.keyG = SettingsManager.chromaKeyG
+        chromaKeyState.keyB = SettingsManager.chromaKeyB
+        chromaKeyState.tolerance = SettingsManager.chromaTolerance
+        chromaKeyState.softness = SettingsManager.chromaSoftness
+        chromaKeyState.enabled = SettingsManager.chromaEnabled
+    }
+
+    private fun saveColorGradingSettings() {
+        SettingsManager.cgBrightness = colorGradingState.brightness
+        SettingsManager.cgContrast = colorGradingState.contrast
+        SettingsManager.cgSaturation = colorGradingState.saturation
+        SettingsManager.cgSharpening = colorGradingState.sharpening
+        SettingsManager.cgGamma = colorGradingState.gamma
+        SettingsManager.cgHueShift = colorGradingState.hueShift
+        SettingsManager.cgToneMapMode = colorGradingState.toneMapMode
+        SettingsManager.cgEnabled = colorGradingState.enabled
     }
 
     private fun initXrSession() {
@@ -335,12 +424,30 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         layout.addView(makeSpacer(6))
+        layout.addView(makeSectionLabel("Library Filter"))
+        layout.addView(makeToggleRow(
+            listOf(
+                MediaLibrary.FilterBy.ALL to "All",
+                MediaLibrary.FilterBy.FAVORITES to "Fav",
+                MediaLibrary.FilterBy.VR180 to "VR180",
+                MediaLibrary.FilterBy.VR360 to "VR360",
+                MediaLibrary.FilterBy.UNPLAYED to "New"
+            ),
+            selected = { it.first == filePickerFilterBy }
+        ) { chosen ->
+            filePickerFilterBy = chosen.first
+            refreshFilePickerResults()
+        })
+
+        layout.addView(makeSpacer(6))
         layout.addView(makeSectionLabel("Sort"))
         layout.addView(makeToggleRow(
             listOf(
                 FilePickerSort.NAME to "Name",
                 FilePickerSort.NEWEST to "Newest",
-                FilePickerSort.SIZE to "Size"
+                FilePickerSort.SIZE to "Size",
+                FilePickerSort.LAST_PLAYED to "Recent",
+                FilePickerSort.RATING to "Rating"
             ),
             selected = { it.first == filePickerSort }
         ) { chosen ->
@@ -355,6 +462,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 filePickerProjectionFilter = null
                 filePickerStereoFilter = null
                 filePickerAlphaOnly = false
+                filePickerFilterBy = MediaLibrary.FilterBy.ALL
                 showFilePicker()
             },
             "Rescan" to { startFilePickerScan(force = true) }
@@ -412,6 +520,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 filePickerFiles = finalResults
                 filePickerLoading = false
                 filePickerStatusText = ""
+
+                // Build MediaLibrary index from scanned files
+                val lib = MediaLibrary(this@MainActivity)
+                mediaEntries = lib.buildFromFiles(finalResults)
+                mediaLibrary = lib
+
                 refreshFilePickerResults()
             }
         }
