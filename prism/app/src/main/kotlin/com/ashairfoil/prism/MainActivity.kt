@@ -1892,6 +1892,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     seekLabel?.text = "${formatTime(pos)} / ${formatTime(dur)}"
                 }
                 updateAbLabel()
+                updateSubtitles()
 
                 val interval = when {
                     a != null && b != null && abRepeatBoomerang && abReversePhase -> AB_REVERSE_INTERVAL_MS
@@ -2681,6 +2682,119 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         isPlaying = false
         seekBar = null
         seekLabel = null
+    }
+
+    // ── Resume Position Save Loop ──
+
+    private fun startResumeSaveLoop(file: File) {
+        resumeSaveJob?.cancel()
+        resumeSaveJob = lifecycleScope.launch {
+            while (true) {
+                delay(10_000) // Save every 10 seconds
+                val pos = videoPlayer?.currentPositionMs ?: continue
+                val dur = videoPlayer?.durationMs ?: continue
+                if (pos > 0 && dur > 0 && pos < dur * 0.95) {
+                    mediaLibrary?.saveResumePosition(file, pos)
+                    SettingsManager.setResumePosition(file.absolutePath, pos)
+                }
+            }
+        }
+    }
+
+    // ── Video Info Overlay ──
+
+    private fun showVideoInfoOverlay(file: File) {
+        videoInfoVisible = true
+
+        // Gather video metadata
+        val sizeStr = formatFileSize(file.length())
+        val metadata = FileNameParser.parse(file)
+        val projStr = metadata.screenType.displayName
+        val stereoStr = when (metadata.stereoMode) {
+            StereoMode.SIDE_BY_SIDE -> "SBS"
+            StereoMode.TOP_BOTTOM -> "TB"
+            StereoMode.MONO -> "Mono"
+        }
+
+        // Try to get resolution/codec from MediaMetadataRetriever
+        var resolution = ""
+        var codec = ""
+        var durationStr = ""
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(file.absolutePath)
+            val width = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH) ?: ""
+            val height = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT) ?: ""
+            val mimeType = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_MIMETYPE) ?: ""
+            val durationMs = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            resolution = if (width.isNotEmpty() && height.isNotEmpty()) "${width}x${height}" else ""
+            codec = mimeType.replace("video/", "").uppercase()
+            durationStr = if (durationMs > 0) formatTime(durationMs) else ""
+            retriever.release()
+        } catch (e: Exception) {
+            android.util.Log.w("ChloeVR", "MediaMetadataRetriever failed", e)
+        }
+
+        val infoText = buildString {
+            if (resolution.isNotEmpty()) append(resolution)
+            if (codec.isNotEmpty()) { if (isNotEmpty()) append("  |  "); append(codec) }
+            if (durationStr.isNotEmpty()) { if (isNotEmpty()) append("  |  "); append(durationStr) }
+            if (isNotEmpty()) append("  |  ")
+            append(sizeStr)
+            append("  |  $projStr $stereoStr")
+        }
+
+        // Show as a toast-like overlay that auto-dismisses after 3s
+        runOnUiThread {
+            val frame = FrameLayout(this).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+
+            val infoView = TextView(this).apply {
+                text = infoText
+                textSize = 14f
+                setTextColor(0xFFCCCCCC.toInt())
+                setBackgroundColor(0xAA000000.toInt())
+                setPadding(24, 12, 24, 12)
+                gravity = Gravity.CENTER
+                val lp = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                )
+                lp.topMargin = 32
+                layoutParams = lp
+            }
+            frame.addView(infoView)
+            videoInfoOverlay = infoView
+
+            // If no panel is visible, we can temporarily show this
+            // The overlay gets cleared when control panel or scrub bar appears
+            if (!menuVisible && !scrubBarVisible) {
+                setContentView(frame)
+                setPanelVisible(true)
+
+                // Auto-hide after 3 seconds
+                lifecycleScope.launch {
+                    delay(3000)
+                    if (videoInfoVisible && !menuVisible && !scrubBarVisible) {
+                        videoInfoVisible = false
+                        videoInfoOverlay = null
+                        setPanelVisible(false)
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Subtitle Update (called from seek bar loop) ──
+
+    private fun updateSubtitles() {
+        val pos = videoPlayer?.currentPositionMs ?: return
+        subtitleRenderer?.update(pos)
     }
 
     // ── OpenXR Controller Input ──
