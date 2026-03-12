@@ -293,6 +293,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 else -> {}
             }
         } catch (e: Exception) {}
+
+        // Create a root FrameLayout for subtitle overlay
+        val rootFrame = FrameLayout(this)
+        subtitleRenderer = SubtitleRenderer(rootFrame)
     }
 
     private fun initOpenXRInput() {
@@ -2828,6 +2832,47 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         if (!isPlaying) return
 
+        // ── 6DOF depth simulation: feed head position ──
+        if (depthSimulation.enabled) {
+            val headPos = if (input.rightHandValid) input.rightHandPos
+                          else if (input.leftHandValid) input.leftHandPos
+                          else null
+            if (headPos != null) {
+                if (!depthSimulation.enabled) {
+                    // no-op, already checked above
+                } else {
+                    val adj = depthSimulation.compute(headPos[0], headPos[1], headPos[2])
+                    // Apply offset to surface entity pose
+                    val entity = surfaceEntity
+                    if (entity != null && (adj.offsetX != 0f || adj.offsetY != 0f || adj.scaleZ != 1f)) {
+                        val baseRot = Quaternion.fromEulerAngles(screenPitch, screenYaw, screenRoll)
+                        val basePos = if (currentScreenType == ScreenType.FLAT) {
+                            Vector3(screenX + adj.offsetX, screenY + adj.offsetY, screenZ)
+                        } else {
+                            Vector3(adj.offsetX, screenHeight + adj.offsetY, screenDepth)
+                        }
+                        entity.setPose(Pose(basePos, baseRot))
+                        if (adj.scaleZ != 1f) {
+                            entity.setScale(screenZoom * adj.scaleZ)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Spatial audio: feed head yaw ──
+        if (spatialAudio.enabled) {
+            val aimRot = if (input.rightAimValid) input.rightAimRot
+                         else if (input.leftAimValid) input.leftAimRot
+                         else null
+            if (aimRot != null) {
+                // Extract yaw from aim rotation quaternion
+                val fwd = quatForward(aimRot)
+                val yaw = kotlin.math.atan2(fwd[0].toDouble(), (-fwd[2]).toDouble().coerceAtLeast(0.001)).toFloat()
+                spatialAudio.updateHeadYaw(yaw)
+            }
+        }
+
         // Color pick mode: aim to preview, trigger to sample color
         if (colorPickMode) {
             val aimRot = if (input.rightAimValid) input.rightAimRot else if (input.leftAimValid) input.leftAimRot else null
@@ -3048,6 +3093,25 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             runOnUiThread { toggleAbRepeat() }
         }
         lastXState = input.xButton
+
+        // Y button → toggle video info overlay (edge detection)
+        if (input.yButton && !lastYState) {
+            runOnUiThread {
+                val file = currentFile
+                if (file != null && !currentFileIsImage) {
+                    if (videoInfoVisible) {
+                        videoInfoVisible = false
+                        videoInfoOverlay = null
+                        if (!menuVisible && !scrubBarVisible) {
+                            setPanelVisible(false)
+                        }
+                    } else {
+                        showVideoInfoOverlay(file)
+                    }
+                }
+            }
+        }
+        lastYState = input.yButton
 
         lastBState = input.bButton
     }

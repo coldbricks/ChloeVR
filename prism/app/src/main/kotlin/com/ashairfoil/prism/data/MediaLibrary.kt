@@ -3,6 +3,7 @@ package com.ashairfoil.prism.data
 import android.content.Context
 import android.util.Log
 import com.ashairfoil.prism.FileNameParser
+import com.ashairfoil.prism.VideoMetadata
 import kotlinx.coroutines.*
 import java.io.File
 import java.security.MessageDigest
@@ -42,7 +43,7 @@ class MediaLibrary(private val context: Context) {
     data class MediaEntry(
         val file: File,
         val fileId: String,              // Stable ID (hash of path)
-        val metadata: FileNameParser.VideoMetadata,
+        val metadata: VideoMetadata,
         val sizeBytes: Long,
         val lastModified: Long,
         // Persisted data (loaded from prefs)
@@ -85,7 +86,7 @@ class MediaLibrary(private val context: Context) {
     fun buildFromFiles(files: List<File>): List<MediaEntry> {
         entries = files.map { file ->
             val fileId = fileIdFor(file)
-            val meta = FileNameParser.parse(file.name)
+            val meta = FileNameParser.parse(file)
             val entry = MediaEntry(
                 file = file,
                 fileId = fileId,
