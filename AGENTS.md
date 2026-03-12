@@ -37,12 +37,24 @@ Init order matters: native OpenXR initializes first, then Jetpack XR SDK.
 ```
 prism/app/src/main/
   kotlin/com/ashairfoil/prism/
-    MainActivity.kt     (~1335 lines) - Everything: XR session, file picker UI, control panel,
+    MainActivity.kt     (~2391 lines) - Orchestrator: XR session, file picker UI, control panel,
                          scrub bar, playback, grab mechanics, controller input handling
-    VideoPlayer.kt      (~54 lines)   - ExoPlayer wrapper: start/stop/seek/speed
+    VideoPlayer.kt      (~105 lines)  - ExoPlayer wrapper with full effects pipeline chain
     FileNameParser.kt   (~72 lines)   - DeoVR filename convention parser (projection + stereo detection)
     FilePicker.kt       (~45 lines)   - Recursive storage scanner for video files
     OpenXRInput.kt      (~117 lines)  - Kotlin JNI bridge: 41-float state buffer, 120Hz polling
+    DeoVrAlphaPackedEffect.kt (~131 lines) - GLSL alpha unpacking shader for DeoVR packed content
+    ChromaKeyEffect.kt  (~117 lines)  - GLSL chroma key shader with YCbCr distance keying
+    settings/
+      SettingsManager.kt (~290 lines) - SharedPreferences singleton: resume positions, screen
+                         adjustments, color grading presets, lens/stereo/chroma settings, favorites
+    effects/
+      ColorGradingEffect.kt (~190 lines) - GLSL brightness/contrast/saturation/sharpening/gamma/
+                         hue shift with Reinhard and ACES tone mapping
+      LensDistortionEffect.kt (~170 lines) - Brown-Conrady radial distortion correction with
+                         camera lens presets (MKX200, VRCA220, RF52, etc.)
+      StereoAdjustmentEffect.kt (~150 lines) - Software IPD offset and vertical stereo alignment
+                         correction for SBS and top-bottom layouts
   cpp/
     openxr_input.h      (~103 lines)  - C++ header: ControllerState struct (41 floats), OpenXRInput class
     openxr_input.cpp    (~550 lines)  - Full OpenXR lifecycle: instance, session, actions, polling, hand/aim poses
@@ -58,6 +70,18 @@ prism/
   gradle.properties     - Standard Android config
 ```
 
+### Video Effects Pipeline
+
+Effects are chained in ExoPlayer's `setVideoEffects()` in this order:
+
+1. **DeoVrAlphaPackedEffect** - Unpacks DeoVR red-mask alpha layout (if alpha-packed content)
+2. **ChromaKeyEffect** - Real-time chroma keying in YCbCr space (if enabled)
+3. **LensDistortionEffect** - Brown-Conrady radial correction to undistort fisheye lenses (if enabled)
+4. **ColorGradingEffect** - Brightness, contrast, saturation, sharpening (unsharp mask), gamma, hue shift, tone mapping (if enabled)
+5. **StereoAdjustmentEffect** - Software IPD offset and vertical alignment correction (if enabled, must be last)
+
+Each effect has a companion `*State` class with `@Volatile` fields for safe cross-thread access between the UI thread and the GL rendering thread. The UI updates the state object; the shader reads it every frame.
+
 ### Build
 
 - Gradle 9.0.0, AGP 8.7.3, Kotlin 2.1.0
@@ -66,22 +90,24 @@ prism/
 - JAVA_HOME: `/c/Program Files/Android/Android Studio/jbr`
 - ADB: `C:/Users/coldb/AppData/Local/Android/Sdk/platform-tools/adb.exe`
 
-## Current State (2026-03-06)
+## Current State (2026-03-12)
 
-**Working:** All core features. The app is usable for VR180/360 video playback with full controller interaction.
+**Working:** All core features. The app is usable for VR180/360 video playback with full controller interaction. Video effects pipeline now supports color grading, lens distortion correction, and IPD/stereo adjustment in addition to existing chroma key and alpha unpacking.
 
 **Known issues:**
 - Debug logging in `openxr_input.cpp` (hand pose logged every ~2 seconds when trigger is held, lines 462-467) should be cleaned up
-- Fisheye projection variants (MKX200, RF52, VRCA220) use hemisphere as approximation - correct rendering would need custom meshes
+- Fisheye projection variants (MKX200, RF52, VRCA220) use hemisphere as approximation - correct rendering would need custom meshes (LensDistortionEffect provides shader-level correction but proper mesh generation is still needed)
 - Mono stereo mode handling may need refinement
-- All UI is programmatic (no XML layouts, no Compose) - the 1335-line `MainActivity.kt` is the main complexity bottleneck
+- All UI is programmatic (no XML layouts, no Compose) - `MainActivity.kt` is the main complexity bottleneck
 - No tests exist
-- No settings persistence across sessions
 - No README
+- Settings persistence (SettingsManager) exists but is not yet wired into MainActivity UI controls
+- New effects (color grading, lens distortion, stereo adjustment) have state objects but no UI panels yet
 
 **Architectural debt:**
 - `MainActivity.kt` is a monolith handling UI, playback, input, XR session, and grab mechanics
 - All state is instance variables on the activity - no ViewModel, no state management
+- SettingsManager needs to be initialized in MainActivity.onCreate and wired to save/restore user preferences
 
 ## Agent Roles
 
@@ -143,3 +169,5 @@ Best suited for:
 
 - The native C++ layer (`cpp/`) is Claude's domain. Others should not modify it without coordinating in NOTES.md.
 - `VideoPlayer.kt`, `FileNameParser.kt`, `FilePicker.kt` are safe for any agent to work on independently - they're small and self-contained.
+- `settings/SettingsManager.kt` is safe for any agent — it's a standalone singleton with no dependencies on other app code.
+- `effects/*.kt` files (ColorGradingEffect, LensDistortionEffect, StereoAdjustmentEffect) are safe for any agent — they're self-contained GLSL shader wrappers. If adding a new effect, also update the pipeline chain in `VideoPlayer.kt`.
