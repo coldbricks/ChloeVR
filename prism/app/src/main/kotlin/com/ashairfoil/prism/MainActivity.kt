@@ -202,6 +202,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var filePickerProjectionFilter: ScreenType? = null
     private var filePickerStereoFilter: StereoMode? = null
     private var filePickerAlphaOnly = false
+    private var filePickerTypeFilter: String? = null  // null=all, "video", "image", "3d"
     private var filePickerSort = FilePickerSort.NAME
     private var filePickerFiles: List<File> = emptyList()
     private var filePickerScanSession = 0
@@ -448,6 +449,21 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         layout.addView(makeSpacer(6))
+        layout.addView(makeSectionLabel("File Type"))
+        layout.addView(makeToggleRow(
+            listOf(
+                null to "All",
+                "video" to "Video",
+                "image" to "Image",
+                "3d" to "3D Model"
+            ),
+            selected = { it.first == filePickerTypeFilter }
+        ) { chosen ->
+            filePickerTypeFilter = chosen.first
+            refreshFilePickerResults()
+        })
+
+        layout.addView(makeSpacer(6))
         layout.addView(makeSectionLabel("Alpha Filter"))
         layout.addView(makeToggleRow(
             listOf(false to "Any", true to "Alpha Only"),
@@ -496,6 +512,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 filePickerProjectionFilter = null
                 filePickerStereoFilter = null
                 filePickerAlphaOnly = false
+                filePickerTypeFilter = null
                 filePickerFilterBy = MediaLibrary.FilterBy.ALL
                 showFilePicker()
             },
@@ -763,6 +780,13 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (query.isNotEmpty()) {
             val haystack = "${file.nameWithoutExtension} ${file.parent ?: ""}".lowercase()
             if (!haystack.contains(query)) return false
+        }
+
+        // File type filter
+        when (filePickerTypeFilter) {
+            "video" -> if (FilePicker.isImageFile(file) || FilePicker.isModelFile(file)) return false
+            "image" -> if (!FilePicker.isImageFile(file)) return false
+            "3d" -> if (!FilePicker.isModelFile(file)) return false
         }
 
         val metadata = filePickerMetadataCache.getOrPut(file.absolutePath) { FileNameParser.parse(file) }
