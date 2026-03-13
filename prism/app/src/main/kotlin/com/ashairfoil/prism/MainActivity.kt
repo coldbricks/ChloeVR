@@ -2328,8 +2328,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     android.util.Log.i("ChloeVR", "Model anchored to floor")
                 } catch (e: Exception) {
                     android.util.Log.w("ChloeVR", "Floor anchor failed, placing free: ${e.message}")
-                    // Fallback: place at eye height, free-floating
+                    // Fallback: place at y=0 (LOCAL space origin = floor level on Galaxy XR)
+                    // 2m in front of the tracking origin
                     entity = GltfModelEntity.create(session, gltfModel, Pose(Vector3(0f, 0f, -2f), Quaternion.Identity))
+                }
+
+                // Regardless of anchor, try to place model at floor level (y=0 in LOCAL space)
+                // The LOCAL reference space origin on Galaxy XR is at floor height
+                val curPose = entity.getPose()
+                if (curPose.translation.y > 0.5f) {
+                    // Model ended up above floor — push it down
+                    entity.setPose(Pose(Vector3(curPose.translation.x, 0f, curPose.translation.z), curPose.rotation))
                 }
 
                 // Auto-scale based on bounding box so models appear at a reasonable size
