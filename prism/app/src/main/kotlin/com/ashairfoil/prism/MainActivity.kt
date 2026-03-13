@@ -3116,12 +3116,23 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                    // Model mode: consume B/Back so it doesn't minimize the app
+                    if (modelMode) {
+                        if (menuVisible) {
+                            menuVisible = false
+                            setPanelVisible(false)
+                        } else {
+                            showModelPanel()
+                            menuVisible = true
+                            setPanelVisible(true)
+                        }
+                        return true
+                    }
                     if (isPlaying) {
                         if (menuVisible) {
                             menuVisible = false
                             setPanelVisible(false)
                         } else {
-                            // Toggle scrub bar
                             toggleScrubBar()
                         }
                         return true
