@@ -128,14 +128,12 @@ class FilamentModelActivity : ComponentActivity() {
 
         showMessage("Initializing 3D renderer...")
 
-        // Request scene understanding permission for XR light estimation
-        if (checkSelfPermission("android.permission.SCENE_UNDERSTANDING_COARSE")
-                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf("android.permission.SCENE_UNDERSTANDING_COARSE"), 1001)
-            Log.i(TAG, "Requesting SCENE_UNDERSTANDING_COARSE permission")
-        } else {
-            Log.i(TAG, "SCENE_UNDERSTANDING_COARSE already granted")
-        }
+        // Check scene understanding permission for XR light estimation
+        // (Don't requestPermissions here — it restarts the activity and kills OpenXR)
+        // Permission granted via system Settings > Apps > ChloeVR > Permissions
+        val hasScenePerm = checkSelfPermission("android.permission.SCENE_UNDERSTANDING_COARSE") ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        Log.i(TAG, "SCENE_UNDERSTANDING_COARSE: ${if (hasScenePerm) "granted" else "not granted (light est will use sensor)"}")
 
         // Register ambient light sensor
         sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
