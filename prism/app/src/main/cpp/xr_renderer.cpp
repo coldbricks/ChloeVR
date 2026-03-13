@@ -997,20 +997,29 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     ambLight.next = &dirLight;
     ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
-    XrDirectionalLightANDROID dirLightData;
-    memset(&dirLightData, 0, sizeof(dirLightData));
-    dirLightData.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dirLightData.next = nullptr;
+    // Only poll every 5 frames (~14Hz) to reduce load
+    static int frameSkip = 0;
+    if (frameSkip++ % 5 != 0) {
+        // Return cached result
+        estimate = lastLightEstimate_;
+        return estimate.valid;
+    }
 
-    XrAmbientLightANDROID ambLightHeap;
-    memset(&ambLightHeap, 0, sizeof(ambLightHeap));
-    ambLightHeap.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
-    ambLightHeap.next = &dirLightData;
+    // Heap-allocate structs each call (runtime may corrupt stack/member pointers)
+    auto* dir = new XrDirectionalLightANDROID();
+    memset(dir, 0, sizeof(*dir));
+    dir->type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dir->next = nullptr;
 
-    XrLightEstimateANDROID lightEst;
-    memset(&lightEst, 0, sizeof(lightEst));
-    lightEst.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
-    lightEst.next = &ambLightHeap;
+    auto* amb = new XrAmbientLightANDROID();
+    memset(amb, 0, sizeof(*amb));
+    amb->type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    amb->next = dir;
+
+    auto* out = new XrLightEstimateANDROID();
+    memset(out, 0, sizeof(*out));
+    out->type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
+    out->next = amb;
 
     // Log struct sizes for debugging
     static bool loggedSizes = false;
@@ -1023,36 +1032,41 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         loggedSizes = true;
     }
 
-    XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &lightEst);
-    if (XR_FAILED(r)) {
+    XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, out);
+
+    if (XR_FAILED(r) || out->state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        delete dir; delete amb; delete out;
         static int errCount = 0;
-        if (errCount++ < 5) XR_LOGE("xrGetLightEstimateANDROID failed: %d", (int)r);
+        if (XR_FAILED(r) && errCount++ < 5) XR_LOGE("xrGetLightEstimate failed: %d", (int)r);
         return false;
     }
 
-    if (lightEst.state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) return false;
-
     // Ambient
-    if (ambLightHeap.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
-        estimate.ambientR = ambLightHeap.intensity.x;
-        estimate.ambientG = ambLightHeap.intensity.y;
-        estimate.ambientB = ambLightHeap.intensity.z;
-        estimate.colorCorrR = ambLightHeap.colorCorrection.x;
-        estimate.colorCorrG = ambLightHeap.colorCorrection.y;
-        estimate.colorCorrB = ambLightHeap.colorCorrection.z;
+    if (amb->state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.ambientR = amb->intensity.x;
+        estimate.ambientG = amb->intensity.y;
+        estimate.ambientB = amb->intensity.z;
+        estimate.colorCorrR = amb->colorCorrection.x;
+        estimate.colorCorrG = amb->colorCorrection.y;
+        estimate.colorCorrB = amb->colorCorrection.z;
         estimate.valid = true;
     }
 
     // Directional
-    if (dirLightData.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
-        estimate.dirIntensityR = dirLightData.intensity.x;
-        estimate.dirIntensityG = dirLightData.intensity.y;
-        estimate.dirIntensityB = dirLightData.intensity.z;
-        estimate.dirX = dirLightData.direction.x;
-        estimate.dirY = dirLightData.direction.y;
-        estimate.dirZ = dirLightData.direction.z;
+    if (dir->state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.dirIntensityR = dir->intensity.x;
+        estimate.dirIntensityG = dir->intensity.y;
+        estimate.dirIntensityB = dir->intensity.z;
+        estimate.dirX = dir->direction.x;
+        estimate.dirY = dir->direction.y;
+        estimate.dirZ = dir->direction.z;
         estimate.valid = true;
     }
+
+    delete dir; delete amb; delete out;
+
+    // Cache result for skipped frames
+    lastLightEstimate_ = estimate;
 
     static int logCount = 0;
     if (estimate.valid && logCount++ < 5) {

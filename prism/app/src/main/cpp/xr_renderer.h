@@ -131,6 +131,8 @@ private:
     PFN_xrGetLightEstimateANDROID xrGetLightEstimate_ = nullptr;
     bool initLightEstimation();
 
+    LightEstimate lastLightEstimate_;
+
     // Actions (controller input) — same structure as OpenXRInput
     XrActionSet actionSet_ = XR_NULL_HANDLE;
     XrPath handPaths_[2];
