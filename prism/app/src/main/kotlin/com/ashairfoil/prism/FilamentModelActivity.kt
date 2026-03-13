@@ -128,6 +128,15 @@ class FilamentModelActivity : ComponentActivity() {
 
         showMessage("Initializing 3D renderer...")
 
+        // Request scene understanding permission for XR light estimation
+        if (checkSelfPermission("android.permission.SCENE_UNDERSTANDING_COARSE")
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf("android.permission.SCENE_UNDERSTANDING_COARSE"), 1001)
+            Log.i(TAG, "Requesting SCENE_UNDERSTANDING_COARSE permission")
+        } else {
+            Log.i(TAG, "SCENE_UNDERSTANDING_COARSE already granted")
+        }
+
         // Register ambient light sensor
         sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
         lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)

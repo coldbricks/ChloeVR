@@ -39,7 +39,7 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
     if (!createSession()) return false;
     if (!createSwapchains()) return false;
     if (!createActions()) return false;
-    if (lightEstimationSupported_) initLightEstimation();
+    // Light estimation init deferred to first poll (needs runtime permission first)
 
     // Pump events to catch IDLE→READY transition during init
     XR_LOGI("Pumping initial events...");
@@ -954,8 +954,19 @@ bool XrRenderer::initLightEstimation() {
 
 bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     estimate.valid = false;
-    if (!lightEstimationSupported_ || !lightEstimator_ || !xrGetLightEstimate_) return false;
+    if (!lightEstimationSupported_) return false;
     if (!sessionReady_ || appSpace_ == XR_NULL_HANDLE) return false;
+
+    // Lazy init: create estimator on first poll (after permission granted)
+    if (lightEstimator_ == XR_NULL_HANDLE) {
+        // Retry every ~5 seconds (360 frames at 72fps)
+        if (lightEstRetryCount_++ % 360 != 0) return false;
+        if (!initLightEstimation()) {
+            XR_LOGI("Light estimator not ready yet (attempt %d), will retry", lightEstRetryCount_);
+            return false;
+        }
+    }
+    if (!xrGetLightEstimate_) return false;
 
     // Use last predicted display time
     if (lastPredictedTime_ == 0) return false;

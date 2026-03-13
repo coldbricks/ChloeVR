@@ -124,6 +124,7 @@ private:
 
     // Light estimation
     bool lightEstimationSupported_ = false;
+    int lightEstRetryCount_ = 0;
     XrLightEstimatorANDROID lightEstimator_ = XR_NULL_HANDLE;
     PFN_xrCreateLightEstimatorANDROID xrCreateLightEstimator_ = nullptr;
     PFN_xrDestroyLightEstimatorANDROID xrDestroyLightEstimator_ = nullptr;
