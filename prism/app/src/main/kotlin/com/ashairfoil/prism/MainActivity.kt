@@ -2780,25 +2780,44 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
      * GLB format: 12-byte header, then chunks. First chunk is JSON.
      * We extract the mesh name from the JSON for material overrides.
      */
+    /**
+     * Parse the node name (for material overrides) from a GLB binary.
+     * The SDK's setMaterialOverride needs the NODE name, not the mesh name.
+     */
     private fun parseMeshNameFromGlb(bytes: ByteArray): String {
         try {
             if (bytes.size < 20) return ""
-            // GLB header: magic(4) + version(4) + length(4)
-            // Chunk 0: length(4) + type(4) + data(JSON)
             val jsonLength = (bytes[12].toInt() and 0xFF) or
                     ((bytes[13].toInt() and 0xFF) shl 8) or
                     ((bytes[14].toInt() and 0xFF) shl 16) or
                     ((bytes[15].toInt() and 0xFF) shl 24)
             val jsonStr = String(bytes, 20, jsonLength.coerceAtMost(bytes.size - 20), Charsets.UTF_8)
             val json = org.json.JSONObject(jsonStr)
+
+            // Try node name first (what setMaterialOverride actually wants)
+            val nodes = json.optJSONArray("nodes")
+            if (nodes != null) {
+                for (i in 0 until nodes.length()) {
+                    val node = nodes.getJSONObject(i)
+                    if (node.has("mesh")) {
+                        val name = node.optString("name", "")
+                        if (name.isNotEmpty()) {
+                            android.util.Log.i("ChloeVR", "Parsed node name from GLB: '$name'")
+                            return name
+                        }
+                    }
+                }
+            }
+
+            // Fallback to mesh name
             val meshes = json.optJSONArray("meshes")
             if (meshes != null && meshes.length() > 0) {
                 val name = meshes.getJSONObject(0).optString("name", "")
-                android.util.Log.i("ChloeVR", "Parsed mesh name from GLB: '$name'")
+                android.util.Log.i("ChloeVR", "Parsed mesh name from GLB (fallback): '$name'")
                 return name
             }
         } catch (e: Exception) {
-            android.util.Log.w("ChloeVR", "Failed to parse mesh name from GLB: ${e.message}")
+            android.util.Log.w("ChloeVR", "Failed to parse names from GLB: ${e.message}")
         }
         return ""
     }
@@ -3635,17 +3654,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     val dZ = grabHandPos[2] - modelGrabStartHandPos[2]
                     val startPos = modelGrabStartPose.translation
 
-                    // Thumbstick fwd/back while gripping = push/pull toward/away from you
+                    // Thumbstick fwd/back while gripping = push/pull along Z axis
+                    // Forward stick (away from you) = push model forward (-Z)
+                    // Back stick (toward you) = pull model toward you (+Z)
+                    // Simple Z-axis only — no aim wobble, predictable direction
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
-                        // Use aim direction (where controller points) for push/pull axis
-                        val fwd = quatForward(grabAimRot)
-                        val speed = grabThumbY * 0.02f  // slow, controlled
-                        modelPushOffsetX += fwd[0] * speed
-                        modelPushOffsetY += fwd[1] * speed
-                        modelPushOffsetZ += fwd[2] * speed
-                        // Clamp total offset to prevent runaway
-                        modelPushOffsetX = modelPushOffsetX.coerceIn(-10f, 10f)
-                        modelPushOffsetY = modelPushOffsetY.coerceIn(-5f, 5f)
+                        modelPushOffsetZ -= grabThumbY * 0.02f  // negative Z = forward in XR
                         modelPushOffsetZ = modelPushOffsetZ.coerceIn(-10f, 10f)
                     }
 
