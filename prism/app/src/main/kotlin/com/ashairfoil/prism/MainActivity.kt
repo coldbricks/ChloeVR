@@ -3504,17 +3504,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     val dZ = grabHandPos[2] - modelGrabStartHandPos[2]
                     val startPos = modelGrabStartPose.translation
 
-                    // Thumbstick fwd/back while gripping = push/pull
+                    // Thumbstick fwd/back while gripping = push/pull toward/away from you
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
-                        val curP = entity.getPose().translation
-                        val toX = curP.x - grabHandPos[0]
-                        val toY = curP.y - grabHandPos[1]
-                        val toZ = curP.z - grabHandPos[2]
-                        val d = kotlin.math.sqrt(toX * toX + toY * toY + toZ * toZ).coerceAtLeast(0.1f)
-                        val speed = grabThumbY * 0.12f
-                        modelPushOffsetX += (toX / d) * speed
-                        modelPushOffsetY += (toY / d) * speed
-                        modelPushOffsetZ += (toZ / d) * speed
+                        // Use aim direction (where controller points) for push/pull axis
+                        val fwd = quatForward(grabAimRot)
+                        val speed = grabThumbY * 0.02f  // slow, controlled
+                        modelPushOffsetX += fwd[0] * speed
+                        modelPushOffsetY += fwd[1] * speed
+                        modelPushOffsetZ += fwd[2] * speed
+                        // Clamp total offset to prevent runaway
+                        modelPushOffsetX = modelPushOffsetX.coerceIn(-10f, 10f)
+                        modelPushOffsetY = modelPushOffsetY.coerceIn(-5f, 5f)
+                        modelPushOffsetZ = modelPushOffsetZ.coerceIn(-10f, 10f)
                     }
 
                     // Thumbstick L/R while gripping = scale
