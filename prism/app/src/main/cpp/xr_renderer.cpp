@@ -973,14 +973,14 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     XrTime now = lastPredictedTime_;
 
     // Query light estimate
-    // Get info — NOTE: space before time per spec
+    // Step 1: Try root-only call first to verify basic function works
     XrLightEstimateGetInfoANDROID getInfo = {};
     getInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID;
     getInfo.next = nullptr;
     getInfo.space = appSpace_;
     getInfo.time = now;
 
-    // Chain: SH → directional → ambient → root
+    // Chain output structs onto root.next
     XrSphericalHarmonicsANDROID shLight = {};
     shLight.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
     shLight.next = nullptr;
@@ -989,7 +989,7 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
 
     XrDirectionalLightANDROID dirLight = {};
     dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dirLight.next = &shLight;
+    dirLight.next = nullptr;  // SH disabled until padding issue resolved
     dirLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
     XrAmbientLightANDROID ambLight = {};
@@ -997,11 +997,31 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     ambLight.next = &dirLight;
     ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
-    // Root output — has state + lastUpdatedTime
-    XrLightEstimateANDROID lightEst = {};
+    XrDirectionalLightANDROID dirLightData;
+    memset(&dirLightData, 0, sizeof(dirLightData));
+    dirLightData.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dirLightData.next = nullptr;
+
+    XrAmbientLightANDROID ambLightHeap;
+    memset(&ambLightHeap, 0, sizeof(ambLightHeap));
+    ambLightHeap.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    ambLightHeap.next = &dirLightData;
+
+    XrLightEstimateANDROID lightEst;
+    memset(&lightEst, 0, sizeof(lightEst));
     lightEst.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
-    lightEst.next = &ambLight;
-    lightEst.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+    lightEst.next = &ambLightHeap;
+
+    // Log struct sizes for debugging
+    static bool loggedSizes = false;
+    if (!loggedSizes) {
+        XR_LOGI("Struct sizes: LightEst=%zu Ambient=%zu Dir=%zu SH=%zu GetInfo=%zu",
+            sizeof(XrLightEstimateANDROID), sizeof(XrAmbientLightANDROID),
+            sizeof(XrDirectionalLightANDROID), sizeof(XrSphericalHarmonicsANDROID),
+            sizeof(XrLightEstimateGetInfoANDROID));
+        XR_LOGI("  appSpace=%llu time=%lld", (unsigned long long)appSpace_, (long long)now);
+        loggedSizes = true;
+    }
 
     XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &lightEst);
     if (XR_FAILED(r)) {
@@ -1010,39 +1030,36 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         return false;
     }
 
-    // Check root validity first
     if (lightEst.state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) return false;
 
-    // Ambient — uses XrVector3f (x=R, y=G, z=B)
-    if (ambLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
-        estimate.ambientR = ambLight.intensity.x;
-        estimate.ambientG = ambLight.intensity.y;
-        estimate.ambientB = ambLight.intensity.z;
-        estimate.colorCorrR = ambLight.colorCorrection.x;
-        estimate.colorCorrG = ambLight.colorCorrection.y;
-        estimate.colorCorrB = ambLight.colorCorrection.z;
+    // Ambient
+    if (ambLightHeap.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.ambientR = ambLightHeap.intensity.x;
+        estimate.ambientG = ambLightHeap.intensity.y;
+        estimate.ambientB = ambLightHeap.intensity.z;
+        estimate.colorCorrR = ambLightHeap.colorCorrection.x;
+        estimate.colorCorrG = ambLightHeap.colorCorrection.y;
+        estimate.colorCorrB = ambLightHeap.colorCorrection.z;
         estimate.valid = true;
     }
 
-    // Directional — uses XrVector3f
-    if (dirLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
-        estimate.dirIntensityR = dirLight.intensity.x;
-        estimate.dirIntensityG = dirLight.intensity.y;
-        estimate.dirIntensityB = dirLight.intensity.z;
-        estimate.dirX = dirLight.direction.x;
-        estimate.dirY = dirLight.direction.y;
-        estimate.dirZ = dirLight.direction.z;
+    // Directional
+    if (dirLightData.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.dirIntensityR = dirLightData.intensity.x;
+        estimate.dirIntensityG = dirLightData.intensity.y;
+        estimate.dirIntensityB = dirLightData.intensity.z;
+        estimate.dirX = dirLightData.direction.x;
+        estimate.dirY = dirLightData.direction.y;
+        estimate.dirZ = dirLightData.direction.z;
         estimate.valid = true;
     }
 
-    // Spherical harmonics — float[9][3]
-    if (shLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
-        estimate.shValid = true;
-        for (int i = 0; i < 9; i++) {
-            estimate.sh[i*3+0] = shLight.coefficients[i][0];
-            estimate.sh[i*3+1] = shLight.coefficients[i][1];
-            estimate.sh[i*3+2] = shLight.coefficients[i][2];
-        }
+    static int logCount = 0;
+    if (estimate.valid && logCount++ < 5) {
+        XR_LOGI("XR Light: amb=(%.3f,%.3f,%.3f) dir=(%.2f,%.2f,%.2f) int=(%.3f,%.3f,%.3f)",
+            estimate.ambientR, estimate.ambientG, estimate.ambientB,
+            estimate.dirX, estimate.dirY, estimate.dirZ,
+            estimate.dirIntensityR, estimate.dirIntensityG, estimate.dirIntensityB);
     }
 
     return estimate.valid;
