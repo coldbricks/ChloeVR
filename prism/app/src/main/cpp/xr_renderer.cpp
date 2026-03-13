@@ -973,26 +973,35 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     XrTime now = lastPredictedTime_;
 
     // Query light estimate
-    XrLightEstimateGetInfoANDROID getInfo;
+    // Get info — NOTE: space before time per spec
+    XrLightEstimateGetInfoANDROID getInfo = {};
     getInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID;
     getInfo.next = nullptr;
+    getInfo.space = appSpace_;
     getInfo.time = now;
-    getInfo.baseSpace = appSpace_;
 
-    // Chain: directional → ambient → root (SH disabled until struct layout verified)
+    // Chain: SH → directional → ambient → root
+    XrSphericalHarmonicsANDROID shLight = {};
+    shLight.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
+    shLight.next = nullptr;
+    shLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+    shLight.kind = XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID;
+
     XrDirectionalLightANDROID dirLight = {};
     dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dirLight.next = nullptr;
-    dirLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
+    dirLight.next = &shLight;
+    dirLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
     XrAmbientLightANDROID ambLight = {};
     ambLight.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
     ambLight.next = &dirLight;
-    ambLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
+    ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
+    // Root output — has state + lastUpdatedTime
     XrLightEstimateANDROID lightEst = {};
     lightEst.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
     lightEst.next = &ambLight;
+    lightEst.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
     XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &lightEst);
     if (XR_FAILED(r)) {
@@ -1001,26 +1010,39 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         return false;
     }
 
-    // Ambient
-    if (ambLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
-        estimate.ambientR = ambLight.intensity.r;
-        estimate.ambientG = ambLight.intensity.g;
-        estimate.ambientB = ambLight.intensity.b;
-        estimate.colorCorrR = ambLight.colorCorrection.r;
-        estimate.colorCorrG = ambLight.colorCorrection.g;
-        estimate.colorCorrB = ambLight.colorCorrection.b;
+    // Check root validity first
+    if (lightEst.state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) return false;
+
+    // Ambient — uses XrVector3f (x=R, y=G, z=B)
+    if (ambLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.ambientR = ambLight.intensity.x;
+        estimate.ambientG = ambLight.intensity.y;
+        estimate.ambientB = ambLight.intensity.z;
+        estimate.colorCorrR = ambLight.colorCorrection.x;
+        estimate.colorCorrG = ambLight.colorCorrection.y;
+        estimate.colorCorrB = ambLight.colorCorrection.z;
         estimate.valid = true;
     }
 
-    // Directional
-    if (dirLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
-        estimate.dirIntensityR = dirLight.intensity.r;
-        estimate.dirIntensityG = dirLight.intensity.g;
-        estimate.dirIntensityB = dirLight.intensity.b;
+    // Directional — uses XrVector3f
+    if (dirLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.dirIntensityR = dirLight.intensity.x;
+        estimate.dirIntensityG = dirLight.intensity.y;
+        estimate.dirIntensityB = dirLight.intensity.z;
         estimate.dirX = dirLight.direction.x;
         estimate.dirY = dirLight.direction.y;
         estimate.dirZ = dirLight.direction.z;
         estimate.valid = true;
+    }
+
+    // Spherical harmonics — float[9][3]
+    if (shLight.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.shValid = true;
+        for (int i = 0; i < 9; i++) {
+            estimate.sh[i*3+0] = shLight.coefficients[i][0];
+            estimate.sh[i*3+1] = shLight.coefficients[i][1];
+            estimate.sh[i*3+2] = shLight.coefficients[i][2];
+        }
     }
 
     return estimate.valid;
