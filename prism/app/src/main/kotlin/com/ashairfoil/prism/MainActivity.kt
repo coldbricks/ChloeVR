@@ -2310,43 +2310,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val gltfModel = GltfModel.create(session, file.readBytes(), file.name)
                 android.util.Log.i("ChloeVR", "GltfModel created successfully")
 
-                // Try to find the floor for grounded placement.
-                // This works with safety boundary ON or OFF — plane detection uses
-                // depth sensors and SLAM, independent of the guardian boundary.
-                // Timeout after 3s and fall back to fixed placement if no floor found.
-                var anchor: AnchorEntity? = floorAnchor
-                if (anchor == null) {
-                    try {
-                        anchor = AnchorEntity.create(
-                            session,
-                            androidx.xr.runtime.math.FloatSize2d(0.5f, 0.5f), // min 0.5m plane
-                            PlaneOrientation.HORIZONTAL,
-                            PlaneSemanticType.FLOOR,
-                            java.time.Duration.ofSeconds(3)
-                        )
-                        floorAnchor = anchor
-                        android.util.Log.i("ChloeVR", "Floor plane detected — models will be grounded")
-                    } catch (e: Exception) {
-                        android.util.Log.w("ChloeVR", "Floor detection failed (boundary off or no planes): ${e.message}")
-                        anchor = null
-                    }
-                }
-
-                // Place model: on floor if found, otherwise 1m up and 2m in front
-                val placePose = if (anchor != null) {
-                    // On the floor, 2m in front of user, at floor level
-                    Pose(Vector3(0f, 0f, -2f), Quaternion.Identity)
-                } else {
-                    // Fallback: floating at eye height
-                    Pose(Vector3(0f, 1f, -2f), Quaternion.Identity)
-                }
-
-                val entity = if (anchor != null) {
-                    // Parent to floor anchor — model sits ON the real floor
-                    GltfModelEntity.create(session, gltfModel, placePose, anchor)
-                } else {
-                    GltfModelEntity.create(session, gltfModel, placePose)
-                }
+                // Place model 2m in front of user, at roughly floor height
+                // Floor anchoring disabled for now — was causing crashes.
+                // User positions models manually with grab controls.
+                val placePose = Pose(Vector3(0f, 0f, -2f), Quaternion.Identity)
+                val entity = GltfModelEntity.create(session, gltfModel, placePose)
 
                 // Auto-scale based on bounding box so models appear at a reasonable size
                 val bbox = entity.gltfModelBoundingBox
@@ -2361,12 +2329,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val autoScale = targetSize / maxExtent
                 entity.setScale(autoScale)
 
-                val placed = PlacedModel(file, entity, autoScale, anchor, anchor != null)
+                val placed = PlacedModel(file, entity, autoScale)
                 placedModels.add(placed)
                 selectedModelIndex = placedModels.size - 1
 
-                val anchorStatus = if (anchor != null) "anchored to floor" else "free-floating"
-                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, scale=$autoScale, $anchorStatus")
+                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, scale=$autoScale")
 
                 // Show model control panel
                 runOnUiThread {
@@ -2507,16 +2474,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             layout.addView(makeSpacer(8))
             layout.addView(makeSectionLabel("Appearance"))
 
-            // Brightness: dims the model to match room lighting (uses alpha blend)
-            layout.addView(makeEffectSliderNoSave("Brightness", 20, 100, 80) { value ->
+            // Exposure: control model brightness via alpha (like ShapesXR exposure)
+            layout.addView(makeEffectSliderNoSave("Exposure", 10, 100, 100) { value ->
                 placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(value / 100f)
-            })
-
-            // Transparency: make model see-through
-            layout.addView(makeEffectSliderNoSave("Transparency", 0, 80, 0) { value ->
-                // Transparency is inverse of what brightness does — low values = solid
-                val alpha = 1f - (value / 100f)
-                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(alpha.coerceIn(0.1f, 1f))
             })
 
             // Environment lighting control
@@ -2532,27 +2492,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     }
                 } catch (e: Exception) {}
             })
-
-            // ── Material (PBR) ──
-            // KhronosPbrMaterial lets us override baseColor, metallic, roughness,
-            // emissive, clearcoat, sheen — more than ShapesXR exposes
-            layout.addView(makeSpacer(12))
-            layout.addView(makeSectionLabel("Material Override"))
-            layout.addView(makeButtonRow(
-                "Matte" to {
-                    applyMaterialPreset(selectedModelIndex, metallic = 0f, roughness = 1f)
-                },
-                "Glossy" to {
-                    applyMaterialPreset(selectedModelIndex, metallic = 0.3f, roughness = 0.2f)
-                },
-                "Chrome" to {
-                    applyMaterialPreset(selectedModelIndex, metallic = 1f, roughness = 0.05f)
-                },
-                "Reset" to {
-                    placedModels.getOrNull(selectedModelIndex)?.entity
-                        ?.clearMaterialOverride("")
-                }
-            ))
 
             layout.addView(makeSpacer(12))
             layout.addView(makeButtonRow(
@@ -2646,16 +2585,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     origPose.rotation
                 )
 
-                val anchor = original.anchor
-                val entity = if (anchor != null) {
-                    GltfModelEntity.create(session, gltfModel, dupPose, anchor)
-                } else {
-                    GltfModelEntity.create(session, gltfModel, dupPose)
-                }
-
+                val entity = GltfModelEntity.create(session, gltfModel, dupPose)
                 entity.setScale(original.scale)
 
-                val placed = PlacedModel(original.file, entity, original.scale, anchor, original.isAnchored)
+                val placed = PlacedModel(original.file, entity, original.scale)
                 placedModels.add(placed)
                 selectedModelIndex = placedModels.size - 1
 
