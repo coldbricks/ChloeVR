@@ -182,6 +182,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var modelGrabStartPose = Pose()
     private var modelGrabStartScale = 1f
     private var modelGrabDistance = 2f  // hand-to-model distance, scales aim leverage
+    private var modelPushOffsetX = 0f  // cumulative push/pull offset
+    private var modelPushOffsetY = 0f
+    private var modelPushOffsetZ = 0f
     private var currentPlaylist: List<File> = emptyList()
     private var currentPlaylistIndex = -1
     private var lastFileNavTime = 0L
@@ -3495,65 +3498,41 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     modelGrabStartHandPos = grabHandPos.copyOf()
                     modelGrabStartPose = entity.getPose()
                     modelGrabStartScale = selected.scale
-                    // Distance determines aim leverage: far objects move more per degree
+                    modelPushOffsetX = 0f
+                    modelPushOffsetY = 0f
+                    modelPushOffsetZ = 0f
                     val modelPos = modelGrabStartPose.translation
                     val dx = modelPos.x - grabHandPos[0]
                     val dy = modelPos.y - grabHandPos[1]
                     val dz = modelPos.z - grabHandPos[2]
-                    modelGrabDistance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(0.5f)
+                    modelGrabDistance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(0.3f)
                 } else {
-                    // ── Delta-based grab: model moves by the CHANGE in aim + hand ──
-                    // No snap. Model starts from where it was and moves from there.
+                    // ── Delta-based grab + cumulative push/pull ──
                     val aimDir = quatForward(grabAimRot)
                     val dAimX = aimDir[0] - modelGrabStartAimDir[0]
                     val dAimY = aimDir[1] - modelGrabStartAimDir[1]
                     val dAimZ = aimDir[2] - modelGrabStartAimDir[2]
 
-                    // Hand translation delta (for close-range physical movement)
                     val dHandX = grabHandPos[0] - modelGrabStartHandPos[0]
                     val dHandY = grabHandPos[1] - modelGrabStartHandPos[1]
                     val dHandZ = grabHandPos[2] - modelGrabStartHandPos[2]
 
-                    // Combine: aim delta (scaled by distance) + hand delta
-                    // Far models: aim dominates (laser-pointer feel)
-                    // Close models: hand dominates (physical grab feel)
                     val aimScale = modelGrabDistance * 2f
                     val startPos = modelGrabStartPose.translation
-                    val targetX = startPos.x + dAimX * aimScale + dHandX
-                    val targetY = startPos.y + dAimY * aimScale + dHandY
-                    val targetZ = startPos.z + dAimZ * aimScale + dHandZ
 
-                    // Smooth for fluid feel
-                    val smooth = 0.5f
-                    val curPos = entity.getPose().translation
-                    val newPos = Vector3(
-                        curPos.x + (targetX - curPos.x) * smooth,
-                        curPos.y + (targetY - curPos.y) * smooth,
-                        curPos.z + (targetZ - curPos.z) * smooth
-                    )
-
-                    // Thumbstick forward/back = push/pull along hand-to-model direction
-                    // Pull back (towards you) = model comes closer. Push forward = model goes further.
+                    // Thumbstick fwd/back = push/pull (cumulative, not overwritten)
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
-                        val curModelPos = entity.getPose().translation
-                        // Direction from hand to model
-                        val toX = curModelPos.x - grabHandPos[0]
-                        val toY = curModelPos.y - grabHandPos[1]
-                        val toZ = curModelPos.z - grabHandPos[2]
-                        val toDist = kotlin.math.sqrt(toX * toX + toY * toY + toZ * toZ).coerceAtLeast(0.1f)
-                        val dirX = toX / toDist
-                        val dirY = toY / toDist
-                        val dirZ = toZ / toDist
-                        // Positive thumbY (push forward) = push away, negative (pull back) = bring closer
-                        val speed = grabThumbY * 0.15f
-                        entity.setPose(Pose(
-                            Vector3(
-                                curModelPos.x + dirX * speed,
-                                curModelPos.y + dirY * speed,
-                                curModelPos.z + dirZ * speed
-                            ),
-                            entity.getPose().rotation
-                        ))
+                        // Direction from hand to model's current position
+                        val curP = entity.getPose().translation
+                        val toX = curP.x - grabHandPos[0]
+                        val toY = curP.y - grabHandPos[1]
+                        val toZ = curP.z - grabHandPos[2]
+                        val d = kotlin.math.sqrt(toX * toX + toY * toY + toZ * toZ).coerceAtLeast(0.1f)
+                        // Pull back = closer (negative thumbY), push forward = farther
+                        val speed = grabThumbY * 0.12f
+                        modelPushOffsetX += (toX / d) * speed
+                        modelPushOffsetY += (toY / d) * speed
+                        modelPushOffsetZ += (toZ / d) * speed
                     }
 
                     // Thumbstick left/right while grabbing = scale
@@ -3562,20 +3541,69 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         entity.setScale(selected.scale)
                     }
 
-                    // Wrist twist = rotate model on Y axis
-                    var rollDelta = relativeRollDeg(modelGrabStartAimRot, rollRot)
-                    while (rollDelta > 180f) rollDelta -= 360f
-                    while (rollDelta < -180f) rollDelta += 360f
-                    val currentRot = modelGrabStartPose.rotation
-                    val newRot = if (!rollDelta.isNaN()) {
-                        val rollQuat = Quaternion.fromEulerAngles(0f, rollDelta, 0f)
-                        Quaternion(
-                            rollQuat.w * currentRot.x + rollQuat.x * currentRot.w + rollQuat.y * currentRot.z - rollQuat.z * currentRot.y,
-                            rollQuat.w * currentRot.y - rollQuat.x * currentRot.z + rollQuat.y * currentRot.w + rollQuat.z * currentRot.x,
-                            rollQuat.w * currentRot.z + rollQuat.x * currentRot.y - rollQuat.y * currentRot.x + rollQuat.z * currentRot.w,
-                            rollQuat.w * currentRot.w - rollQuat.x * currentRot.x - rollQuat.y * currentRot.y - rollQuat.z * currentRot.z
+                    // Check if trigger is also held (grip+trigger = rotation mode)
+                    val triggerHeld = if (rightGripHeld) input.rightTrigger > 0.5f
+                                     else if (leftGripHeld) input.leftTrigger > 0.5f
+                                     else false
+
+                    val newRot: Quaternion
+                    val newPos: Vector3
+
+                    if (triggerHeld) {
+                        // GRIP + TRIGGER = full rotation in-place (pitch, yaw, roll from hand)
+                        // Model stays where it is, hand rotation maps to model rotation
+                        // Compute relative quaternion: currentAim * inverse(startAim)
+                        val isx = -modelGrabStartAimRot[0].toDouble()
+                        val isy = -modelGrabStartAimRot[1].toDouble()
+                        val isz = -modelGrabStartAimRot[2].toDouble()
+                        val isw = modelGrabStartAimRot[3].toDouble()
+                        val cx = rollRot[0].toDouble()
+                        val cy = rollRot[1].toDouble()
+                        val cz = rollRot[2].toDouble()
+                        val cw = rollRot[3].toDouble()
+                        val relW = (cw*isw - cx*isx - cy*isy - cz*isz).toFloat()
+                        val relX = (cw*isx + cx*isw + cy*isz - cz*isy).toFloat()
+                        val relY = (cw*isy - cx*isz + cy*isw + cz*isx).toFloat()
+                        val relZ = (cw*isz + cx*isy - cy*isx + cz*isw).toFloat()
+
+                        // Apply relative rotation to model's starting rotation
+                        val sr = modelGrabStartPose.rotation
+                        newRot = Quaternion(
+                            relW * sr.x + relX * sr.w + relY * sr.z - relZ * sr.y,
+                            relW * sr.y - relX * sr.z + relY * sr.w + relZ * sr.x,
+                            relW * sr.z + relX * sr.y - relY * sr.x + relZ * sr.w,
+                            relW * sr.w - relX * sr.x - relY * sr.y - relZ * sr.z
                         )
-                    } else currentRot
+                        // Stay in place (use current position, not delta-based)
+                        newPos = entity.getPose().translation
+                    } else {
+                        // GRIP only = move (delta-based) + Y-axis wrist twist
+                        var rollDelta = relativeRollDeg(modelGrabStartAimRot, rollRot)
+                        while (rollDelta > 180f) rollDelta -= 360f
+                        while (rollDelta < -180f) rollDelta += 360f
+                        val currentRot = modelGrabStartPose.rotation
+                        newRot = if (!rollDelta.isNaN()) {
+                            val rollQuat = Quaternion.fromEulerAngles(0f, rollDelta, 0f)
+                            Quaternion(
+                                rollQuat.w * currentRot.x + rollQuat.x * currentRot.w + rollQuat.y * currentRot.z - rollQuat.z * currentRot.y,
+                                rollQuat.w * currentRot.y - rollQuat.x * currentRot.z + rollQuat.y * currentRot.w + rollQuat.z * currentRot.x,
+                                rollQuat.w * currentRot.z + rollQuat.x * currentRot.y - rollQuat.y * currentRot.x + rollQuat.z * currentRot.w,
+                                rollQuat.w * currentRot.w - rollQuat.x * currentRot.x - rollQuat.y * currentRot.y - rollQuat.z * currentRot.z
+                            )
+                        } else currentRot
+
+                        // Position = delta-based + cumulative push offset
+                        val targetX = startPos.x + dAimX * aimScale + dHandX + modelPushOffsetX
+                        val targetY = startPos.y + dAimY * aimScale + dHandY + modelPushOffsetY
+                        val targetZ = startPos.z + dAimZ * aimScale + dHandZ + modelPushOffsetZ
+                        val smooth = 0.5f
+                        val curPos = entity.getPose().translation
+                        newPos = Vector3(
+                            curPos.x + (targetX - curPos.x) * smooth,
+                            curPos.y + (targetY - curPos.y) * smooth,
+                            curPos.z + (targetZ - curPos.z) * smooth
+                        )
+                    }
 
                     entity.setPose(Pose(newPos, newRot))
                 }
