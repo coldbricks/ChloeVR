@@ -2273,8 +2273,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 }
 
                 // Auto-scale based on bounding box so models appear at a reasonable size
-                val bbox = entity.getGltfModelBoundingBox()
-                val extents = bbox.getHalfExtents()
+                val bbox = entity.gltfModelBoundingBox
+                val extents = bbox.halfExtents
                 val maxExtent = maxOf(
                     extents.width * 2f,
                     extents.height * 2f,
@@ -3359,7 +3359,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             // A button = toggle animation
             if (input.aButton && !lastAState) {
-                val animState = selected.entity.getAnimationState()
+                val animState = selected.entity.animationState
                 if (animState == GltfModelEntity.AnimationState.PLAYING) {
                     selected.entity.stopAnimation()
                 } else {
