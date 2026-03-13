@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Storage access for local video files -->
+    <!-- Storage access for local video files + 3D models -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Full file access for non-media files (.glb, .gltf, .funscript, .hsp) -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- XR permissions -->
     <uses-permission android:name="android.permission.HAND_TRACKING" />
@@ -16,7 +18,8 @@
     <application
         android:label="ChloeVR"
         android:icon="@android:drawable/ic_media_play"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:requestLegacyExternalStorage="true">
 
         <!-- OpenXR native runtime -->
         <uses-native-library android:name="libopenxr.google.so" android:required="false" />

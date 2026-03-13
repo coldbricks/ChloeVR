@@ -230,6 +230,40 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun requestStoragePermission() {
+        // For SDK 30+, MANAGE_EXTERNAL_STORAGE gives full file access (needed for .glb, .funscript, etc.)
+        // This requires a settings screen visit, not the normal permission dialog.
+        if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+            try {
+                val intent = android.content.Intent(
+                    android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    android.net.Uri.parse("package:$packageName")
+                )
+                startActivityForResult(intent, 101)
+            } catch (e: Exception) {
+                // Fallback: open general file access settings
+                try {
+                    startActivityForResult(
+                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                        101
+                    )
+                } catch (e2: Exception) {
+                    // Last resort: request basic media permissions
+                    requestBasicMediaPermissions()
+                }
+            }
+            return
+        }
+
+        // Already have full access, or pre-SDK 30
+        if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+            onPermissionGranted()
+            return
+        }
+
+        requestBasicMediaPermissions()
+    }
+
+    private fun requestBasicMediaPermissions() {
         val permissions = if (Build.VERSION.SDK_INT >= 33) {
             arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
         } else {
@@ -244,6 +278,20 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             onPermissionGranted()
         } else {
             ActivityCompat.requestPermissions(this, permissions, 100)
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 101) {
+            // Returned from MANAGE_EXTERNAL_STORAGE settings
+            if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+                onPermissionGranted()
+            } else {
+                // User didn't grant full access — fall back to media-only permissions
+                requestBasicMediaPermissions()
+            }
         }
     }
 
