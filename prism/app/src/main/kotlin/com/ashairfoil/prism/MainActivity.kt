@@ -2304,7 +2304,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         // Load the GLB model asynchronously
         lifecycleScope.launch {
             try {
+                android.util.Log.i("ChloeVR", "Loading model: ${file.absolutePath} (${file.length()} bytes, exists=${file.exists()}, canRead=${file.canRead()})")
                 val gltfModel = GltfModel.create(session, android.net.Uri.fromFile(file))
+                android.util.Log.i("ChloeVR", "GltfModel created successfully")
 
                 // Try to find the floor for grounded placement.
                 // This works with safety boundary ON or OFF — plane detection uses
@@ -2373,7 +2375,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             } catch (e: Exception) {
                 android.util.Log.e("ChloeVR", "Failed to load model: ${file.name}", e)
                 runOnUiThread {
-                    showMessage("Failed to load 3D model: ${e.message}")
+                    // If no models in scene, exit model mode so user isn't stuck
+                    if (placedModels.isEmpty()) {
+                        modelMode = false
+                        currentFileIsModel = false
+                        setAlphaPassthroughEnabled(false)
+                    }
+                    showMessage("Failed to load 3D model: ${e.message}\n\nPress Menu to return.")
+                    setPanelVisible(true)
                 }
             }
         }
@@ -3409,6 +3418,50 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (!isPlaying && !modelMode) return
 
         // ── 3D Model interaction ──
+        // Handle model mode even with no models (so menu button still works to escape)
+        if (modelMode) {
+            // Menu button always works in model mode
+            if (input.menuButton && !lastMenuState) {
+                runOnUiThread {
+                    if (placedModels.isEmpty()) {
+                        // No models loaded — go back to file picker
+                        modelMode = false
+                        currentFileIsModel = false
+                        setAlphaPassthroughEnabled(false)
+                        showFilePicker()
+                    } else if (menuVisible) {
+                        menuVisible = false
+                        setPanelVisible(false)
+                    } else {
+                        showModelPanel()
+                        menuVisible = true
+                        setPanelVisible(true)
+                    }
+                }
+            }
+            lastMenuState = input.menuButton
+
+            // B button also escapes if no models
+            if (input.bButton && !lastBState) {
+                runOnUiThread {
+                    if (placedModels.isEmpty()) {
+                        modelMode = false
+                        currentFileIsModel = false
+                        setAlphaPassthroughEnabled(false)
+                        showFilePicker()
+                    } else if (menuVisible) {
+                        menuVisible = false
+                        setPanelVisible(false)
+                    } else {
+                        showModelPanel()
+                        menuVisible = true
+                        setPanelVisible(true)
+                    }
+                }
+            }
+            lastBState = input.bButton
+        }
+
         if (modelMode && selectedModelIndex in placedModels.indices) {
             val selected = placedModels[selectedModelIndex]
             val entity = selected.entity
@@ -3549,35 +3602,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             lastAState = input.aButton
 
-            // Menu button = toggle model panel
-            if (input.menuButton && !lastMenuState) {
-                runOnUiThread {
-                    if (menuVisible) {
-                        menuVisible = false
-                        setPanelVisible(false)
-                    } else {
-                        showModelPanel()
-                        menuVisible = true
-                        setPanelVisible(true)
-                    }
-                }
-            }
-            lastMenuState = input.menuButton
-
-            // B button = toggle scrub-style quick panel
-            if (input.bButton && !lastBState) {
-                runOnUiThread {
-                    if (menuVisible) {
-                        menuVisible = false
-                        setPanelVisible(false)
-                    } else {
-                        showModelPanel()
-                        menuVisible = true
-                        setPanelVisible(true)
-                    }
-                }
-            }
-            lastBState = input.bButton
+            // Menu and B buttons handled above (before model selection check)
 
             return // Don't fall through to video controls
         }
