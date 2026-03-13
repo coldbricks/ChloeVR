@@ -173,6 +173,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var placedModels = mutableListOf<PlacedModel>()
     private var selectedModelIndex = -1
     private var modelMode = false
+    private var modelHandsLocked = false  // when true, ignore all hand/controller input (walk around mode)
     private var floorAnchor: AnchorEntity? = null  // shared floor anchor for all models
     private var modelGrabbing = false
     private var modelGrabStartAimDir = floatArrayOf(0f, 0f, -1f)
@@ -2474,23 +2475,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             layout.addView(makeSpacer(8))
             layout.addView(makeSectionLabel("Appearance"))
 
-            // Exposure: control model brightness via alpha (like ShapesXR exposure)
-            layout.addView(makeEffectSliderNoSave("Exposure", 10, 100, 100) { value ->
-                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(value / 100f)
-            })
-
-            // Environment lighting control
-            layout.addView(makeSpacer(12))
-            layout.addView(makeSectionLabel("Lighting"))
-            layout.addView(makeEffectSliderNoSave("Environment", 0, 100, 100) { value ->
-                // Lower = darker environment = dimmer model lighting
-                // This is the main tool for matching model brightness to your room
-                try {
-                    val scene = xrSession?.scene ?: return@makeEffectSliderNoSave
-                    if (scene.spatialCapabilities.contains(SpatialCapability.PASSTHROUGH_CONTROL)) {
-                        scene.spatialEnvironment.preferredPassthroughOpacity = value / 100f
-                    }
-                } catch (e: Exception) {}
+            // Exposure: dims the MODEL only, does NOT affect passthrough
+            // Uses entity alpha — model becomes semi-transparent against real world
+            layout.addView(makeEffectSliderNoSave("Exposure", 5, 100, 100) { value ->
+                val alpha = value / 100f
+                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(alpha)
+                android.util.Log.d("ChloeVR", "Model alpha set to $alpha")
             })
 
             layout.addView(makeSpacer(12))
@@ -2509,6 +2499,32 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 }
             ))
         }
+
+        // Lock hands toggle — put controllers down and walk around
+        layout.addView(makeSpacer(16))
+        layout.addView(makeSectionLabel("Hands"))
+        val lockBtn = Button(this).apply {
+            text = if (modelHandsLocked) "Unlock Hands (controllers active)" else "Lock Hands (walk around mode)"
+            textSize = 16f
+            minHeight = 72
+            setBackgroundColor(if (modelHandsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(20, 16, 20, 16)
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.setMargins(4, 4, 4, 4)
+            layoutParams = lp
+        }
+        lockBtn.setOnClickListener {
+            modelHandsLocked = !modelHandsLocked
+            lockBtn.text = if (modelHandsLocked) "Unlock Hands (controllers active)" else "Lock Hands (walk around mode)"
+            lockBtn.setBackgroundColor(if (modelHandsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+            // Hide panel so user can walk around freely
+            if (modelHandsLocked) {
+                menuVisible = false
+                setPanelVisible(false)
+            }
+        }
+        layout.addView(lockBtn)
 
         layout.addView(makeSpacer(16))
 
@@ -3408,6 +3424,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             lastBState = input.bButton
         }
+
+        // When hands are locked, skip ALL model interaction except menu/B (handled above)
+        // This lets the user put controllers down and walk around freely
+        if (modelMode && modelHandsLocked) return
 
         if (modelMode && selectedModelIndex in placedModels.indices) {
             val selected = placedModels[selectedModelIndex]
