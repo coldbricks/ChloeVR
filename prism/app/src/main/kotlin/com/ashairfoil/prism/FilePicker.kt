@@ -9,9 +9,11 @@ object FilePicker {
 
     private val VIDEO_EXTENSIONS = setOf("mp4", "mkv", "webm")
     private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "bmp")
-    private val MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + IMAGE_EXTENSIONS
+    private val MODEL_EXTENSIONS = setOf("glb", "gltf")
+    private val MEDIA_EXTENSIONS = VIDEO_EXTENSIONS + IMAGE_EXTENSIONS + MODEL_EXTENSIONS
 
     fun isImageFile(file: File): Boolean = file.extension.lowercase() in IMAGE_EXTENSIONS
+    fun isModelFile(file: File): Boolean = file.extension.lowercase() in MODEL_EXTENSIONS
 
     fun listVideoFiles(context: Context): List<File> {
         return listVideoFilesProgressive(context) { _, _, _ -> }

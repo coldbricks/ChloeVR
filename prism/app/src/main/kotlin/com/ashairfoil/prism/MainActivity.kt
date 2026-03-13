@@ -33,6 +33,8 @@ import androidx.xr.scenecore.InputEvent as XrInputEvent
 import androidx.xr.scenecore.InteractableComponent
 import androidx.xr.scenecore.SpatialCapability
 import androidx.xr.scenecore.SpatialEnvironment
+import androidx.xr.scenecore.GltfModel
+import androidx.xr.scenecore.GltfModelEntity
 import androidx.xr.scenecore.SurfaceEntity
 import androidx.xr.scenecore.scene
 import com.ashairfoil.prism.data.MediaLibrary
@@ -151,8 +153,24 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var currentQuadWidth = 8f
     private var currentQuadHeight = 4.5f
 
-    // Image vs video + file navigation
+    // Image vs video vs 3D model + file navigation
     private var currentFileIsImage = false
+    private var currentFileIsModel = false
+
+    // 3D Model viewer state
+    data class PlacedModel(
+        val file: File,
+        val entity: GltfModelEntity,
+        var scale: Float = 1f
+    )
+    private var placedModels = mutableListOf<PlacedModel>()
+    private var selectedModelIndex = -1
+    private var modelMode = false
+    private var modelGrabbing = false
+    private var modelGrabStartAimDir = floatArrayOf(0f, 0f, -1f)
+    private var modelGrabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
+    private var modelGrabStartPose = Pose()
+    private var modelGrabStartScale = 1f
     private var currentPlaylist: List<File> = emptyList()
     private var currentPlaylistIndex = -1
     private var lastFileNavTime = 0L
@@ -698,6 +716,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         }
                         if (FilePicker.isImageFile(file)) {
                             addView(makeTag("IMG", 0xFF7B1FA2.toInt()))
+                        }
+                        if (FilePicker.isModelFile(file)) {
+                            addView(makeTag("3D", 0xFF00BFA5.toInt()))
                         }
                         if (metadata.hasAlpha) {
                             addView(makeTag("ALPHA", 0xFFD84315.toInt()))
@@ -2157,10 +2178,268 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun openFileFromPicker(file: File) {
+        if (FilePicker.isModelFile(file)) {
+            loadModelFile(file)
+            return
+        }
         val filtered = filePickerFiles.filter { matchesFilePickerFilters(it) }
         currentPlaylist = sortFilePickerFiles(filtered)
         currentPlaylistIndex = currentPlaylist.indexOf(file).coerceAtLeast(0)
         playFile(file)
+    }
+
+    // ── 3D Model Loading ──
+
+    private fun loadModelFile(file: File) {
+        val session = xrSession ?: run {
+            showMessage("XR session not available")
+            return
+        }
+
+        // Enter model mode (stop any video playback, keep existing models)
+        if (!modelMode) {
+            stopPlayback()
+            modelMode = true
+            currentFileIsModel = true
+            isPlaying = false
+        }
+
+        // Enable passthrough for AR placement
+        setAlphaPassthroughEnabled(true)
+
+        // Close file picker UI
+        if (filePickerActive) {
+            filePickerActive = false
+            filePickerScanJob?.cancel()
+            filePickerScanJob = null
+            filePickerResultsContainer = null
+            filePickerCountLabel = null
+            filePickerStatusLabel = null
+        }
+
+        // Hide panel during loading
+        setPanelVisible(false)
+        menuVisible = false
+
+        // Load the GLB model asynchronously
+        lifecycleScope.launch {
+            try {
+                val gltfModel = GltfModel.create(session, android.net.Uri.fromFile(file))
+
+                // Place 2 meters in front, at eye height
+                val placePose = Pose(Vector3(0f, 1f, -2f), Quaternion.Identity)
+                val entity = GltfModelEntity.create(session, gltfModel, placePose)
+
+                // Auto-scale based on bounding box so models appear at a reasonable size
+                val bbox = entity.getGltfModelBoundingBox()
+                val extents = bbox.getHalfExtents()
+                val maxExtent = maxOf(
+                    extents.width * 2f,
+                    extents.height * 2f,
+                    extents.depth * 2f
+                ).coerceAtLeast(0.01f)
+                // Target size: ~1 meter tall
+                val targetSize = 1.0f
+                val autoScale = targetSize / maxExtent
+                entity.setScale(autoScale)
+
+                val placed = PlacedModel(file, entity, autoScale)
+                placedModels.add(placed)
+                selectedModelIndex = placedModels.size - 1
+
+                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, bbox=${bbox.size}, scale=$autoScale")
+
+                // Show model control panel
+                runOnUiThread {
+                    showModelPanel()
+                    menuVisible = true
+                    setPanelVisible(true)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ChloeVR", "Failed to load model: ${file.name}", e)
+                runOnUiThread {
+                    showMessage("Failed to load 3D model: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun showModelPanel() {
+        val scrollView = ScrollView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(32, 24, 32, 24)
+        }
+
+        layout.addView(TextView(this).apply {
+            text = "3D Model Viewer"
+            textSize = 20f
+            setTextColor(0xFFFFFFFF.toInt())
+            setPadding(0, 0, 0, 12)
+        })
+
+        // Model count
+        layout.addView(TextView(this).apply {
+            text = "${placedModels.size} model${if (placedModels.size != 1) "s" else ""} in scene"
+            textSize = 14f
+            setTextColor(0xFF999999.toInt())
+            setPadding(0, 0, 0, 16)
+        })
+
+        // List placed models with select buttons
+        for ((i, model) in placedModels.withIndex()) {
+            val isSelected = i == selectedModelIndex
+            layout.addView(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundColor(if (isSelected) 0xFF1565C0.toInt() else 0xFF1E1E1E.toInt())
+                setPadding(24, 16, 24, 16)
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
+                lp.setMargins(0, 2, 0, 2)
+                layoutParams = lp
+
+                addView(TextView(this@MainActivity).apply {
+                    text = model.file.nameWithoutExtension
+                    textSize = 14f
+                    setTextColor(0xFFE0E0E0.toInt())
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                })
+
+                addView(Button(this@MainActivity).apply {
+                    text = if (isSelected) "Selected" else "Select"
+                    textSize = 12f
+                    setOnClickListener {
+                        selectedModelIndex = i
+                        showModelPanel()
+                    }
+                })
+
+                addView(Button(this@MainActivity).apply {
+                    text = "X"
+                    textSize = 12f
+                    minWidth = 60
+                    setBackgroundColor(0xFF8B0000.toInt())
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setOnClickListener {
+                        removeModel(i)
+                        showModelPanel()
+                    }
+                })
+            })
+        }
+
+        // Selected model controls
+        if (selectedModelIndex in placedModels.indices) {
+            val model = placedModels[selectedModelIndex]
+
+            layout.addView(makeSpacer(16))
+            layout.addView(makeSectionLabel("Scale"))
+            layout.addView(makeEffectSliderNoSave("Size", 10, 500, (model.scale * 100).toInt()) { value ->
+                val newScale = value / 100f
+                placedModels.getOrNull(selectedModelIndex)?.let {
+                    it.scale = newScale
+                    it.entity.setScale(newScale)
+                }
+            })
+
+            layout.addView(makeSpacer(8))
+            layout.addView(makeSectionLabel("Opacity"))
+            layout.addView(makeEffectSliderNoSave("Alpha", 10, 100, 100) { value ->
+                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(value / 100f)
+            })
+
+            layout.addView(makeSpacer(12))
+            layout.addView(makeButtonRow(
+                "Reset Position" to {
+                    placedModels.getOrNull(selectedModelIndex)?.let {
+                        it.entity.setPose(Pose(Vector3(0f, 1f, -2f), Quaternion.Identity))
+                    }
+                },
+                "Recenter All" to {
+                    for ((idx, m) in placedModels.withIndex()) {
+                        val offset = idx * 1.5f - (placedModels.size - 1) * 0.75f
+                        m.entity.setPose(Pose(Vector3(offset, 1f, -2f), Quaternion.Identity))
+                    }
+                }
+            ))
+        }
+
+        layout.addView(makeSpacer(16))
+
+        // Action buttons
+        layout.addView(makeButtonRow(
+            "Add Model" to {
+                menuVisible = false
+                setPanelVisible(false)
+                showFilePicker()
+            },
+            "Clear All" to {
+                clearAllModels()
+                showFilePicker()
+            }
+        ))
+
+        layout.addView(makeSpacer(8))
+        layout.addView(makeButtonRow(
+            "Back to Files" to {
+                clearAllModels()
+                showFilePicker()
+            }
+        ))
+
+        // Instructions
+        layout.addView(makeSpacer(16))
+        layout.addView(TextView(this).apply {
+            text = "Controls:\n" +
+                    "  Grip + Trigger = Grab & move selected model\n" +
+                    "  Thumbstick up/down = Scale\n" +
+                    "  Wrist twist = Rotate (while grabbing)\n" +
+                    "  A = Play/stop animation\n" +
+                    "  Menu = This panel"
+            textSize = 12f
+            setTextColor(0xFF666666.toInt())
+            setPadding(0, 8, 0, 0)
+        })
+
+        scrollView.addView(layout)
+        setContentView(scrollView)
+    }
+
+    private fun removeModel(index: Int) {
+        if (index in placedModels.indices) {
+            placedModels[index].entity.dispose()
+            placedModels.removeAt(index)
+            if (selectedModelIndex >= placedModels.size) {
+                selectedModelIndex = placedModels.size - 1
+            }
+        }
+        if (placedModels.isEmpty()) {
+            modelMode = false
+            currentFileIsModel = false
+            setAlphaPassthroughEnabled(false)
+        }
+    }
+
+    private fun clearAllModels() {
+        for (model in placedModels) {
+            model.entity.dispose()
+        }
+        placedModels.clear()
+        selectedModelIndex = -1
+        modelMode = false
+        currentFileIsModel = false
+        setAlphaPassthroughEnabled(false)
     }
 
     private fun navigateFile(delta: Int) {
@@ -2851,6 +3130,137 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
         }
 
+        if (!isPlaying && !modelMode) return
+
+        // ── 3D Model interaction ──
+        if (modelMode && selectedModelIndex in placedModels.indices) {
+            val selected = placedModels[selectedModelIndex]
+            val entity = selected.entity
+
+            val leftGrab = input.leftSqueeze > 0.5f && input.leftTrigger > 0.5f && input.leftHandValid
+            val rightGrab = input.rightSqueeze > 0.5f && input.rightTrigger > 0.5f && input.rightHandValid
+            val grabbing = leftGrab || rightGrab
+
+            val grabAimRot = if (rightGrab) input.rightAimRot
+                             else if (leftGrab) input.leftAimRot
+                             else null
+            val grabAimValid = if (rightGrab) input.rightAimValid
+                               else if (leftGrab) input.leftAimValid
+                               else false
+
+            if (grabbing && grabAimValid && grabAimRot != null) {
+                val rollRot = grabAimRot
+                if (!modelGrabbing) {
+                    modelGrabbing = true
+                    modelGrabStartAimDir = quatForward(grabAimRot)
+                    modelGrabStartAimRot = rollRot.copyOf()
+                    modelGrabStartPose = entity.getPose()
+                    modelGrabStartScale = selected.scale
+                } else {
+                    val aimDir = quatForward(grabAimRot)
+                    val dAimX = aimDir[0] - modelGrabStartAimDir[0]
+                    val dAimY = aimDir[1] - modelGrabStartAimDir[1]
+                    val dAimZ = aimDir[2] - modelGrabStartAimDir[2]
+                    val startPos = modelGrabStartPose.translation
+                    val dist = 2f // approximate arm's length
+
+                    // Move model by aim direction delta
+                    val newPos = Vector3(
+                        startPos.x + dAimX * dist,
+                        startPos.y + dAimY * dist,
+                        startPos.z + dAimZ * dist
+                    )
+
+                    // Rotate model by wrist twist
+                    var rollDelta = relativeRollDeg(modelGrabStartAimRot, rollRot)
+                    while (rollDelta > 180f) rollDelta -= 360f
+                    while (rollDelta < -180f) rollDelta += 360f
+                    val currentRot = modelGrabStartPose.rotation
+                    val newRot = if (!rollDelta.isNaN()) {
+                        val rollQuat = Quaternion.fromEulerAngles(0f, rollDelta, 0f)
+                        Quaternion(
+                            rollQuat.w * currentRot.x + rollQuat.x * currentRot.w + rollQuat.y * currentRot.z - rollQuat.z * currentRot.y,
+                            rollQuat.w * currentRot.y - rollQuat.x * currentRot.z + rollQuat.y * currentRot.w + rollQuat.z * currentRot.x,
+                            rollQuat.w * currentRot.z + rollQuat.x * currentRot.y - rollQuat.y * currentRot.x + rollQuat.z * currentRot.w,
+                            rollQuat.w * currentRot.w - rollQuat.x * currentRot.x - rollQuat.y * currentRot.y - rollQuat.z * currentRot.z
+                        )
+                    } else currentRot
+
+                    entity.setPose(Pose(newPos, newRot))
+                }
+            } else {
+                modelGrabbing = false
+            }
+
+            // Thumbstick = scale model (when not grabbing)
+            if (!grabbing && !menuVisible) {
+                val vAxis = if (kotlin.math.abs(input.rightThumbY) > kotlin.math.abs(input.leftThumbY))
+                    input.rightThumbY else input.leftThumbY
+                if (kotlin.math.abs(vAxis) > NATIVE_STICK_DEADZONE) {
+                    selected.scale = (selected.scale + vAxis * 0.02f).coerceIn(0.05f, 10f)
+                    entity.setScale(selected.scale)
+                }
+
+                // Horizontal thumbstick = rotate model on Y axis
+                val hAxis = if (kotlin.math.abs(input.rightThumbX) > kotlin.math.abs(input.leftThumbX))
+                    input.rightThumbX else input.leftThumbX
+                if (kotlin.math.abs(hAxis) > NATIVE_STICK_DEADZONE) {
+                    val currentPose = entity.getPose()
+                    val rotDelta = Quaternion.fromEulerAngles(0f, -hAxis * 2f, 0f)
+                    val newRot = Quaternion(
+                        rotDelta.w * currentPose.rotation.x + rotDelta.x * currentPose.rotation.w + rotDelta.y * currentPose.rotation.z - rotDelta.z * currentPose.rotation.y,
+                        rotDelta.w * currentPose.rotation.y - rotDelta.x * currentPose.rotation.z + rotDelta.y * currentPose.rotation.w + rotDelta.z * currentPose.rotation.x,
+                        rotDelta.w * currentPose.rotation.z + rotDelta.x * currentPose.rotation.y - rotDelta.y * currentPose.rotation.x + rotDelta.z * currentPose.rotation.w,
+                        rotDelta.w * currentPose.rotation.w - rotDelta.x * currentPose.rotation.x - rotDelta.y * currentPose.rotation.y - rotDelta.z * currentPose.rotation.z
+                    )
+                    entity.setPose(Pose(currentPose.translation, newRot))
+                }
+            }
+
+            // A button = toggle animation
+            if (input.aButton && !lastAState) {
+                val animState = selected.entity.getAnimationState()
+                if (animState == GltfModelEntity.AnimationState.PLAYING) {
+                    selected.entity.stopAnimation()
+                } else {
+                    selected.entity.startAnimation(true) // loop = true
+                }
+            }
+            lastAState = input.aButton
+
+            // Menu button = toggle model panel
+            if (input.menuButton && !lastMenuState) {
+                runOnUiThread {
+                    if (menuVisible) {
+                        menuVisible = false
+                        setPanelVisible(false)
+                    } else {
+                        showModelPanel()
+                        menuVisible = true
+                        setPanelVisible(true)
+                    }
+                }
+            }
+            lastMenuState = input.menuButton
+
+            // B button = back to file picker
+            if (input.bButton && !lastBState) {
+                runOnUiThread {
+                    if (menuVisible) {
+                        menuVisible = false
+                        setPanelVisible(false)
+                    } else {
+                        showModelPanel()
+                        menuVisible = true
+                        setPanelVisible(true)
+                    }
+                }
+            }
+            lastBState = input.bButton
+
+            return // Don't fall through to video controls
+        }
+
         if (!isPlaying) return
 
         // ── 6DOF depth simulation: feed head position ──
@@ -3140,6 +3550,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         resumeSaveJob?.cancel()
         resumeSaveJob = null
         spatialAudio.release()
+        clearAllModels()
         openXRInput?.stop()
         openXRInput = null
         stopPlayback()
