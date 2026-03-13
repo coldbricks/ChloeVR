@@ -121,6 +121,8 @@ class GlesModelRenderer {
     var lightAngleDeg = 0f    // azimuth in degrees
     var lightElevDeg = 60f   // elevation in degrees (90=overhead, 5=horizon=long shadows)
     var gridHeight = -2.0f   // Y offset for ground grid
+    var shCoefficients = FloatArray(27) // 9 × RGB L2 spherical harmonics
+    var useSH = false
 
     /** Recompute lightDir from azimuth + elevation angles */
     fun updateLightDirFromAngles() {
@@ -645,6 +647,10 @@ class GlesModelRenderer {
         GLES30.glUniform3f(uAmbientColor, ambientColor[0], ambientColor[1], ambientColor[2])
         GLES30.glUniform1f(uAmbientIntensity, ambientIntensity)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uClipY"), gridHeight)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uUseSH"), if (useSH) 1.0f else 0.0f)
+        if (useSH) {
+            GLES30.glUniform3fv(GLES30.glGetUniformLocation(programId, "uSH"), 9, shCoefficients, 0)
+        }
 
         for (m in models) {
             if (m.indexCount == 0) continue
@@ -1107,11 +1113,24 @@ in vec3 vNormal, vPosition;
 in vec2 vTexCoord;
 in float vWorldY;
 uniform sampler2D uBaseColor;
-uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected, uClipY;
+uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected, uClipY, uUseSH;
 uniform vec3 uLightDir, uLightColor, uFillLightDir, uFillLightColor, uAmbientColor;
+uniform vec3 uSH[9]; // L2 spherical harmonics (9 RGB coefficients)
 out vec4 fragColor;
+
+// Evaluate L2 spherical harmonics irradiance at direction n
+vec3 evalSH(vec3 n) {
+    float c1 = 0.429043; float c2 = 0.511664;
+    float c3 = 0.743125; float c4 = 0.886227; float c5 = 0.247708;
+    return max(vec3(0.0),
+        c4 * uSH[0] +
+        2.0 * c2 * (uSH[1] * n.y + uSH[2] * n.z + uSH[3] * n.x) +
+        2.0 * c1 * (uSH[4] * n.x * n.y + uSH[5] * n.y * n.z + uSH[7] * n.x * n.z) +
+        c5 * uSH[6] * (3.0 * n.z * n.z - 1.0) +
+        c1 * uSH[8] * (n.x * n.x - n.y * n.y));
+}
+
 void main() {
-    // Clip below grid floor
     if (vWorldY < uClipY) discard;
     vec3 N = normalize(vNormal);
     vec3 V = normalize(-vPosition);
@@ -1139,7 +1158,13 @@ void main() {
     float fD = alpha2 / (3.14159265 * pow(fNdotH * fNdotH * (alpha2 - 1.0) + 1.0, 2.0) + 0.0001);
     vec3 fSpec = fD * F * G / (4.0 * NdotV * fNdotL + 0.0001);
     color += (diffuse + fSpec * 0.5) * fNdotL * uFillLightColor * uFillLightIntensity;
-    color += albedo * mix(vec3(0.05, 0.05, 0.08), vec3(0.15, 0.15, 0.12), N.y * 0.5 + 0.5) * uAmbientColor * uAmbientIntensity;
+    // Ambient: use SH irradiance when available, fallback to hemisphere
+    if (uUseSH > 0.5) {
+        vec3 shIrrad = evalSH(N);
+        color += albedo * shIrrad * uAmbientIntensity;
+    } else {
+        color += albedo * mix(vec3(0.05, 0.05, 0.08), vec3(0.15, 0.15, 0.12), N.y * 0.5 + 0.5) * uAmbientColor * uAmbientIntensity;
+    }
     if (uSelected > 0.5) { float rim = pow(1.0 - NdotV, 3.0); color += vec3(0.0, 0.8, 1.0) * rim * 0.8; }
     color *= exp2(uExposure);
     color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);

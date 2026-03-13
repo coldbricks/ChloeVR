@@ -82,8 +82,10 @@ class FilamentModelActivity : ComponentActivity() {
     private var lightSensor: Sensor? = null
     @Volatile private var roomLux = 200f  // default indoor
     @Volatile private var autoAmbient = true
-    private val lightEstimateBuffer = FloatArray(13)
+    private val lightEstimateBuffer = FloatArray(41)
     @Volatile private var xrLightEstimateAvailable = false
+    @Volatile private var xrSHAvailable = false
+    @Volatile private var xrLightDebugStr = ""
 
     // Laser / selection state
     private var laserHandPos = floatArrayOf(0f, 0f, 0f)
@@ -283,6 +285,7 @@ class FilamentModelActivity : ComponentActivity() {
                                     val ccR = lightEstimateBuffer[4]; val ccG = lightEstimateBuffer[5]; val ccB = lightEstimateBuffer[6]
                                     val dirR = lightEstimateBuffer[7]; val dirG = lightEstimateBuffer[8]; val dirB = lightEstimateBuffer[9]
                                     val dirX = lightEstimateBuffer[10]; val dirY = lightEstimateBuffer[11]; val dirZ = lightEstimateBuffer[12]
+                                    val shValid = lightEstimateBuffer[13] > 0.5f
 
                                     // Set ambient from real room
                                     val ambScale = (ambR + ambG + ambB) / 3f
@@ -301,6 +304,18 @@ class FilamentModelActivity : ComponentActivity() {
                                         val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
                                         gr.lightColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
                                     }
+
+                                    // Pass SH coefficients to renderer
+                                    xrSHAvailable = shValid
+                                    if (shValid) {
+                                        gr.shCoefficients = lightEstimateBuffer.copyOfRange(14, 41)
+                                        gr.useSH = true
+                                    }
+
+                                    // Debug string for HUD
+                                    xrLightDebugStr = "Amb(%.1f,%.1f,%.1f) Dir(%.1f,%.1f,%.1f) %s".format(
+                                        ambR, ambG, ambB, dirX, dirY, dirZ,
+                                        if (shValid) "SH:L2" else "SH:off")
                                 } else {
                                     // Fallback: lux sensor
                                     xrLightEstimateAvailable = false
@@ -889,12 +904,21 @@ class FilamentModelActivity : ComponentActivity() {
         // Model count + grid state
         val luxStr = when {
             !autoAmbient -> "Manual"
+            xrLightEstimateAvailable && xrSHAvailable -> "XR Light+SH"
             xrLightEstimateAvailable -> "XR Light Est"
             else -> "Sensor (%.0f lux)".format(roomLux)
         }
         val gridStr = if (gridVisible) "ON (Y=%.1f)".format(renderer?.gridHeight ?: 0f) else "OFF"
         val gizmoStr = if (gizmoVisible) "ON" else "OFF"
         canvas.drawText("${models.size} model${if (models.size != 1) "s" else ""}  |  Grid: $gridStr  |  Gizmo: $gizmoStr", 50f, y, dim)
+        y += 40f
+        // Show environment light source and data
+        if (xrLightEstimateAvailable) {
+            val activeColor = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF00FF88.toInt() }
+            canvas.drawText("ENV: $luxStr  $xrLightDebugStr", 50f, y, activeColor)
+        } else {
+            canvas.drawText("ENV: $luxStr", 50f, y, dim)
+        }
         y += 70f
 
         val model = models.getOrNull(selectedModelIndex)

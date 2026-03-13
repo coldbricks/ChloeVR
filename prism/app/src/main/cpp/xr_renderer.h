@@ -49,9 +49,10 @@ public:
         float ambientR = 0, ambientG = 0, ambientB = 0;
         float colorCorrR = 1, colorCorrG = 1, colorCorrB = 1;
         float dirIntensityR = 0, dirIntensityG = 0, dirIntensityB = 0;
-        float dirX = 0, dirY = 1, dirZ = 0; // direction toward light
-        static constexpr int SIZE = 13; // number of floats
-        float* data() { return &ambientR; } // first 12 after valid
+        float dirX = 0, dirY = 1, dirZ = 0;
+        bool shValid = false;
+        float sh[27] = {}; // 9 × RGB coefficients
+        static constexpr int SIZE = 41; // total floats in JNI buffer
     };
     bool pollLightEstimate(LightEstimate& estimate);
 

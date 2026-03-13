@@ -157,13 +157,14 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsRunning(
     return (g_renderer && g_renderer->isRunning()) ? JNI_TRUE : JNI_FALSE;
 }
 
-// Light estimation output layout (float array):
+// Light estimation output layout (float array, 41 floats):
 // [0]  valid (1.0 or 0.0)
-// [1]  ambientR  [2] ambientG  [3] ambientB
-// [4]  colorCorrR [5] colorCorrG [6] colorCorrB
-// [7]  dirIntensityR [8] dirIntensityG [9] dirIntensityB
-// [10] dirX  [11] dirY  [12] dirZ
-// Total: 13 floats
+// [1-3]   ambientR/G/B
+// [4-6]   colorCorrR/G/B
+// [7-9]   dirIntensityR/G/B
+// [10-12] dirX/Y/Z
+// [13]    shValid (1.0 or 0.0)
+// [14-40] SH coefficients (9 × RGB = 27 floats)
 
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
@@ -172,13 +173,15 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
     XrRenderer::LightEstimate est;
     if (!g_renderer->pollLightEstimate(est)) return JNI_FALSE;
 
-    float data[13];
+    float data[41];
     data[0] = est.valid ? 1.0f : 0.0f;
     data[1] = est.ambientR; data[2] = est.ambientG; data[3] = est.ambientB;
     data[4] = est.colorCorrR; data[5] = est.colorCorrG; data[6] = est.colorCorrB;
     data[7] = est.dirIntensityR; data[8] = est.dirIntensityG; data[9] = est.dirIntensityB;
     data[10] = est.dirX; data[11] = est.dirY; data[12] = est.dirZ;
-    env->SetFloatArrayRegion(outData, 0, 13, data);
+    data[13] = est.shValid ? 1.0f : 0.0f;
+    memcpy(&data[14], est.sh, 27 * sizeof(float));
+    env->SetFloatArrayRegion(outData, 0, 41, data);
     return JNI_TRUE;
 }
 
