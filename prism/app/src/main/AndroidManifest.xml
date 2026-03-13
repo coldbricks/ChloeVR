@@ -13,6 +13,7 @@
 
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
+    <uses-feature android:name="android.software.xr.api.openxr" android:required="false" />
     <uses-feature android:name="android.hardware.xr.input.hand_tracking" android:required="false" />
 
     <application
@@ -38,6 +39,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- Filament + OpenXR direct renderer for 3D models (UNMANAGED mode) -->
+        <activity
+            android:name=".FilamentModelActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+
+            <property
+                android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
+                android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_UNMANAGED" />
         </activity>
     </application>
 </manifest>

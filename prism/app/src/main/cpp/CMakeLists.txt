@@ -6,6 +6,8 @@ find_package(OpenXR REQUIRED CONFIG)
 add_library(openxr_input SHARED
     openxr_input.cpp
     jni_bridge.cpp
+    xr_renderer.cpp
+    renderer_jni_bridge.cpp
 )
 
 target_link_libraries(openxr_input

@@ -2303,140 +2303,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // ── 3D Model Loading ──
 
     private fun loadModelFile(file: File) {
-        val session = xrSession ?: run {
-            showMessage("XR session not available")
-            return
-        }
+        // Launch Filament model viewer activity (UNMANAGED mode with direct OpenXR rendering)
+        android.util.Log.i("ChloeVR", "Launching Filament model viewer for: ${file.absolutePath}")
 
-        // Enter model mode (stop any video playback, keep existing models)
-        if (!modelMode) {
-            stopPlayback()
-            modelMode = true
-            currentFileIsModel = true
-            isPlaying = false
-        }
+        // Stop input polling — the model activity has its own OpenXR session
+        openXRInput?.stop()
+        openXRInput = null
 
-        // Enable passthrough for AR placement
-        setAlphaPassthroughEnabled(true)
-
-        // Close file picker UI
-        if (filePickerActive) {
-            filePickerActive = false
-            filePickerScanJob?.cancel()
-            filePickerScanJob = null
-            filePickerResultsContainer = null
-            filePickerCountLabel = null
-            filePickerStatusLabel = null
-        }
-
-        // Hide panel during loading
-        setPanelVisible(false)
-        menuVisible = false
-
-        // Load the GLB model asynchronously
-        lifecycleScope.launch {
-            try {
-                android.util.Log.i("ChloeVR", "Loading model: ${file.absolutePath} (${file.length()} bytes, exists=${file.exists()}, canRead=${file.canRead()})")
-                val glbBytes = file.readBytes()
-                val meshName = parseMeshNameFromGlb(glbBytes)
-                val gltfModel = GltfModel.create(session, glbBytes, file.name)
-                android.util.Log.i("ChloeVR", "GltfModel created successfully")
-
-                // Try floor anchoring — place model ON the real floor
-                var entity: GltfModelEntity
-                try {
-                    if (floorAnchor == null) {
-                        floorAnchor = AnchorEntity.create(
-                            session,
-                            androidx.xr.runtime.math.FloatSize2d(0.3f, 0.3f),
-                            PlaneOrientation.HORIZONTAL,
-                            PlaneSemanticType.FLOOR
-                        )
-                        android.util.Log.i("ChloeVR", "Floor anchor created")
-                    }
-                    // Place on floor, 2m in front
-                    entity = GltfModelEntity.create(session, gltfModel, Pose(Vector3(0f, 0f, -2f), Quaternion.Identity), floorAnchor!!)
-                    android.util.Log.i("ChloeVR", "Model anchored to floor")
-                } catch (e: Exception) {
-                    android.util.Log.w("ChloeVR", "Floor anchor failed, placing free: ${e.message}")
-                    // Fallback: place at y=0 (LOCAL space origin = floor level on Galaxy XR)
-                    // 2m in front of the tracking origin
-                    entity = GltfModelEntity.create(session, gltfModel, Pose(Vector3(0f, 0f, -2f), Quaternion.Identity))
-                }
-
-                // Regardless of anchor, try to place model at floor level (y=0 in LOCAL space)
-                // The LOCAL reference space origin on Galaxy XR is at floor height
-                val curPose = entity.getPose()
-                if (curPose.translation.y > 0.5f) {
-                    // Model ended up above floor — push it down
-                    entity.setPose(Pose(Vector3(curPose.translation.x, 0f, curPose.translation.z), curPose.rotation))
-                }
-
-                // Auto-scale based on bounding box so models appear at a reasonable size
-                val bbox = entity.gltfModelBoundingBox
-                val extents = bbox.halfExtents
-                val maxExtent = maxOf(
-                    extents.width * 2f,
-                    extents.height * 2f,
-                    extents.depth * 2f
-                ).coerceAtLeast(0.01f)
-                // Target size: ~1.5 meters tall (human-scale for figure models)
-                val targetSize = 1.5f
-                val autoScale = targetSize / maxExtent
-                entity.setScale(autoScale)
-
-                // Parse original material properties from GLB
-                var origMetallic = 0f
-                var origRoughness = 0.9f
-                try {
-                    val jsonLength = (glbBytes[12].toInt() and 0xFF) or
-                            ((glbBytes[13].toInt() and 0xFF) shl 8) or
-                            ((glbBytes[14].toInt() and 0xFF) shl 16) or
-                            ((glbBytes[15].toInt() and 0xFF) shl 24)
-                    val jsonStr = String(glbBytes, 20, jsonLength.coerceAtMost(glbBytes.size - 20), Charsets.UTF_8)
-                    val json = org.json.JSONObject(jsonStr)
-                    val mats = json.optJSONArray("materials")
-                    if (mats != null && mats.length() > 0) {
-                        val pbr = mats.getJSONObject(0).optJSONObject("pbrMetallicRoughness")
-                        if (pbr != null) {
-                            origMetallic = pbr.optDouble("metallicFactor", 0.0).toFloat()
-                            origRoughness = pbr.optDouble("roughnessFactor", 0.9).toFloat()
-                        }
-                    }
-                } catch (e: Exception) {}
-
-                val placed = PlacedModel(
-                    file = file, entity = entity,
-                    scale = autoScale, baseScale = autoScale,
-                    meshName = meshName,
-                    metallic = origMetallic, roughness = origRoughness
-                )
-                placed.groundToFloor()
-                placedModels.add(placed)
-                selectedModelIndex = placedModels.size - 1
-
-                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, scale=$autoScale")
-
-                // Show model control panel
-                runOnUiThread {
-                    showModelPanel()
-                    menuVisible = true
-                    setPanelVisible(true)
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("ChloeVR", "Failed to load model: ${file.name}", e)
-                runOnUiThread {
-                    // If no models in scene, exit model mode so user isn't stuck
-                    if (placedModels.isEmpty()) {
-                        modelMode = false
-                        currentFileIsModel = false
-                        setAlphaPassthroughEnabled(false)
-                    }
-                    showMessage("Failed to load 3D model: ${e.message}\n\nPress Menu to return.")
-                    setPanelVisible(true)
-                }
-            }
-        }
+        val intent = android.content.Intent(this, FilamentModelActivity::class.java)
+        intent.putExtra(FilamentModelActivity.EXTRA_MODEL_PATH, file.absolutePath)
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
     private fun showModelPanel() {
@@ -4053,6 +3930,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         lastYState = input.yButton
 
         lastBState = input.bButton
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Restart OpenXR input if it was stopped (e.g. returning from FilamentModelActivity)
+        if (openXRInput == null) {
+            initOpenXRInput()
+        }
     }
 
     override fun onDestroy() {
