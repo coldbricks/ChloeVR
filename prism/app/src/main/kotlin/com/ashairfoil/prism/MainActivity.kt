@@ -3116,18 +3116,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                    // Model mode: consume B/Back so it doesn't minimize the app
-                    if (modelMode) {
-                        if (menuVisible) {
-                            menuVisible = false
-                            setPanelVisible(false)
-                        } else {
-                            showModelPanel()
-                            menuVisible = true
-                            setPanelVisible(true)
-                        }
-                        return true
-                    }
+                    // Model mode: just consume the event so Android doesn't minimize.
+                    // The actual B button logic is handled by onControllerState via OpenXR.
+                    if (modelMode) return true
                     if (isPlaying) {
                         if (menuVisible) {
                             menuVisible = false
@@ -3497,15 +3488,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         curPos.z + (targetZ - curPos.z) * smooth
                     )
 
-                    // Thumbstick forward/back = push/pull along aim direction
+                    // Thumbstick forward/back = push/pull (adjusts grab distance)
+                    // Forward (up) = bring closer, Back (down) = push away
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
+                        modelGrabDistance = (modelGrabDistance - grabThumbY * 0.15f).coerceIn(0.2f, 20f)
+                        // Recalculate position at new distance along current aim
                         val fwd = quatForward(grabAimRot)
-                        val pushSpeed = grabThumbY * 0.08f
                         entity.setPose(Pose(
                             Vector3(
-                                newPos.x + fwd[0] * pushSpeed,
-                                newPos.y + fwd[1] * pushSpeed,
-                                newPos.z + fwd[2] * pushSpeed
+                                grabHandPos[0] + fwd[0] * modelGrabDistance,
+                                grabHandPos[1] + fwd[1] * modelGrabDistance,
+                                grabHandPos[2] + fwd[2] * modelGrabDistance
                             ),
                             entity.getPose().rotation
                         ))
