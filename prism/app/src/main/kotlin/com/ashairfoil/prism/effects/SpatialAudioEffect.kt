@@ -121,7 +121,7 @@ class SpatialAudioEffect {
     /**
      * Enable/disable the virtualizer effect.
      */
-    fun setEnabled(enable: Boolean) {
+    fun updateEnabled(enable: Boolean) {
         enabled = enable
         virtualizer?.enabled = enable
         if (!enable) {
@@ -133,7 +133,7 @@ class SpatialAudioEffect {
     /**
      * Set effect strength (0.0 to 1.0).
      */
-    fun setStrength(value: Float) {
+    fun updateStrength(value: Float) {
         strength = value.coerceIn(0f, 1f)
         virtualizer?.let {
             if (it.strengthSupported) {

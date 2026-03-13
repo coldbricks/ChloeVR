@@ -1559,7 +1559,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 layoutParams = lp
             }
             toggleBtn.setOnClickListener {
-                spatialAudio.setEnabled(!spatialAudio.enabled)
+                spatialAudio.updateEnabled(!spatialAudio.enabled)
                 toggleBtn.text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
                 toggleBtn.setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
             }
@@ -1567,7 +1567,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             // Strength slider: 0 to 1
             addView(makeEffectSliderNoSave("Strength", 0, 100, (spatialAudio.strength * 100).toInt()) { value ->
-                spatialAudio.setStrength(value / 100f)
+                spatialAudio.updateStrength(value / 100f)
             })
         }
     }
