@@ -2423,7 +2423,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 layoutParams = lp
 
                 addView(TextView(this@MainActivity).apply {
-                    text = model.file.nameWithoutExtension
+                    text = "${model.file.name}  (${String.format("%.2f", model.scale)}x)"
                     textSize = 14f
                     setTextColor(0xFFE0E0E0.toInt())
                     maxLines = 1
@@ -2437,6 +2437,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     setOnClickListener {
                         selectedModelIndex = i
                         showModelPanel()
+                    }
+                })
+
+                addView(Button(this@MainActivity).apply {
+                    text = "Dup"
+                    textSize = 12f
+                    minWidth = 60
+                    setBackgroundColor(0xFF1B5E20.toInt())
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setOnClickListener {
+                        duplicateModel(i)
                     }
                 })
 
@@ -2469,13 +2480,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             layout.addView(makeSpacer(16))
             layout.addView(makeSectionLabel("Transform"))
-            layout.addView(makeEffectSliderNoSave("Size", 10, 500, (model.scale * 100).toInt()) { value ->
-                val newScale = value / 100f
-                placedModels.getOrNull(selectedModelIndex)?.let {
-                    it.scale = newScale
-                    it.entity.setScale(newScale)
-                }
-            })
+            layout.addView(makeModelScaleSlider(model))
 
             // Height offset (useful for fine-tuning floor contact)
             layout.addView(makeEffectSliderNoSave("Height", -100, 100, 0) { value ->
@@ -2577,6 +2582,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     "  Grip + Stick fwd/back = Push/pull\n" +
                     "  Grip + Wrist twist = Rotate\n" +
                     "  Free stick L/R = Rotate on Y axis\n" +
+                    "  Free stick Up/Down = Adjust height\n" +
+                    "  Y = Cycle selected model\n" +
                     "  A = Play/stop animation\n" +
                     "  Menu = This panel"
             textSize = 12f
@@ -2600,6 +2607,86 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             modelMode = false
             currentFileIsModel = false
             setAlphaPassthroughEnabled(false)
+        }
+    }
+
+    private fun duplicateModel(index: Int) {
+        val original = placedModels.getOrNull(index) ?: return
+        val session = xrSession ?: return
+
+        lifecycleScope.launch {
+            try {
+                val gltfModel = GltfModel.create(session, android.net.Uri.fromFile(original.file))
+                val origPose = original.entity.getPose()
+
+                // Place 1m to the right of the original
+                val dupPose = Pose(
+                    Vector3(origPose.translation.x + 1f, origPose.translation.y, origPose.translation.z),
+                    origPose.rotation
+                )
+
+                val anchor = original.anchor
+                val entity = if (anchor != null) {
+                    GltfModelEntity.create(session, gltfModel, dupPose, anchor)
+                } else {
+                    GltfModelEntity.create(session, gltfModel, dupPose)
+                }
+
+                entity.setScale(original.scale)
+
+                val placed = PlacedModel(original.file, entity, original.scale, anchor, original.isAnchored)
+                placedModels.add(placed)
+                selectedModelIndex = placedModels.size - 1
+
+                android.util.Log.i("ChloeVR", "Duplicated model: ${original.file.name}")
+                runOnUiThread { showModelPanel() }
+            } catch (e: Exception) {
+                android.util.Log.e("ChloeVR", "Failed to duplicate model: ${e.message}")
+                runOnUiThread { showMessage("Failed to duplicate: ${e.message}") }
+            }
+        }
+    }
+
+    private fun makeModelScaleSlider(model: PlacedModel): LinearLayout {
+        val scaleValue = (model.scale * 100).toInt()
+        val valueLabel = TextView(this).apply {
+            text = "Size: $scaleValue  (${String.format("%.2f", model.scale)}x)"
+            textSize = 14f
+            setTextColor(0xFFCCCCCC.toInt())
+            gravity = Gravity.CENTER
+        }
+        val min = 10
+        val max = 500
+        val range = max - min
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            params.setMargins(0, 2, 0, 2)
+            layoutParams = params
+
+            addView(valueLabel)
+            addView(SeekBar(this@MainActivity).apply {
+                this.max = range
+                progress = (scaleValue - min).coerceIn(0, range)
+                setPadding(0, 4, 0, 4)
+                setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val value = progress + min
+                        val newScale = value / 100f
+                        valueLabel.text = "Size: $value  (${String.format("%.2f", newScale)}x)"
+                        placedModels.getOrNull(selectedModelIndex)?.let {
+                            it.scale = newScale
+                            it.entity.setScale(newScale)
+                        }
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar?) {}
+                    override fun onStopTrackingTouch(sb: SeekBar?) {}
+                })
+            })
         }
     }
 
@@ -3412,7 +3499,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 modelGrabbing = false
             }
 
-            // Free thumbstick (no grip) = rotate model on Y axis
+            // Free thumbstick (no grip) = rotate model on Y axis + adjust height
             if (!grabbing && !menuVisible) {
                 val hAxis = if (kotlin.math.abs(input.rightThumbX) > kotlin.math.abs(input.leftThumbX))
                     input.rightThumbX else input.leftThumbX
@@ -3427,7 +3514,29 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     )
                     entity.setPose(Pose(currentPose.translation, newRot))
                 }
+
+                // Left thumbstick vertical = height adjustment
+                val vAxis = input.leftThumbY
+                if (kotlin.math.abs(vAxis) > NATIVE_STICK_DEADZONE) {
+                    val currentPose = entity.getPose()
+                    val heightDelta = vAxis * 0.03f
+                    entity.setPose(Pose(
+                        Vector3(currentPose.translation.x, currentPose.translation.y + heightDelta, currentPose.translation.z),
+                        currentPose.rotation
+                    ))
+                }
             }
+
+            // Y button = cycle selected model
+            if (input.yButton && !lastYState) {
+                if (placedModels.size > 1) {
+                    selectedModelIndex = (selectedModelIndex + 1) % placedModels.size
+                    runOnUiThread {
+                        if (menuVisible) showModelPanel()
+                    }
+                }
+            }
+            lastYState = input.yButton
 
             // A button = toggle animation
             if (input.aButton && !lastAState) {
