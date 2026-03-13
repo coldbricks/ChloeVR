@@ -2823,24 +2823,82 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     /**
+     * Extract the base color texture from GLB bytes and save to a temp file.
+     * Returns the temp file path, or null if extraction fails.
+     */
+    private fun extractTextureFromGlb(glbBytes: ByteArray): java.io.File? {
+        try {
+            if (glbBytes.size < 20) return null
+            // Parse JSON chunk
+            val jsonLength = (glbBytes[12].toInt() and 0xFF) or
+                    ((glbBytes[13].toInt() and 0xFF) shl 8) or
+                    ((glbBytes[14].toInt() and 0xFF) shl 16) or
+                    ((glbBytes[15].toInt() and 0xFF) shl 24)
+            val jsonStr = String(glbBytes, 20, jsonLength.coerceAtMost(glbBytes.size - 20), Charsets.UTF_8)
+            val json = org.json.JSONObject(jsonStr)
+
+            // Find the base color texture's buffer view
+            val images = json.optJSONArray("images") ?: return null
+            if (images.length() == 0) return null
+            val image = images.getJSONObject(0)
+            val bufferViewIdx = image.optInt("bufferView", -1)
+            if (bufferViewIdx < 0) return null
+            val mimeType = image.optString("mimeType", "image/jpeg")
+
+            val bufferViews = json.optJSONArray("bufferViews") ?: return null
+            val bv = bufferViews.getJSONObject(bufferViewIdx)
+            val byteOffset = bv.optInt("byteOffset", 0)
+            val byteLength = bv.optInt("byteLength", 0)
+
+            // Binary chunk starts after JSON chunk: 12 (header) + 8 (json chunk header) + jsonLength + 8 (bin chunk header)
+            val binChunkStart = 12 + 8 + jsonLength + 8
+            val texStart = binChunkStart + byteOffset
+            val texEnd = texStart + byteLength
+
+            if (texEnd > glbBytes.size) return null
+
+            // Write to temp file
+            val ext = if (mimeType.contains("png")) ".png" else ".jpg"
+            val tempFile = java.io.File(cacheDir, "tex_temp$ext")
+            tempFile.writeBytes(glbBytes.copyOfRange(texStart, texEnd))
+            android.util.Log.i("ChloeVR", "Extracted texture: ${byteLength} bytes to ${tempFile.absolutePath}")
+            return tempFile
+        } catch (e: Exception) {
+            android.util.Log.w("ChloeVR", "Texture extraction failed: ${e.message}")
+            return null
+        }
+    }
+
+    /**
      * Update material properties on a placed model.
-     * Creates/reuses a KhronosPbrMaterial and applies it as override.
+     * Extracts the original texture from the GLB, creates a PBR material with it,
+     * and applies exposure/metallic/roughness as multipliers.
      */
     private fun updateModelMaterial(model: PlacedModel) {
         val session = xrSession ?: return
         lifecycleScope.launch {
             try {
-                // Create new material (or we could cache, but create is fast)
                 val material = KhronosPbrMaterial.create(session, AlphaMode.OPAQUE)
-                // Exposure = baseColorFactor multiplier (dims/brightens the texture)
+
+                // Load the original texture from the GLB and apply to the new material
+                val texFile = extractTextureFromGlb(model.file.readBytes())
+                if (texFile != null) {
+                    try {
+                        val texture = androidx.xr.scenecore.Texture.create(session, texFile.toPath())
+                        material.setBaseColorTexture(texture)
+                    } catch (e: Exception) {
+                        android.util.Log.w("ChloeVR", "Texture load failed, material will be untextured: ${e.message}")
+                    }
+                }
+
+                // Exposure = baseColorFactor multiplier on top of texture
                 val e = model.exposure
                 material.setBaseColorFactor(androidx.xr.runtime.math.Vector4(e, e, e, 1f))
                 material.setMetallicFactor(model.metallic)
                 material.setRoughnessFactor(model.roughness)
 
-                // Apply with parsed mesh name
                 val meshName = model.meshName
-                android.util.Log.i("ChloeVR", "Applying material: exposure=$e metallic=${model.metallic} roughness=${model.roughness} meshName='$meshName'")
+                android.util.Log.i("ChloeVR", "Applying material: exposure=$e metallic=${model.metallic} roughness=${model.roughness} tex=${texFile != null} node='$meshName'")
                 model.entity.setMaterialOverride(material, meshName)
                 model.currentMaterial = material
             } catch (e: Exception) {
