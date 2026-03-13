@@ -2504,15 +2504,25 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             layout.addView(makeSpacer(8))
             layout.addView(makeSectionLabel("Appearance"))
-            layout.addView(makeEffectSliderNoSave("Alpha", 10, 100, 100) { value ->
+
+            // Brightness: dims the model to match room lighting (uses alpha blend)
+            layout.addView(makeEffectSliderNoSave("Brightness", 20, 100, 80) { value ->
                 placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(value / 100f)
             })
 
-            // Environment lighting control (affects all models via IBL)
+            // Transparency: make model see-through
+            layout.addView(makeEffectSliderNoSave("Transparency", 0, 80, 0) { value ->
+                // Transparency is inverse of what brightness does — low values = solid
+                val alpha = 1f - (value / 100f)
+                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(alpha.coerceIn(0.1f, 1f))
+            })
+
+            // Environment lighting control
             layout.addView(makeSpacer(12))
             layout.addView(makeSectionLabel("Lighting"))
-            layout.addView(makeEffectSliderNoSave("Passthrough", 0, 100, 100) { value ->
-                // Blend between full passthrough (bright, real lighting) and dark void
+            layout.addView(makeEffectSliderNoSave("Environment", 0, 100, 100) { value ->
+                // Lower = darker environment = dimmer model lighting
+                // This is the main tool for matching model brightness to your room
                 try {
                     val scene = xrSession?.scene ?: return@makeEffectSliderNoSave
                     if (scene.spatialCapabilities.contains(SpatialCapability.PASSTHROUGH_CONTROL)) {
