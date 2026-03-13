@@ -172,3 +172,34 @@ Validation:
   - Newest: descending `lastModified`
   - Size: descending file length
 - Validation: ran `:app:compileDebugKotlin` successfully (`BUILD SUCCESSFUL`).
+
+## [Claude] 2026-03-13
+
+### Major Session: File Picker Fix + 3D Model Viewer + Live Device Testing
+
+**File Picker:**
+- Fixed ANR on 20k+ files: display cap at 200, debounce scan, O(1) lookups
+- Added MANAGE_EXTERNAL_STORAGE for GLB/non-media file access
+- Added file type filter (All/Video/Image/3D Model)
+
+**3D Model Viewer (NEW):**
+- GLB loading via GltfModel.create(session, bytes, name) — byte[] overload required
+- Multi-model passthrough AR scene
+- Controls: Grip=move, Grip+Trigger=move+rotate, Grip+Stick=scale/push-pull
+- Lock Hands mode for walk-around viewing
+- Floor grounding via bounding box
+- GLB structure parser (mesh name, node name, material properties from JSON chunk)
+
+**Video Fix:**
+- Black screen caused by ExoPlayer FinalShaderWrapper dropping frames when effects pipeline active
+- Fix: only add effects with .enabled=true to setVideoEffects()
+
+**SDK Limitations Found (via ADB logcat on Galaxy XR SM-I610):**
+- setAlpha() on GltfModelEntity: no visible effect
+- setMaterialOverride(): crashes native renderer (OwnedPtr lifecycle SIGABRT)
+- Texture.create(session, Path): asset-only, can't load external files
+- Floor anchor: requires PlaneTrackingMode enabled (fails with boundary off)
+
+**Next Priority:**
+- Material control (exposure/metallic/roughness) requires switching to FULL_SPACE_UNMANAGED + Filament renderer
+- ShapesXR uses this approach (Unity + direct OpenXR), confirmed by APK analysis
