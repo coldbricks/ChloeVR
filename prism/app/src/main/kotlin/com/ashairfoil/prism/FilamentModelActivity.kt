@@ -109,8 +109,8 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var pendingUiBitmap: android.graphics.Bitmap? = null
     private var selectedParam = 0
     private val PARAM_NAMES = arrayOf("Metallic", "Roughness", "Exposure",
-        "Light Intensity", "Fill Intensity", "Ambient", "Light Angle",
-        "Shadow Dark", "Shadow Soft")
+        "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
+        "Light Height", "Shadow Dark", "Shadow Soft")
     private var lastXState = false
     private var lastRightStickClick = false
     private var uiNeedsRefresh = false
@@ -273,21 +273,35 @@ class FilamentModelActivity : ComponentActivity() {
                         try {
                             // Update ambient from room light sensor
                             if (autoAmbient) {
-                                // Map lux to ambient: 0 lux→0.2, 200→1.0, 1000→1.8, 10000→2.5
+                                // Environment-adaptive lighting from room sensor
                                 val lux = roomLux
-                                val mapped = when {
-                                    lux <= 0f -> 0.2f
-                                    lux < 200f -> 0.2f + (lux / 200f) * 0.8f
-                                    lux < 1000f -> 1.0f + ((lux - 200f) / 800f) * 0.8f
-                                    else -> (1.8f + kotlin.math.ln(lux / 1000f) * 0.3f).coerceAtMost(3f)
+                                // Ambient intensity: dark room=low, bright room=high
+                                gr.ambientIntensity = when {
+                                    lux <= 0f -> 0.15f
+                                    lux < 100f -> 0.15f + (lux / 100f) * 0.55f  // 0.15-0.7
+                                    lux < 400f -> 0.7f + ((lux - 100f) / 300f) * 0.5f  // 0.7-1.2
+                                    lux < 1500f -> 1.2f + ((lux - 400f) / 1100f) * 0.6f // 1.2-1.8
+                                    else -> (1.8f + kotlin.math.ln(lux / 1500f) * 0.3f).coerceAtMost(2.5f)
                                 }
-                                gr.ambientIntensity = mapped
-                                // Warm shift in low light, cool shift in bright light
-                                val warmth = (1f - (lux / 1000f).coerceIn(0f, 1f))
+                                // Primary light: reduce in bright rooms (real light provides fill)
+                                gr.lightIntensity = when {
+                                    lux < 50f -> 2.5f   // dark: boost virtual light
+                                    lux < 300f -> 2.0f   // normal
+                                    lux < 1000f -> 1.6f  // bright: real light helps
+                                    else -> 1.2f          // very bright: real light dominates
+                                }
+                                // Color temperature: warm in low light, neutral-cool in bright
+                                val warmth = (1f - (lux / 800f).coerceIn(0f, 1f))
                                 gr.ambientColor = floatArrayOf(
-                                    1f + warmth * 0.1f,
-                                    1f,
-                                    1f - warmth * 0.1f + (1f - warmth) * 0.05f
+                                    1f + warmth * 0.15f,    // warm red boost in low light
+                                    1f - warmth * 0.02f,    // slight green reduction
+                                    1f - warmth * 0.12f     // cool blue reduction in low light
+                                )
+                                // Light color also shifts warm in low light
+                                gr.lightColor = floatArrayOf(
+                                    1f + warmth * 0.08f,
+                                    0.95f + warmth * 0.02f,
+                                    0.9f - warmth * 0.05f
                                 )
                             }
 
@@ -432,7 +446,7 @@ class FilamentModelActivity : ComponentActivity() {
 
             // ── Menu panel hit test (when visible) ──
             hoveredMenuParam = -1
-            if (menuVisible && selectedModelIndex in models.indices) {
+            if (menuVisible) {
                 // Panel: 0.8m wide × 0.9m tall, center at (0, 0, -1.0), normal = +Z
                 // Ray-plane intersection: plane Z = -1.0
                 val panelCZ = -1.0f
@@ -449,9 +463,9 @@ class FilamentModelActivity : ComponentActivity() {
                         if (hx in -panelHW..panelHW && hy in -panelHH..panelHH) {
                             hitDistance = t
                             // Map panel Y to param index
-                            // Params span from world Y ~+0.22 (top) to ~-0.25 (bottom)
-                            val paramTopY = panelHH - (260f / 1024f) * (panelHH * 2f)
-                            val paramBotY = panelHH - (800f / 1024f) * (panelHH * 2f)
+                            // Params: start at bitmap Y~260, 10 rows × 55px → end ~810
+                            val paramTopY = panelHH - (255f / 1024f) * (panelHH * 2f)
+                            val paramBotY = panelHH - (815f / 1024f) * (panelHH * 2f)
                             if (hy in paramBotY..paramTopY) {
                                 val frac = (paramTopY - hy) / (paramTopY - paramBotY)
                                 val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
@@ -598,9 +612,9 @@ class FilamentModelActivity : ComponentActivity() {
         }
         lastBState = bButton
 
-        // When menu is visible: one-handed right controller operation
-        if (menuVisible && selectedModelIndex in models.indices) {
-            val model = models[selectedModelIndex]
+        // When menu is visible: param controls (works with or without model selected)
+        if (menuVisible) {
+            val model = models.getOrNull(selectedModelIndex)
 
             // Right stick click = cycle parameter (reuse rightStickClick from above)
             if (rightStickClick && !lastRightStickClick) {
@@ -611,61 +625,57 @@ class FilamentModelActivity : ComponentActivity() {
             // Right thumbstick up/down = adjust selected parameter
             if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE && renderer != null) {
                 val delta = rightThumbY * 0.015f
-                val gpuModel = renderer.getModel(model.gpuModelId)
+                val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
                 when (selectedParam) {
-                    0 -> {
+                    // Per-model params (skip if no model selected)
+                    0 -> if (model != null) {
                         model.metallic = (model.metallic + delta).coerceIn(0f, 1f)
                         gpuModel?.metallic = model.metallic
                     }
-                    1 -> {
+                    1 -> if (model != null) {
                         model.roughness = (model.roughness + delta).coerceIn(0.05f, 1f)
                         gpuModel?.roughness = model.roughness
                     }
-                    2 -> {
+                    2 -> if (model != null) {
                         model.exposure = (model.exposure + delta * 3f).coerceIn(-5f, 5f)
                         gpuModel?.exposure = model.exposure
                     }
-                    3 -> {
-                        renderer.lightIntensity = (renderer.lightIntensity + delta * 2f).coerceIn(0f, 10f)
-                    }
-                    4 -> {
-                        renderer.fillLightIntensity = (renderer.fillLightIntensity + delta).coerceIn(0f, 5f)
-                    }
+                    // Global params (always work)
+                    3 -> renderer.lightIntensity = (renderer.lightIntensity + delta * 2f).coerceIn(0f, 10f)
+                    4 -> renderer.fillLightIntensity = (renderer.fillLightIntensity + delta).coerceIn(0f, 5f)
                     5 -> {
-                        autoAmbient = false  // manual override
+                        autoAmbient = false
                         renderer.ambientIntensity = (renderer.ambientIntensity + delta).coerceIn(0f, 5f)
                     }
                     6 -> {
                         renderer.lightAngleDeg = (renderer.lightAngleDeg + delta * 20f) % 360f
                         if (renderer.lightAngleDeg < 0f) renderer.lightAngleDeg += 360f
-                        val rad = Math.toRadians(renderer.lightAngleDeg.toDouble())
-                        val sinA = kotlin.math.sin(rad).toFloat()
-                        val cosA = kotlin.math.cos(rad).toFloat()
-                        val len = kotlin.math.sqrt(sinA * sinA + 1f + cosA * cosA)
-                        renderer.lightDir = floatArrayOf(sinA / len, 1f / len, cosA / len)
+                        renderer.updateLightDirFromAngles()
                     }
-                    7 -> renderer.shadowDarkness = (renderer.shadowDarkness + delta).coerceIn(0f, 1f)
-                    8 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
+                    7 -> {
+                        renderer.lightElevDeg = (renderer.lightElevDeg + delta * 10f).coerceIn(5f, 90f)
+                        renderer.updateLightDirFromAngles()
+                    }
+                    8 -> renderer.shadowDarkness = (renderer.shadowDarkness + delta).coerceIn(0f, 1f)
+                    9 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
                 }
                 uiNeedsRefresh = true
             }
 
             // A button = reset selected parameter
             if (aButton && !lastAState && renderer != null) {
-                val gpuModel = renderer.getModel(model.gpuModelId)
+                val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
                 when (selectedParam) {
-                    0 -> { model.metallic = 0f; gpuModel?.metallic = 0f }
-                    1 -> { model.roughness = 0.9f; gpuModel?.roughness = 0.9f }
-                    2 -> { model.exposure = 0f; gpuModel?.exposure = 0f }
+                    0 -> if (model != null) { model.metallic = 0f; gpuModel?.metallic = 0f }
+                    1 -> if (model != null) { model.roughness = 0.9f; gpuModel?.roughness = 0.9f }
+                    2 -> if (model != null) { model.exposure = 0f; gpuModel?.exposure = 0f }
                     3 -> renderer.lightIntensity = 2.0f
                     4 -> renderer.fillLightIntensity = 0.5f
                     5 -> { autoAmbient = true; renderer.ambientIntensity = 1.0f }
-                    6 -> {
-                        renderer.lightAngleDeg = 0f
-                        renderer.lightDir = floatArrayOf(0.3f, 1.0f, 0.5f)
-                    }
-                    7 -> renderer.shadowDarkness = 0.5f
-                    8 -> renderer.shadowSoftness = 2.0f
+                    6 -> { renderer.lightAngleDeg = 0f; renderer.updateLightDirFromAngles() }
+                    7 -> { renderer.lightElevDeg = 60f; renderer.updateLightDirFromAngles() }
+                    8 -> renderer.shadowDarkness = 0.7f
+                    9 -> renderer.shadowSoftness = 2.0f
                 }
                 uiNeedsRefresh = true
             }
@@ -869,52 +879,53 @@ class FilamentModelActivity : ComponentActivity() {
         y += 70f
 
         val model = models.getOrNull(selectedModelIndex)
-        if (model != null) {
-            canvas.drawText(model.file.name, 50f, y, dim)
-            y += 70f
+        val modelName = model?.file?.name ?: "No model selected"
+        canvas.drawText(modelName, 50f, y, dim)
+        y += 70f
 
-            val params = arrayOf(
-                "Metallic" to "%.0f%%".format(model.metallic * 100),
-                "Roughness" to "%.0f%%".format(model.roughness * 100),
-                "Exposure" to "%+.1f EV".format(model.exposure),
-                "Light Intensity" to "%.1f".format(renderer?.lightIntensity ?: 2f),
-                "Fill Intensity" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
-                "Ambient" to "%.1f".format(renderer?.ambientIntensity ?: 1f),
-                "Light Angle" to "%.0f°".format(renderer?.lightAngleDeg ?: 0f),
-                "Shadow Dark" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.5f) * 100),
-                "Shadow Soft" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
-            )
-            val hoverBg = android.graphics.Paint().apply { color = 0x40FFFFFF.toInt() }
-            val selectedBg = android.graphics.Paint().apply { color = 0x3000CCFF.toInt() }
-            for ((i, param) in params.withIndex()) {
-                // Draw hover/selection background (full row height)
-                if (i == hoveredMenuParam && hoveredMenuParam != selectedParam) {
-                    canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, hoverBg)
-                }
-                if (i == selectedParam) {
-                    canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, selectedBg)
-                }
-                val isHovered = i == hoveredMenuParam
-                val isSelected = i == selectedParam
-                val p = if (isSelected || isHovered) highlight else normal
-                val arrow = if (isSelected) ">" else if (isHovered) "-" else " "
-                canvas.drawText("$arrow ${param.first}:  ${param.second}", 50f, y, p)
-                y += 60f
+        val noModel = "---"
+        val params = arrayOf(
+            "Metallic" to (if (model != null) "%.0f%%".format(model.metallic * 100) else noModel),
+            "Roughness" to (if (model != null) "%.0f%%".format(model.roughness * 100) else noModel),
+            "Exposure" to (if (model != null) "%+.1f EV".format(model.exposure) else noModel),
+            "Light Intensity" to "%.1f".format(renderer?.lightIntensity ?: 2f),
+            "Fill Intensity" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
+            "Ambient" to "%.1f%s".format(renderer?.ambientIntensity ?: 1f,
+                if (autoAmbient) " (auto)" else ""),
+            "Light Azimuth" to "%.0f°".format(renderer?.lightAngleDeg ?: 0f),
+            "Light Height" to "%.0f°".format(renderer?.lightElevDeg ?: 60f),
+            "Shadow Dark" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.7f) * 100),
+            "Shadow Soft" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
+        )
+        val hoverBg = android.graphics.Paint().apply { color = 0x40FFFFFF.toInt() }
+        val selectedBg = android.graphics.Paint().apply { color = 0x3000CCFF.toInt() }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 44f; color = 0xFF555555.toInt() }
+        for ((i, param) in params.withIndex()) {
+            if (i == hoveredMenuParam && hoveredMenuParam != selectedParam) {
+                canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, hoverBg)
             }
-
-            y += 30f
-            canvas.drawText("[Laser+Trigger] Select   [R Stick] Adjust", 50f, y, dim)
-            y += 45f
-            canvas.drawText("[A] Reset   [B] Close   [X] Gizmo", 50f, y, dim)
-            y += 45f
-            canvas.drawText("[Trigger] Select   [Grip] Move", 50f, y, dim)
-            y += 45f
-            canvas.drawText("[R Stick] Grid   [Y] Next   [Grip+T] Grid height", 50f, y, dim)
-        } else {
-            canvas.drawText("No model selected", 50f, y, dim)
-            y += 60f
-            canvas.drawText("Point laser and pull trigger to select", 50f, y, dim)
+            if (i == selectedParam) {
+                canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, selectedBg)
+            }
+            val isHovered = i == hoveredMenuParam
+            val isSelected = i == selectedParam
+            val isPerModel = i <= 2
+            val p = when {
+                isPerModel && model == null -> disabled
+                isSelected || isHovered -> highlight
+                else -> normal
+            }
+            val arrow = if (isSelected) ">" else if (isHovered) "-" else " "
+            canvas.drawText("$arrow ${param.first}:  ${param.second}", 50f, y, p)
+            y += 55f
         }
+
+        y += 20f
+        canvas.drawText("[Laser+Trigger] Select   [R Stick] Adjust", 50f, y, dim)
+        y += 40f
+        canvas.drawText("[A] Reset   [B] Close   [X] Gizmo", 50f, y, dim)
+        y += 40f
+        canvas.drawText("[Grip] Grab   [R Stick Click] Grid   [Y] Next", 50f, y, dim)
 
         pendingUiBitmap = bitmap
     }

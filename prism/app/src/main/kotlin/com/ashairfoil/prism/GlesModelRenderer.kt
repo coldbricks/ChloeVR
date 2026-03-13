@@ -118,8 +118,20 @@ class GlesModelRenderer {
     var fillLightIntensity = 0.5f
     var ambientColor = floatArrayOf(1.0f, 1.0f, 1.0f)
     var ambientIntensity = 1.0f
-    var lightAngleDeg = 0f
-    var gridHeight = -2.0f  // Y offset for ground grid (default: ~floor level)
+    var lightAngleDeg = 0f    // azimuth in degrees
+    var lightElevDeg = 60f   // elevation in degrees (90=overhead, 5=horizon=long shadows)
+    var gridHeight = -2.0f   // Y offset for ground grid
+
+    /** Recompute lightDir from azimuth + elevation angles */
+    fun updateLightDirFromAngles() {
+        val azRad = Math.toRadians(lightAngleDeg.toDouble())
+        val elRad = Math.toRadians(lightElevDeg.toDouble())
+        val cosEl = kotlin.math.cos(elRad).toFloat()
+        val sinEl = kotlin.math.sin(elRad).toFloat()
+        val sinAz = kotlin.math.sin(azRad).toFloat()
+        val cosAz = kotlin.math.cos(azRad).toFloat()
+        lightDir = floatArrayOf(cosEl * sinAz, sinEl, cosEl * cosAz)
+    }
 
     private var initialized = false
     private var frameCount = 0
@@ -632,6 +644,7 @@ class GlesModelRenderer {
         GLES30.glUniform1f(uFillLightIntensity, fillLightIntensity)
         GLES30.glUniform3f(uAmbientColor, ambientColor[0], ambientColor[1], ambientColor[2])
         GLES30.glUniform1f(uAmbientIntensity, ambientIntensity)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uClipY"), gridHeight)
 
         for (m in models) {
             if (m.indexCount == 0) continue
@@ -640,6 +653,7 @@ class GlesModelRenderer {
             val normalMatrix = extractNormalMatrix(modelView)
             GLES30.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
             GLES30.glUniformMatrix4fv(uModelView, 1, false, modelView, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(programId, "uModel"), 1, false, m.modelMatrix, 0)
             GLES30.glUniformMatrix3fv(uNormalMatrix, 1, false, normalMatrix, 0)
             GLES30.glUniform1f(uMetallic, m.metallic)
             GLES30.glUniform1f(uRoughness, m.roughness)
@@ -1073,15 +1087,17 @@ private const val VERTEX_SHADER = """#version 300 es
 layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aTexCoord;
-uniform mat4 uMVP, uModelView;
+uniform mat4 uMVP, uModelView, uModel;
 uniform mat3 uNormalMatrix;
 out vec3 vNormal, vPosition;
 out vec2 vTexCoord;
+out float vWorldY;
 void main() {
     gl_Position = uMVP * vec4(aPosition, 1.0);
     vNormal = normalize(uNormalMatrix * aNormal);
     vTexCoord = aTexCoord;
     vPosition = (uModelView * vec4(aPosition, 1.0)).xyz;
+    vWorldY = (uModel * vec4(aPosition, 1.0)).y;
 }
 """
 
@@ -1089,11 +1105,14 @@ private const val FRAGMENT_SHADER = """#version 300 es
 precision highp float;
 in vec3 vNormal, vPosition;
 in vec2 vTexCoord;
+in float vWorldY;
 uniform sampler2D uBaseColor;
-uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected;
+uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected, uClipY;
 uniform vec3 uLightDir, uLightColor, uFillLightDir, uFillLightColor, uAmbientColor;
 out vec4 fragColor;
 void main() {
+    // Clip below grid floor
+    if (vWorldY < uClipY) discard;
     vec3 N = normalize(vNormal);
     vec3 V = normalize(-vPosition);
     vec3 L = normalize(uLightDir);
