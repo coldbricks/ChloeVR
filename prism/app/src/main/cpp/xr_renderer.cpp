@@ -1006,7 +1006,7 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         return estimate.valid;
     }
 
-    // Root + ambient only
+    // Ambient only — directional struct crashes Samsung's runtime (struct layout mismatch)
     XrAmbientLightANDROID amb = {
         .type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID,
     };
@@ -1044,10 +1044,6 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         estimate.colorCorrG = amb.colorCorrection.y;
         estimate.colorCorrB = amb.colorCorrection.z;
         estimate.valid = true;
-        static int lc = 0;
-        if (lc++ < 3) XR_LOGI("XR Ambient: (%.3f,%.3f,%.3f) cc=(%.3f,%.3f,%.3f)",
-            estimate.ambientR, estimate.ambientG, estimate.ambientB,
-            estimate.colorCorrR, estimate.colorCorrG, estimate.colorCorrB);
     }
 
     lastLightEstimate_ = estimate;
