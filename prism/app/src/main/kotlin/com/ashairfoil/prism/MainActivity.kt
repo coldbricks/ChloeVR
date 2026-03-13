@@ -2305,7 +2305,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         lifecycleScope.launch {
             try {
                 android.util.Log.i("ChloeVR", "Loading model: ${file.absolutePath} (${file.length()} bytes, exists=${file.exists()}, canRead=${file.canRead()})")
-                val gltfModel = GltfModel.create(session, file.toPath())
+                val gltfModel = GltfModel.create(session, file.readBytes(), file.name)
                 android.util.Log.i("ChloeVR", "GltfModel created successfully")
 
                 // Try to find the floor for grounded placement.
@@ -2625,7 +2625,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         lifecycleScope.launch {
             try {
-                val gltfModel = GltfModel.create(session, original.file.toPath())
+                val gltfModel = GltfModel.create(session, original.file.readBytes(), original.file.name)
                 val origPose = original.entity.getPose()
 
                 // Place 1m to the right of the original
