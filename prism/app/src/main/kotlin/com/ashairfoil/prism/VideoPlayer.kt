@@ -48,6 +48,12 @@ class VideoPlayer(private val context: Context) {
     ) {
         release()
         player = ExoPlayer.Builder(context).build().apply {
+            // Only add effects that are actually enabled.
+            // When effects are added, ExoPlayer routes through DefaultVideoFrameProcessor.
+            // On Galaxy XR, the FinalShaderWrapper drops frames if the output surface
+            // isn't properly sized — so skip the effects pipeline entirely when nothing
+            // is enabled. Each effect's shader has an early-return when disabled, but
+            // just being in the pipeline causes the surface routing issue.
             val effects = mutableListOf<androidx.media3.common.Effect>()
 
             // 1. Alpha unpacking — must be first, restructures pixel layout
@@ -55,23 +61,23 @@ class VideoPlayer(private val context: Context) {
                 effects.add(DeoVrAlphaPackedEffect())
             }
 
-            // 2. Chroma key — operates on raw decoded pixels
-            if (chromaKeyState != null) {
+            // 2. Chroma key — only when enabled
+            if (chromaKeyState != null && chromaKeyState.enabled) {
                 effects.add(ChromaKeyEffect(chromaKeyState))
             }
 
-            // 3. Lens distortion correction — undistort before color processing
-            if (lensDistortionState != null) {
+            // 3. Lens distortion correction — only when enabled
+            if (lensDistortionState != null && lensDistortionState.enabled) {
                 effects.add(LensDistortionEffect(lensDistortionState))
             }
 
-            // 4. Color grading — brightness/contrast/saturation/sharpening/gamma/hue/tonemap
-            if (colorGradingState != null) {
+            // 4. Color grading — only when enabled
+            if (colorGradingState != null && colorGradingState.enabled) {
                 effects.add(ColorGradingEffect(colorGradingState))
             }
 
-            // 5. Stereo/IPD adjustment — last, shifts UVs per-eye in the packed layout
-            if (stereoAdjustmentState != null) {
+            // 5. Stereo/IPD adjustment — only when enabled
+            if (stereoAdjustmentState != null && stereoAdjustmentState.enabled) {
                 effects.add(StereoAdjustmentEffect(stereoAdjustmentState))
             }
 
