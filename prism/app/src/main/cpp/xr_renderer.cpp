@@ -979,16 +979,10 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     getInfo.time = now;
     getInfo.baseSpace = appSpace_;
 
-    // Chain: SH → directional → ambient → root
-    XrSphericalHarmonicsANDROID shLight = {};
-    shLight.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
-    shLight.next = nullptr;
-    shLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
-    shLight.band = XR_SPHERICAL_HARMONICS_BAND_TOTAL_ANDROID;
-
+    // Chain: directional → ambient → root (SH disabled until struct layout verified)
     XrDirectionalLightANDROID dirLight = {};
     dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dirLight.next = &shLight;
+    dirLight.next = nullptr;
     dirLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
 
     XrAmbientLightANDROID ambLight = {};
@@ -1001,7 +995,11 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     lightEst.next = &ambLight;
 
     XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &lightEst);
-    if (XR_FAILED(r)) return false;
+    if (XR_FAILED(r)) {
+        static int errCount = 0;
+        if (errCount++ < 5) XR_LOGE("xrGetLightEstimateANDROID failed: %d", (int)r);
+        return false;
+    }
 
     // Ambient
     if (ambLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
@@ -1023,16 +1021,6 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         estimate.dirY = dirLight.direction.y;
         estimate.dirZ = dirLight.direction.z;
         estimate.valid = true;
-    }
-
-    // Spherical harmonics
-    if (shLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
-        estimate.shValid = true;
-        for (int i = 0; i < 9; i++) {
-            estimate.sh[i*3+0] = shLight.coefficients[i].r;
-            estimate.sh[i*3+1] = shLight.coefficients[i].g;
-            estimate.sh[i*3+2] = shLight.coefficients[i].b;
-        }
     }
 
     return estimate.valid;
