@@ -33,8 +33,11 @@ import androidx.xr.scenecore.InputEvent as XrInputEvent
 import androidx.xr.scenecore.InteractableComponent
 import androidx.xr.scenecore.SpatialCapability
 import androidx.xr.scenecore.SpatialEnvironment
+import androidx.xr.scenecore.AnchorEntity
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
+import androidx.xr.scenecore.PlaneOrientation
+import androidx.xr.scenecore.PlaneSemanticType
 import androidx.xr.scenecore.SurfaceEntity
 import androidx.xr.scenecore.scene
 import com.ashairfoil.prism.data.MediaLibrary
@@ -161,11 +164,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     data class PlacedModel(
         val file: File,
         val entity: GltfModelEntity,
-        var scale: Float = 1f
+        var scale: Float = 1f,
+        var anchor: AnchorEntity? = null,  // floor anchor (null = free-floating)
+        var isAnchored: Boolean = false
     )
     private var placedModels = mutableListOf<PlacedModel>()
     private var selectedModelIndex = -1
     private var modelMode = false
+    private var floorAnchor: AnchorEntity? = null  // shared floor anchor for all models
     private var modelGrabbing = false
     private var modelGrabStartAimDir = floatArrayOf(0f, 0f, -1f)
     private var modelGrabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
@@ -2226,9 +2232,43 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             try {
                 val gltfModel = GltfModel.create(session, android.net.Uri.fromFile(file))
 
-                // Place 2 meters in front, at eye height
-                val placePose = Pose(Vector3(0f, 1f, -2f), Quaternion.Identity)
-                val entity = GltfModelEntity.create(session, gltfModel, placePose)
+                // Try to find the floor for grounded placement.
+                // This works with safety boundary ON or OFF — plane detection uses
+                // depth sensors and SLAM, independent of the guardian boundary.
+                // Timeout after 3s and fall back to fixed placement if no floor found.
+                var anchor: AnchorEntity? = floorAnchor
+                if (anchor == null) {
+                    try {
+                        anchor = AnchorEntity.create(
+                            session,
+                            androidx.xr.runtime.math.FloatSize2d(0.5f, 0.5f), // min 0.5m plane
+                            PlaneOrientation.HORIZONTAL,
+                            PlaneSemanticType.FLOOR,
+                            java.time.Duration.ofSeconds(3)
+                        )
+                        floorAnchor = anchor
+                        android.util.Log.i("ChloeVR", "Floor plane detected — models will be grounded")
+                    } catch (e: Exception) {
+                        android.util.Log.w("ChloeVR", "Floor detection failed (boundary off or no planes): ${e.message}")
+                        anchor = null
+                    }
+                }
+
+                // Place model: on floor if found, otherwise 1m up and 2m in front
+                val placePose = if (anchor != null) {
+                    // On the floor, 2m in front of user, at floor level
+                    Pose(Vector3(0f, 0f, -2f), Quaternion.Identity)
+                } else {
+                    // Fallback: floating at eye height
+                    Pose(Vector3(0f, 1f, -2f), Quaternion.Identity)
+                }
+
+                val entity = if (anchor != null) {
+                    // Parent to floor anchor — model sits ON the real floor
+                    GltfModelEntity.create(session, gltfModel, placePose, anchor)
+                } else {
+                    GltfModelEntity.create(session, gltfModel, placePose)
+                }
 
                 // Auto-scale based on bounding box so models appear at a reasonable size
                 val bbox = entity.getGltfModelBoundingBox()
@@ -2238,16 +2278,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     extents.height * 2f,
                     extents.depth * 2f
                 ).coerceAtLeast(0.01f)
-                // Target size: ~1 meter tall
-                val targetSize = 1.0f
+                // Target size: ~1.5 meters tall (human-scale for figure models)
+                val targetSize = 1.5f
                 val autoScale = targetSize / maxExtent
                 entity.setScale(autoScale)
 
-                val placed = PlacedModel(file, entity, autoScale)
+                val placed = PlacedModel(file, entity, autoScale, anchor, anchor != null)
                 placedModels.add(placed)
                 selectedModelIndex = placedModels.size - 1
 
-                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, bbox=${bbox.size}, scale=$autoScale")
+                val anchorStatus = if (anchor != null) "anchored to floor" else "free-floating"
+                android.util.Log.i("ChloeVR", "Model loaded: ${file.name}, scale=$autoScale, $anchorStatus")
 
                 // Show model control panel
                 runOnUiThread {
@@ -2343,8 +2384,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (selectedModelIndex in placedModels.indices) {
             val model = placedModels[selectedModelIndex]
 
+            // Anchor status
+            layout.addView(makeSpacer(8))
+            layout.addView(TextView(this).apply {
+                text = if (model.isAnchored) "Anchored to floor" else "Free-floating"
+                textSize = 12f
+                setTextColor(if (model.isAnchored) 0xFF4CAF50.toInt() else 0xFFFF9800.toInt())
+                gravity = Gravity.CENTER
+            })
+
             layout.addView(makeSpacer(16))
-            layout.addView(makeSectionLabel("Scale"))
+            layout.addView(makeSectionLabel("Transform"))
             layout.addView(makeEffectSliderNoSave("Size", 10, 500, (model.scale * 100).toInt()) { value ->
                 val newScale = value / 100f
                 placedModels.getOrNull(selectedModelIndex)?.let {
@@ -2353,17 +2403,42 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 }
             })
 
+            // Height offset (useful for fine-tuning floor contact)
+            layout.addView(makeEffectSliderNoSave("Height", -100, 100, 0) { value ->
+                placedModels.getOrNull(selectedModelIndex)?.let {
+                    val current = it.entity.getPose()
+                    it.entity.setPose(Pose(
+                        Vector3(current.translation.x, value / 100f, current.translation.z),
+                        current.rotation
+                    ))
+                }
+            })
+
             layout.addView(makeSpacer(8))
-            layout.addView(makeSectionLabel("Opacity"))
+            layout.addView(makeSectionLabel("Appearance"))
             layout.addView(makeEffectSliderNoSave("Alpha", 10, 100, 100) { value ->
                 placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(value / 100f)
+            })
+
+            // Environment lighting control (affects all models via IBL)
+            layout.addView(makeSpacer(12))
+            layout.addView(makeSectionLabel("Lighting"))
+            layout.addView(makeEffectSliderNoSave("Passthrough", 0, 100, 100) { value ->
+                // Blend between full passthrough (bright, real lighting) and dark void
+                try {
+                    val scene = xrSession?.scene ?: return@makeEffectSliderNoSave
+                    if (scene.spatialCapabilities.contains(SpatialCapability.PASSTHROUGH_CONTROL)) {
+                        scene.spatialEnvironment.preferredPassthroughOpacity = value / 100f
+                    }
+                } catch (e: Exception) {}
             })
 
             layout.addView(makeSpacer(12))
             layout.addView(makeButtonRow(
                 "Reset Position" to {
                     placedModels.getOrNull(selectedModelIndex)?.let {
-                        it.entity.setPose(Pose(Vector3(0f, 1f, -2f), Quaternion.Identity))
+                        val y = if (it.isAnchored) 0f else 1f
+                        it.entity.setPose(Pose(Vector3(0f, y, -2f), Quaternion.Identity))
                     }
                 },
                 "Recenter All" to {
@@ -2439,6 +2514,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         selectedModelIndex = -1
         modelMode = false
         currentFileIsModel = false
+        floorAnchor?.dispose()
+        floorAnchor = null
         setAlphaPassthroughEnabled(false)
     }
 
@@ -3192,16 +3269,19 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 modelGrabbing = false
             }
 
-            // Thumbstick = scale model (when not grabbing)
-            if (!grabbing && !menuVisible) {
-                val vAxis = if (kotlin.math.abs(input.rightThumbY) > kotlin.math.abs(input.leftThumbY))
-                    input.rightThumbY else input.leftThumbY
-                if (kotlin.math.abs(vAxis) > NATIVE_STICK_DEADZONE) {
-                    selected.scale = (selected.scale + vAxis * 0.02f).coerceIn(0.05f, 10f)
+            // Right grip + right thumbstick horizontal = scale
+            // (right > 0 = bigger, left < 0 = smaller)
+            val rightGripHeld = input.rightSqueeze > 0.5f && !grabbing
+            if (rightGripHeld && !menuVisible) {
+                val hScale = input.rightThumbX
+                if (kotlin.math.abs(hScale) > NATIVE_STICK_DEADZONE) {
+                    selected.scale = (selected.scale + hScale * 0.03f).coerceIn(0.05f, 10f)
                     entity.setScale(selected.scale)
                 }
+            }
 
-                // Horizontal thumbstick = rotate model on Y axis
+            // Free thumbstick (no grip, no grab) = rotate model on Y axis
+            if (!grabbing && !rightGripHeld && !menuVisible) {
                 val hAxis = if (kotlin.math.abs(input.rightThumbX) > kotlin.math.abs(input.leftThumbX))
                     input.rightThumbX else input.leftThumbX
                 if (kotlin.math.abs(hAxis) > NATIVE_STICK_DEADZONE) {
