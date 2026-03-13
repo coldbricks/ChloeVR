@@ -184,6 +184,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var filePickerCountLabel: TextView? = null
     private var filePickerStatusLabel: TextView? = null
     private val filePickerMetadataCache = mutableMapOf<String, VideoMetadata>()
+    private var mediaEntryMap: Map<String, MediaLibrary.MediaEntry> = emptyMap()
+    private var filePickerLastRefreshTime = 0L
+    private val DISPLAY_LIMIT = 200
+    private val SCAN_REFRESH_DEBOUNCE_MS = 500L
 
     private enum class FilePickerSort {
         NAME,
@@ -515,7 +519,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     } else {
                         "Scanning storage..."
                     }
-                    refreshFilePickerResults()
+                    // Debounce UI rebuilds during scan — only refresh every 500ms
+                    val now = SystemClock.uptimeMillis()
+                    if (now - filePickerLastRefreshTime >= SCAN_REFRESH_DEBOUNCE_MS || scannedRoots >= totalRoots) {
+                        filePickerLastRefreshTime = now
+                        refreshFilePickerResults()
+                    } else {
+                        // Still update status text without full rebuild
+                        filePickerCountLabel?.text = "${partial.size} found"
+                        filePickerStatusLabel?.text = filePickerStatusText
+                    }
                 }
             }
 
@@ -525,9 +538,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 filePickerLoading = false
                 filePickerStatusText = ""
 
-                // Build MediaLibrary index from scanned files
+                // Build MediaLibrary index from scanned files on IO to avoid blocking UI
                 val lib = MediaLibrary(this@MainActivity)
-                mediaEntries = lib.buildFromFiles(finalResults)
+                withContext(Dispatchers.IO) {
+                    mediaEntries = lib.buildFromFiles(finalResults)
+                    mediaEntryMap = mediaEntries.associateBy { it.file.absolutePath }
+                }
                 mediaLibrary = lib
 
                 refreshFilePickerResults()
@@ -542,20 +558,28 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val filteredFiles = filePickerFiles.filter { matchesFilePickerFilters(it) }
         val sortedFiles = sortFilePickerFiles(filteredFiles)
 
-        // Apply MediaLibrary filter if active
+        // Apply MediaLibrary filter if active (using map for O(1) lookups)
         val lib = mediaLibrary
-        val displayFiles = if (lib != null && filePickerFilterBy != MediaLibrary.FilterBy.ALL) {
-            val filteredEntries = lib.filter(mediaEntries.filter { e ->
-                sortedFiles.any { it.absolutePath == e.file.absolutePath }
-            }, filePickerFilterBy)
-            sortedFiles.filter { f -> filteredEntries.any { it.file.absolutePath == f.absolutePath } }
+        val entryMap = mediaEntryMap
+        val allMatchingFiles = if (lib != null && filePickerFilterBy != MediaLibrary.FilterBy.ALL) {
+            val matchingPaths = sortedFiles.mapNotNull { entryMap[it.absolutePath] }
+            val filteredEntries = lib.filter(matchingPaths, filePickerFilterBy)
+            val filteredPaths = filteredEntries.map { it.file.absolutePath }.toSet()
+            sortedFiles.filter { it.absolutePath in filteredPaths }
         } else {
             sortedFiles
         }
 
+        // Cap the number of rendered views to prevent ANR on large libraries
+        val totalMatchCount = allMatchingFiles.size
+        val displayFiles = if (totalMatchCount > DISPLAY_LIMIT) allMatchingFiles.take(DISPLAY_LIMIT) else allMatchingFiles
+        val isCapped = totalMatchCount > DISPLAY_LIMIT
+
         filePickerCountLabel?.text = when {
-            filePickerLoading -> "${displayFiles.size} shown / ${filePickerFiles.size} found"
-            else -> "${displayFiles.size} files"
+            filePickerLoading && isCapped -> "Showing $DISPLAY_LIMIT of ${filePickerFiles.size} found"
+            filePickerLoading -> "${totalMatchCount} shown / ${filePickerFiles.size} found"
+            isCapped -> "Showing $DISPLAY_LIMIT of $totalMatchCount — use search/filters to narrow"
+            else -> "$totalMatchCount files"
         }
 
         val statusText = when {
@@ -564,7 +588,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             filePickerLoading && filePickerStatusText.isNotBlank() -> filePickerStatusText
             filePickerFiles.isEmpty() -> "No media files found.\nSupported: MP4, MKV, WebM, JPG, PNG, WebP\nCheck internal storage or connect a USB drive."
-            displayFiles.isEmpty() -> "No files match your current search or filters."
+            allMatchingFiles.isEmpty() -> "No files match your current search or filters."
             else -> ""
         }
 
@@ -607,8 +631,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val sizeLabel = formatFileSize(file.length())
                 val projLabel = metadata.screenType.displayName
 
-                // MediaLibrary entry for resume/favorite badges
-                val entry = mediaEntries.find { it.file.absolutePath == file.absolutePath }
+                // MediaLibrary entry for resume/favorite badges (O(1) map lookup)
+                val entry = entryMap[file.absolutePath]
                 val hasResume = (entry?.resumePositionMs ?: 0) > 0
                 val isFavorite = entry?.isFavorite == true
 
@@ -720,19 +744,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun sortFilePickerFiles(files: List<File>): List<File> {
+        val entryMap = mediaEntryMap
         return when (filePickerSort) {
             FilePickerSort.NAME -> files.sortedBy { it.name.lowercase() }
             FilePickerSort.NEWEST -> files.sortedByDescending { it.lastModified() }
             FilePickerSort.SIZE -> files.sortedByDescending { it.length() }
             FilePickerSort.LAST_PLAYED -> {
-                files.sortedByDescending { f ->
-                    mediaEntries.find { it.file.absolutePath == f.absolutePath }?.lastPlayedMs ?: 0
-                }
+                files.sortedByDescending { f -> entryMap[f.absolutePath]?.lastPlayedMs ?: 0 }
             }
             FilePickerSort.RATING -> {
-                files.sortedByDescending { f ->
-                    mediaEntries.find { it.file.absolutePath == f.absolutePath }?.rating ?: 0
-                }
+                files.sortedByDescending { f -> entryMap[f.absolutePath]?.rating ?: 0 }
             }
         }
     }
