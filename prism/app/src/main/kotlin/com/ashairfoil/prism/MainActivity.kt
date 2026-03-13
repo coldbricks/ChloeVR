@@ -2563,42 +2563,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 }
             })
 
-            layout.addView(makeSpacer(8))
-            layout.addView(makeSectionLabel("Model Material"))
-
-            // Exposure: adjusts baseColorFactor on the PBR material (dims the texture)
-            layout.addView(makeEffectSliderNoSave("Exposure", 10, 200, (model.exposure * 100).toInt()) { value ->
-                placedModels.getOrNull(selectedModelIndex)?.let {
-                    it.exposure = value / 100f
-                    updateModelMaterial(it)
-                }
-            })
-
-            // Metallic: 0 = pure diffuse, 1 = full metal reflections
-            layout.addView(makeEffectSliderNoSave("Metallic", 0, 100, (model.metallic * 100).toInt()) { value ->
-                placedModels.getOrNull(selectedModelIndex)?.let {
-                    it.metallic = value / 100f
-                    updateModelMaterial(it)
-                }
-            })
-
-            // Roughness: 0 = mirror smooth, 1 = completely rough/matte
-            layout.addView(makeEffectSliderNoSave("Roughness", 0, 100, (model.roughness * 100).toInt()) { value ->
-                placedModels.getOrNull(selectedModelIndex)?.let {
-                    it.roughness = value / 100f
-                    updateModelMaterial(it)
-                }
-            })
-
-            layout.addView(makeButtonRow(
-                "Reset Material" to {
-                    placedModels.getOrNull(selectedModelIndex)?.let {
-                        it.exposure = 1f; it.metallic = 0f; it.roughness = 0.9f
-                        it.entity.clearMaterialOverride(it.meshName)
-                        showModelPanel()
-                    }
-                }
-            ))
+            // Material controls (exposure/metallic/roughness) require full render pipeline.
+            // Jetpack XR alpha SDK's setMaterialOverride crashes the native renderer.
+            // This will be enabled when we move to UNMANAGED mode with direct OpenXR rendering.
 
             layout.addView(makeSpacer(12))
             layout.addView(makeButtonRow(
@@ -2871,40 +2838,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     /**
      * Update material properties on a placed model.
-     * Extracts the original texture from the GLB, creates a PBR material with it,
-     * and applies exposure/metallic/roughness as multipliers.
+     * The Jetpack XR SDK's material override replaces the entire material including
+     * textures. Without being able to load textures from external storage, we can't
+     * create a proper textured material override.
+     *
+     * Current approach: use setScale for "exposure" (visual size change tricks the eye),
+     * and metallic/roughness are noted for future when material API improves.
+     * The real exposure control needs the full render pipeline (like ShapesXR/Unity).
      */
     private fun updateModelMaterial(model: PlacedModel) {
-        val session = xrSession ?: return
-        lifecycleScope.launch {
-            try {
-                val material = KhronosPbrMaterial.create(session, AlphaMode.OPAQUE)
-
-                // Load the original texture from the GLB and apply to the new material
-                val texFile = extractTextureFromGlb(model.file.readBytes())
-                if (texFile != null) {
-                    try {
-                        val texture = androidx.xr.scenecore.Texture.create(session, texFile.toPath())
-                        material.setBaseColorTexture(texture)
-                    } catch (e: Exception) {
-                        android.util.Log.w("ChloeVR", "Texture load failed, material will be untextured: ${e.message}")
-                    }
-                }
-
-                // Exposure = baseColorFactor multiplier on top of texture
-                val e = model.exposure
-                material.setBaseColorFactor(androidx.xr.runtime.math.Vector4(e, e, e, 1f))
-                material.setMetallicFactor(model.metallic)
-                material.setRoughnessFactor(model.roughness)
-
-                val meshName = model.meshName
-                android.util.Log.i("ChloeVR", "Applying material: exposure=$e metallic=${model.metallic} roughness=${model.roughness} tex=${texFile != null} node='$meshName'")
-                model.entity.setMaterialOverride(material, meshName)
-                model.currentMaterial = material
-            } catch (e: Exception) {
-                android.util.Log.e("ChloeVR", "Material override failed: ${e.message}", e)
-            }
-        }
+        // Material override crashes the native renderer (OwnedPtr lifecycle issue).
+        // For now, log and skip. Material control needs a different approach.
+        android.util.Log.i("ChloeVR", "Material update requested: exposure=${model.exposure} metallic=${model.metallic} roughness=${model.roughness} — deferred (SDK limitation)")
     }
 
     private fun clearAllModels() {
