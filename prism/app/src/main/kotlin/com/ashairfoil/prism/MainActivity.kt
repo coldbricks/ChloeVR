@@ -3491,12 +3491,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             if (grabbing && grabAimValid && grabAimRot != null && grabHandPos != null) {
                 val rollRot = grabAimRot
                 if (!modelGrabbing) {
-                    // ── Grab start: snapshot hand + model state ──
+                    // ── Grab start: snapshot hand + model state, reset push offset ──
                     modelGrabbing = true
                     modelGrabStartAimRot = rollRot.copyOf()
                     modelGrabStartHandPos = grabHandPos.copyOf()
                     modelGrabStartPose = entity.getPose()
                     modelGrabStartScale = selected.scale
+                    modelPushOffsetX = 0f
+                    modelPushOffsetY = 0f
+                    modelPushOffsetZ = 0f
                 } else {
                     // Hand position delta since grab start
                     val dX = grabHandPos[0] - modelGrabStartHandPos[0]

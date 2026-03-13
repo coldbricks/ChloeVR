@@ -23,3 +23,7 @@ Thumbs.db
 # Claude Code
 .claude/
 .cxx/
+sdk.dir=/home/kali/android-sdk
+build-tools/
+platforms/
+platform-tools/
