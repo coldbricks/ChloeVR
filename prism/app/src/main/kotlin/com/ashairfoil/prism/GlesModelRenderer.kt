@@ -1051,7 +1051,7 @@ class GlesModelRenderer {
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
         val view = lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f)
-        val proj = ortho(-6f, 6f, -6f, 6f, 0.1f, 25f)
+        val proj = ortho(-8f, 8f, -8f, 8f, 0.1f, 30f)
         return multiplyMat4(proj, view)
     }
 

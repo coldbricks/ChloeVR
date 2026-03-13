@@ -82,6 +82,8 @@ class FilamentModelActivity : ComponentActivity() {
     private var lightSensor: Sensor? = null
     @Volatile private var roomLux = 200f  // default indoor
     @Volatile private var autoAmbient = true
+    private val lightEstimateBuffer = FloatArray(13)
+    @Volatile private var xrLightEstimateAvailable = false
 
     // Laser / selection state
     private var laserHandPos = floatArrayOf(0f, 0f, 0f)
@@ -271,38 +273,49 @@ class FilamentModelActivity : ComponentActivity() {
                     val gr = glesRenderer
                     if (gr != null) {
                         try {
-                            // Update ambient from room light sensor
+                            // Environment lighting: prefer XR light estimation, fall back to lux sensor
                             if (autoAmbient) {
-                                // Environment-adaptive lighting from room sensor
-                                val lux = roomLux
-                                // Ambient intensity: dark room=low, bright room=high
-                                gr.ambientIntensity = when {
-                                    lux <= 0f -> 0.15f
-                                    lux < 100f -> 0.15f + (lux / 100f) * 0.55f  // 0.15-0.7
-                                    lux < 400f -> 0.7f + ((lux - 100f) / 300f) * 0.5f  // 0.7-1.2
-                                    lux < 1500f -> 1.2f + ((lux - 400f) / 1100f) * 0.6f // 1.2-1.8
-                                    else -> (1.8f + kotlin.math.ln(lux / 1500f) * 0.3f).coerceAtMost(2.5f)
+                                val hasXrLight = nativePollLightEstimate(lightEstimateBuffer)
+                                if (hasXrLight && lightEstimateBuffer[0] > 0.5f) {
+                                    // XR_ANDROID_light_estimation: real room lighting
+                                    xrLightEstimateAvailable = true
+                                    val ambR = lightEstimateBuffer[1]; val ambG = lightEstimateBuffer[2]; val ambB = lightEstimateBuffer[3]
+                                    val ccR = lightEstimateBuffer[4]; val ccG = lightEstimateBuffer[5]; val ccB = lightEstimateBuffer[6]
+                                    val dirR = lightEstimateBuffer[7]; val dirG = lightEstimateBuffer[8]; val dirB = lightEstimateBuffer[9]
+                                    val dirX = lightEstimateBuffer[10]; val dirY = lightEstimateBuffer[11]; val dirZ = lightEstimateBuffer[12]
+
+                                    // Set ambient from real room
+                                    val ambScale = (ambR + ambG + ambB) / 3f
+                                    gr.ambientIntensity = (ambScale * 2f).coerceIn(0.1f, 3f)
+                                    gr.ambientColor = floatArrayOf(
+                                        (ccR).coerceIn(0.5f, 1.5f),
+                                        (ccG).coerceIn(0.5f, 1.5f),
+                                        (ccB).coerceIn(0.5f, 1.5f)
+                                    )
+
+                                    // Set directional light from real room
+                                    val dirScale = (dirR + dirG + dirB) / 3f
+                                    if (dirScale > 0.01f) {
+                                        gr.lightDir = floatArrayOf(dirX, dirY, dirZ)
+                                        gr.lightIntensity = (dirScale * 3f).coerceIn(0.5f, 5f)
+                                        val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
+                                        gr.lightColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
+                                    }
+                                } else {
+                                    // Fallback: lux sensor
+                                    xrLightEstimateAvailable = false
+                                    val lux = roomLux
+                                    gr.ambientIntensity = when {
+                                        lux <= 0f -> 0.15f
+                                        lux < 100f -> 0.15f + (lux / 100f) * 0.55f
+                                        lux < 400f -> 0.7f + ((lux - 100f) / 300f) * 0.5f
+                                        lux < 1500f -> 1.2f + ((lux - 400f) / 1100f) * 0.6f
+                                        else -> (1.8f + kotlin.math.ln(lux / 1500f) * 0.3f).coerceAtMost(2.5f)
+                                    }
+                                    val warmth = (1f - (lux / 800f).coerceIn(0f, 1f))
+                                    gr.ambientColor = floatArrayOf(1f + warmth * 0.15f, 1f - warmth * 0.02f, 1f - warmth * 0.12f)
+                                    gr.lightColor = floatArrayOf(1f + warmth * 0.08f, 0.95f + warmth * 0.02f, 0.9f - warmth * 0.05f)
                                 }
-                                // Primary light: reduce in bright rooms (real light provides fill)
-                                gr.lightIntensity = when {
-                                    lux < 50f -> 2.5f   // dark: boost virtual light
-                                    lux < 300f -> 2.0f   // normal
-                                    lux < 1000f -> 1.6f  // bright: real light helps
-                                    else -> 1.2f          // very bright: real light dominates
-                                }
-                                // Color temperature: warm in low light, neutral-cool in bright
-                                val warmth = (1f - (lux / 800f).coerceIn(0f, 1f))
-                                gr.ambientColor = floatArrayOf(
-                                    1f + warmth * 0.15f,    // warm red boost in low light
-                                    1f - warmth * 0.02f,    // slight green reduction
-                                    1f - warmth * 0.12f     // cool blue reduction in low light
-                                )
-                                // Light color also shifts warm in low light
-                                gr.lightColor = floatArrayOf(
-                                    1f + warmth * 0.08f,
-                                    0.95f + warmth * 0.02f,
-                                    0.9f - warmth * 0.05f
-                                )
                             }
 
                             // Upload pending UI bitmap
@@ -528,9 +541,11 @@ class FilamentModelActivity : ComponentActivity() {
                     val dy = rightHandPosY - gizmoDragStartHandPos[1]
                     val dz = rightHandPosZ - gizmoDragStartHandPos[2]
                     val proj = dx*worldAxis[0] + dy*worldAxis[1] + dz*worldAxis[2]
-                    selModel.posX = gizmoDragStartModelPos[0] + worldAxis[0] * proj
-                    selModel.posY = gizmoDragStartModelPos[1] + worldAxis[1] * proj
-                    selModel.posZ = gizmoDragStartModelPos[2] + worldAxis[2] * proj
+                    // 3x sensitivity so you don't need full arm sweeps
+                    val scaled = proj * 3f
+                    selModel.posX = gizmoDragStartModelPos[0] + worldAxis[0] * scaled
+                    selModel.posY = gizmoDragStartModelPos[1] + worldAxis[1] * scaled
+                    selModel.posZ = gizmoDragStartModelPos[2] + worldAxis[2] * scaled
                     updateModelTransform(selModel)
                 } else {
                     gizmoDragging = false
@@ -765,7 +780,7 @@ class FilamentModelActivity : ComponentActivity() {
             // Stick Y = push/pull (adjust distance along ray)
             if (kotlin.math.abs(grabThumbY) > STICK_DEADZONE) {
                 grabDistance += grabThumbY * 0.05f
-                grabDistance = grabDistance.coerceIn(0.2f, 20f)
+                grabDistance = grabDistance.coerceIn(0.05f, 30f)
             }
 
             // Stick X = scale
@@ -872,7 +887,11 @@ class FilamentModelActivity : ComponentActivity() {
 
         val renderer = glesRenderer
         // Model count + grid state
-        val luxStr = if (autoAmbient) "Auto (%.0f lux)".format(roomLux) else "Manual"
+        val luxStr = when {
+            !autoAmbient -> "Manual"
+            xrLightEstimateAvailable -> "XR Light Est"
+            else -> "Sensor (%.0f lux)".format(roomLux)
+        }
         val gridStr = if (gridVisible) "ON (Y=%.1f)".format(renderer?.gridHeight ?: 0f) else "OFF"
         val gizmoStr = if (gizmoVisible) "ON" else "OFF"
         canvas.drawText("${models.size} model${if (models.size != 1) "s" else ""}  |  Grid: $gridStr  |  Gizmo: $gizmoStr", 50f, y, dim)
@@ -1196,4 +1215,5 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeRendererShutdown()
     private external fun nativeIsRunning(): Boolean
     private external fun nativeMakeGLContextCurrent(): Boolean
+    private external fun nativePollLightEstimate(outData: FloatArray): Boolean
 }

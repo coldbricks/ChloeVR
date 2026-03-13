@@ -39,6 +39,7 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
     if (!createSession()) return false;
     if (!createSwapchains()) return false;
     if (!createActions()) return false;
+    if (lightEstimationSupported_) initLightEstimation();
 
     // Pump events to catch IDLE→READY transition during init
     XR_LOGI("Pumping initial events...");
@@ -87,9 +88,25 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
     // Required extensions for full rendering
     std::vector<const char*> extensions = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
-        XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,  // always need GLES for rendering
+        XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
         "XR_KHR_convert_timespec_time",
     };
+
+    // Optional: light estimation
+    bool hasLightEst = false;
+    for (auto& ext : availExts) {
+        if (strcmp(ext.extensionName, XR_ANDROID_LIGHT_ESTIMATION_EXTENSION_NAME) == 0) {
+            hasLightEst = true;
+            break;
+        }
+    }
+    if (hasLightEst) {
+        extensions.push_back(XR_ANDROID_LIGHT_ESTIMATION_EXTENSION_NAME);
+        XR_LOGI("Light estimation extension available, enabling");
+    } else {
+        XR_LOGI("Light estimation extension not available");
+    }
+    lightEstimationSupported_ = hasLightEst;
 
     // Create instance
     XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
@@ -488,6 +505,7 @@ bool XrRenderer::waitFrame(FrameData& frame) {
     }
 
     frame.predictedDisplayTime = frameState.predictedDisplayTime;
+    lastPredictedTime_ = frameState.predictedDisplayTime;
     frame.shouldRender = frameState.shouldRender;
 
     // Begin frame
@@ -880,6 +898,10 @@ void XrRenderer::shutdown() {
         xrDestroySwapchain(uiSwapchain_);
         uiSwapchain_ = XR_NULL_HANDLE;
     }
+    if (lightEstimator_ != XR_NULL_HANDLE && xrDestroyLightEstimator_) {
+        xrDestroyLightEstimator_(lightEstimator_);
+        lightEstimator_ = XR_NULL_HANDLE;
+    }
     if (appSpace_ != XR_NULL_HANDLE) xrDestroySpace(appSpace_);
     if (session_ != XR_NULL_HANDLE) xrDestroySession(session_);
     if (instance_ != XR_NULL_HANDLE) xrDestroyInstance(instance_);
@@ -890,4 +912,101 @@ void XrRenderer::shutdown() {
     running_ = false;
     shutdownEGL();
     XR_LOGI("XrRenderer shut down");
+}
+
+// ── Light Estimation ──
+
+bool XrRenderer::initLightEstimation() {
+    // Load function pointers
+    XrResult r;
+    r = xrGetInstanceProcAddr(instance_, "xrCreateLightEstimatorANDROID",
+        (PFN_xrVoidFunction*)&xrCreateLightEstimator_);
+    if (XR_FAILED(r) || !xrCreateLightEstimator_) {
+        XR_LOGE("Failed to load xrCreateLightEstimatorANDROID");
+        lightEstimationSupported_ = false;
+        return false;
+    }
+    r = xrGetInstanceProcAddr(instance_, "xrDestroyLightEstimatorANDROID",
+        (PFN_xrVoidFunction*)&xrDestroyLightEstimator_);
+    r = xrGetInstanceProcAddr(instance_, "xrGetLightEstimateANDROID",
+        (PFN_xrVoidFunction*)&xrGetLightEstimate_);
+    if (!xrDestroyLightEstimator_ || !xrGetLightEstimate_) {
+        XR_LOGE("Failed to load light estimation functions");
+        lightEstimationSupported_ = false;
+        return false;
+    }
+
+    // Create light estimator
+    XrLightEstimatorCreateInfoANDROID createInfo;
+    createInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATOR_CREATE_INFO_ANDROID;
+    createInfo.next = nullptr;
+
+    r = xrCreateLightEstimator_(session_, &createInfo, &lightEstimator_);
+    if (XR_FAILED(r)) {
+        XR_LOGE("xrCreateLightEstimatorANDROID failed: %d", (int)r);
+        lightEstimationSupported_ = false;
+        return false;
+    }
+
+    XR_LOGI("Light estimation initialized successfully");
+    return true;
+}
+
+bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
+    estimate.valid = false;
+    if (!lightEstimationSupported_ || !lightEstimator_ || !xrGetLightEstimate_) return false;
+    if (!sessionReady_ || appSpace_ == XR_NULL_HANDLE) return false;
+
+    // Use last predicted display time
+    if (lastPredictedTime_ == 0) return false;
+    XrTime now = lastPredictedTime_;
+
+    // Query light estimate
+    XrLightEstimateGetInfoANDROID getInfo;
+    getInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID;
+    getInfo.next = nullptr;
+    getInfo.time = now;
+    getInfo.baseSpace = appSpace_;
+
+    // Chain ambient + directional structs
+    XrDirectionalLightANDROID dirLight;
+    dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dirLight.next = nullptr;
+    dirLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
+
+    XrAmbientLightANDROID ambLight;
+    ambLight.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    ambLight.next = &dirLight;
+    ambLight.state = XR_LIGHT_ESTIMATION_STATE_INVALID_ANDROID;
+
+    XrLightEstimateANDROID lightEst;
+    lightEst.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
+    lightEst.next = &ambLight;
+
+    XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &lightEst);
+    if (XR_FAILED(r)) return false;
+
+    // Extract ambient light
+    if (ambLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
+        estimate.ambientR = ambLight.intensity.r;
+        estimate.ambientG = ambLight.intensity.g;
+        estimate.ambientB = ambLight.intensity.b;
+        estimate.colorCorrR = ambLight.colorCorrection.r;
+        estimate.colorCorrG = ambLight.colorCorrection.g;
+        estimate.colorCorrB = ambLight.colorCorrection.b;
+        estimate.valid = true;
+    }
+
+    // Extract directional light
+    if (dirLight.state == XR_LIGHT_ESTIMATION_STATE_VALID_ANDROID) {
+        estimate.dirIntensityR = dirLight.intensity.r;
+        estimate.dirIntensityG = dirLight.intensity.g;
+        estimate.dirIntensityB = dirLight.intensity.b;
+        estimate.dirX = dirLight.direction.x;
+        estimate.dirY = dirLight.direction.y;
+        estimate.dirZ = dirLight.direction.z;
+        estimate.valid = true;
+    }
+
+    return estimate.valid;
 }

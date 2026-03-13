@@ -10,6 +10,7 @@
 
     <!-- XR permissions -->
     <uses-permission android:name="android.permission.HAND_TRACKING" />
+    <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_COARSE" />
 
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />

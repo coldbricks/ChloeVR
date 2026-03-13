@@ -10,6 +10,7 @@
 #include <android/log.h>
 #include <vector>
 #include "openxr_input.h"  // reuse ControllerState
+#include "xr_light_estimation.h"
 
 #define XRLOG_TAG "ChloeVR-XRRenderer"
 #define XR_LOGI(...) __android_log_print(ANDROID_LOG_INFO, XRLOG_TAG, __VA_ARGS__)
@@ -41,6 +42,18 @@ public:
 
     // Input (same session)
     bool pollInput(ControllerState& state);
+
+    // Light estimation
+    struct LightEstimate {
+        bool valid = false;
+        float ambientR = 0, ambientG = 0, ambientB = 0;
+        float colorCorrR = 1, colorCorrG = 1, colorCorrB = 1;
+        float dirIntensityR = 0, dirIntensityG = 0, dirIntensityB = 0;
+        float dirX = 0, dirY = 1, dirZ = 0; // direction toward light
+        static constexpr int SIZE = 13; // number of floats
+        float* data() { return &ambientR; } // first 12 after valid
+    };
+    bool pollLightEstimate(LightEstimate& estimate);
 
     // UI quad
     bool initUiQuad(uint32_t width, uint32_t height);
@@ -106,6 +119,15 @@ private:
 
     // Time conversion
     PFN_xrVoidFunction convertTimeToXr_ = nullptr;
+    XrTime lastPredictedTime_ = 0;
+
+    // Light estimation
+    bool lightEstimationSupported_ = false;
+    XrLightEstimatorANDROID lightEstimator_ = XR_NULL_HANDLE;
+    PFN_xrCreateLightEstimatorANDROID xrCreateLightEstimator_ = nullptr;
+    PFN_xrDestroyLightEstimatorANDROID xrDestroyLightEstimator_ = nullptr;
+    PFN_xrGetLightEstimateANDROID xrGetLightEstimate_ = nullptr;
+    bool initLightEstimation();
 
     // Actions (controller input) — same structure as OpenXRInput
     XrActionSet actionSet_ = XR_NULL_HANDLE;
