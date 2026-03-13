@@ -3508,17 +3508,25 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         curPos.z + (targetZ - curPos.z) * smooth
                     )
 
-                    // Thumbstick forward/back = push/pull (adjusts grab distance)
-                    // Forward (up) = bring closer, Back (down) = push away
+                    // Thumbstick forward/back = push/pull along hand-to-model direction
+                    // Pull back (towards you) = model comes closer. Push forward = model goes further.
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
-                        modelGrabDistance = (modelGrabDistance - grabThumbY * 0.15f).coerceIn(0.2f, 20f)
-                        // Recalculate position at new distance along current aim
-                        val fwd = quatForward(grabAimRot)
+                        val curModelPos = entity.getPose().translation
+                        // Direction from hand to model
+                        val toX = curModelPos.x - grabHandPos[0]
+                        val toY = curModelPos.y - grabHandPos[1]
+                        val toZ = curModelPos.z - grabHandPos[2]
+                        val toDist = kotlin.math.sqrt(toX * toX + toY * toY + toZ * toZ).coerceAtLeast(0.1f)
+                        val dirX = toX / toDist
+                        val dirY = toY / toDist
+                        val dirZ = toZ / toDist
+                        // Positive thumbY (push forward) = push away, negative (pull back) = bring closer
+                        val speed = grabThumbY * 0.15f
                         entity.setPose(Pose(
                             Vector3(
-                                grabHandPos[0] + fwd[0] * modelGrabDistance,
-                                grabHandPos[1] + fwd[1] * modelGrabDistance,
-                                grabHandPos[2] + fwd[2] * modelGrabDistance
+                                curModelPos.x + dirX * speed,
+                                curModelPos.y + dirY * speed,
+                                curModelPos.z + dirZ * speed
                             ),
                             entity.getPose().rotation
                         ))
