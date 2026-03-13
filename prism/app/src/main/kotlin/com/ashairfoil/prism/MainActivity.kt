@@ -2311,11 +2311,26 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val gltfModel = GltfModel.create(session, file.readBytes(), file.name)
                 android.util.Log.i("ChloeVR", "GltfModel created successfully")
 
-                // Place model 2m in front of user, at roughly floor height
-                // Floor anchoring disabled for now — was causing crashes.
-                // User positions models manually with grab controls.
-                val placePose = Pose(Vector3(0f, 0f, -2f), Quaternion.Identity)
-                val entity = GltfModelEntity.create(session, gltfModel, placePose)
+                // Try floor anchoring — place model ON the real floor
+                var entity: GltfModelEntity
+                try {
+                    if (floorAnchor == null) {
+                        floorAnchor = AnchorEntity.create(
+                            session,
+                            androidx.xr.runtime.math.FloatSize2d(0.3f, 0.3f),
+                            PlaneOrientation.HORIZONTAL,
+                            PlaneSemanticType.FLOOR
+                        )
+                        android.util.Log.i("ChloeVR", "Floor anchor created")
+                    }
+                    // Place on floor, 2m in front
+                    entity = GltfModelEntity.create(session, gltfModel, Pose(Vector3(0f, 0f, -2f), Quaternion.Identity), floorAnchor!!)
+                    android.util.Log.i("ChloeVR", "Model anchored to floor")
+                } catch (e: Exception) {
+                    android.util.Log.w("ChloeVR", "Floor anchor failed, placing free: ${e.message}")
+                    // Fallback: place at eye height, free-floating
+                    entity = GltfModelEntity.create(session, gltfModel, Pose(Vector3(0f, 0f, -2f), Quaternion.Identity))
+                }
 
                 // Auto-scale based on bounding box so models appear at a reasonable size
                 val bbox = entity.gltfModelBoundingBox
