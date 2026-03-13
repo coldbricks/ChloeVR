@@ -34,8 +34,10 @@ import androidx.xr.scenecore.InteractableComponent
 import androidx.xr.scenecore.SpatialCapability
 import androidx.xr.scenecore.SpatialEnvironment
 import androidx.xr.scenecore.AnchorEntity
+import androidx.xr.scenecore.AlphaMode
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
+import androidx.xr.scenecore.KhronosPbrMaterial
 import androidx.xr.scenecore.PlaneOrientation
 import androidx.xr.scenecore.PlaneSemanticType
 import androidx.xr.scenecore.SurfaceEntity
@@ -2433,6 +2435,27 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 } catch (e: Exception) {}
             })
 
+            // ── Material (PBR) ──
+            // KhronosPbrMaterial lets us override baseColor, metallic, roughness,
+            // emissive, clearcoat, sheen — more than ShapesXR exposes
+            layout.addView(makeSpacer(12))
+            layout.addView(makeSectionLabel("Material Override"))
+            layout.addView(makeButtonRow(
+                "Matte" to {
+                    applyMaterialPreset(selectedModelIndex, metallic = 0f, roughness = 1f)
+                },
+                "Glossy" to {
+                    applyMaterialPreset(selectedModelIndex, metallic = 0.3f, roughness = 0.2f)
+                },
+                "Chrome" to {
+                    applyMaterialPreset(selectedModelIndex, metallic = 1f, roughness = 0.05f)
+                },
+                "Reset" to {
+                    placedModels.getOrNull(selectedModelIndex)?.entity
+                        ?.clearMaterialOverride("")
+                }
+            ))
+
             layout.addView(makeSpacer(12))
             layout.addView(makeButtonRow(
                 "Reset Position" to {
@@ -2476,10 +2499,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         // Instructions
         layout.addView(makeSpacer(16))
         layout.addView(TextView(this).apply {
-            text = "Controls:\n" +
-                    "  Grip + Trigger = Grab & move selected model\n" +
-                    "  Thumbstick up/down = Scale\n" +
-                    "  Wrist twist = Rotate (while grabbing)\n" +
+            text = "Controls (ShapesXR-style):\n" +
+                    "  Grip = Grab & move model\n" +
+                    "  Grip + Stick L/R = Scale (right=bigger)\n" +
+                    "  Grip + Stick fwd/back = Push/pull\n" +
+                    "  Grip + Wrist twist = Rotate\n" +
+                    "  Free stick L/R = Rotate on Y axis\n" +
                     "  A = Play/stop animation\n" +
                     "  Menu = This panel"
             textSize = 12f
@@ -2503,6 +2528,21 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             modelMode = false
             currentFileIsModel = false
             setAlphaPassthroughEnabled(false)
+        }
+    }
+
+    private fun applyMaterialPreset(modelIndex: Int, metallic: Float, roughness: Float) {
+        val model = placedModels.getOrNull(modelIndex) ?: return
+        val session = xrSession ?: return
+        lifecycleScope.launch {
+            try {
+                val material = KhronosPbrMaterial.create(session, AlphaMode.OPAQUE)
+                material.setMetallicFactor(metallic)
+                material.setRoughnessFactor(roughness)
+                model.entity.setMaterialOverride(material, "")
+            } catch (e: Exception) {
+                android.util.Log.w("ChloeVR", "Material override failed: ${e.message}")
+            }
         }
     }
 
@@ -3214,16 +3254,28 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             val selected = placedModels[selectedModelIndex]
             val entity = selected.entity
 
-            val leftGrab = input.leftSqueeze > 0.5f && input.leftTrigger > 0.5f && input.leftHandValid
-            val rightGrab = input.rightSqueeze > 0.5f && input.rightTrigger > 0.5f && input.rightHandValid
-            val grabbing = leftGrab || rightGrab
+            // ── ShapesXR-style controls ──
+            // Grip = grab/move, Thumbstick L/R = scale (while grabbing),
+            // Thumbstick fwd/back = push/pull, Wrist twist = rotate
+            // Trigger = select (future: multi-select)
+            // Free thumbstick = rotate model on Y axis
 
-            val grabAimRot = if (rightGrab) input.rightAimRot
-                             else if (leftGrab) input.leftAimRot
+            val leftGripHeld = input.leftSqueeze > 0.5f && input.leftHandValid
+            val rightGripHeld = input.rightSqueeze > 0.5f && input.rightHandValid
+            val grabbing = leftGripHeld || rightGripHeld
+
+            val grabAimRot = if (rightGripHeld) input.rightAimRot
+                             else if (leftGripHeld) input.leftAimRot
                              else null
-            val grabAimValid = if (rightGrab) input.rightAimValid
-                               else if (leftGrab) input.leftAimValid
+            val grabAimValid = if (rightGripHeld) input.rightAimValid
+                               else if (leftGripHeld) input.leftAimValid
                                else false
+            val grabThumbX = if (rightGripHeld) input.rightThumbX
+                             else if (leftGripHeld) input.leftThumbX
+                             else 0f
+            val grabThumbY = if (rightGripHeld) input.rightThumbY
+                             else if (leftGripHeld) input.leftThumbY
+                             else 0f
 
             if (grabbing && grabAimValid && grabAimRot != null) {
                 val rollRot = grabAimRot
@@ -3237,18 +3289,37 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     val aimDir = quatForward(grabAimRot)
                     val dAimX = aimDir[0] - modelGrabStartAimDir[0]
                     val dAimY = aimDir[1] - modelGrabStartAimDir[1]
-                    val dAimZ = aimDir[2] - modelGrabStartAimDir[2]
                     val startPos = modelGrabStartPose.translation
-                    val dist = 2f // approximate arm's length
+                    val dist = 2f
 
                     // Move model by aim direction delta
                     val newPos = Vector3(
                         startPos.x + dAimX * dist,
                         startPos.y + dAimY * dist,
-                        startPos.z + dAimZ * dist
+                        startPos.z
                     )
 
-                    // Rotate model by wrist twist
+                    // Thumbstick forward/back while grabbing = push/pull (depth)
+                    if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
+                        val fwd = quatForward(grabAimRot)
+                        val pushSpeed = grabThumbY * 0.05f
+                        entity.setPose(Pose(
+                            Vector3(
+                                entity.getPose().translation.x + fwd[0] * pushSpeed,
+                                entity.getPose().translation.y + fwd[1] * pushSpeed,
+                                entity.getPose().translation.z + fwd[2] * pushSpeed
+                            ),
+                            entity.getPose().rotation
+                        ))
+                    }
+
+                    // Thumbstick left/right while grabbing = scale
+                    if (kotlin.math.abs(grabThumbX) > NATIVE_STICK_DEADZONE) {
+                        selected.scale = (selected.scale + grabThumbX * 0.03f).coerceIn(0.05f, 10f)
+                        entity.setScale(selected.scale)
+                    }
+
+                    // Wrist twist = rotate on Y axis (like ShapesXR grab-rotate)
                     var rollDelta = relativeRollDeg(modelGrabStartAimRot, rollRot)
                     while (rollDelta > 180f) rollDelta -= 360f
                     while (rollDelta < -180f) rollDelta += 360f
@@ -3269,19 +3340,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 modelGrabbing = false
             }
 
-            // Right grip + right thumbstick horizontal = scale
-            // (right > 0 = bigger, left < 0 = smaller)
-            val rightGripHeld = input.rightSqueeze > 0.5f && !grabbing
-            if (rightGripHeld && !menuVisible) {
-                val hScale = input.rightThumbX
-                if (kotlin.math.abs(hScale) > NATIVE_STICK_DEADZONE) {
-                    selected.scale = (selected.scale + hScale * 0.03f).coerceIn(0.05f, 10f)
-                    entity.setScale(selected.scale)
-                }
-            }
-
-            // Free thumbstick (no grip, no grab) = rotate model on Y axis
-            if (!grabbing && !rightGripHeld && !menuVisible) {
+            // Free thumbstick (no grip) = rotate model on Y axis
+            if (!grabbing && !menuVisible) {
                 val hAxis = if (kotlin.math.abs(input.rightThumbX) > kotlin.math.abs(input.leftThumbX))
                     input.rightThumbX else input.leftThumbX
                 if (kotlin.math.abs(hAxis) > NATIVE_STICK_DEADZONE) {
@@ -3323,7 +3383,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             lastMenuState = input.menuButton
 
-            // B button = back to file picker
+            // B button = toggle scrub-style quick panel
             if (input.bButton && !lastBState) {
                 runOnUiThread {
                     if (menuVisible) {
