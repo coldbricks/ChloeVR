@@ -2507,30 +2507,32 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             })
 
             layout.addView(makeSpacer(16))
-            layout.addView(makeSectionLabel("Transform"))
+            layout.addView(makeSectionLabel("Model Size"))
             layout.addView(makeModelScaleSlider(model))
             layout.addView(makeButtonRow(
-                "Reset Scale" to {
+                "Reset to 1x" to {
                     placedModels.getOrNull(selectedModelIndex)?.let {
                         it.applyScale(it.baseScale)
-                        showModelPanel() // refresh slider
+                        showModelPanel()
                     }
                 }
             ))
 
-            // Height offset (useful for fine-tuning floor contact)
-            layout.addView(makeEffectSliderNoSave("Height", -100, 100, 0) { value ->
+            // Lift/lower the model (e.g. fine-tune floor contact)
+            layout.addView(makeEffectSliderNoSave("Model Lift (off floor)", -100, 100, 0) { value ->
                 placedModels.getOrNull(selectedModelIndex)?.let {
+                    it.groundToFloor()
                     val current = it.entity.getPose()
+                    // Add offset on top of grounded position
                     it.entity.setPose(Pose(
-                        Vector3(current.translation.x, value / 100f, current.translation.z),
+                        Vector3(current.translation.x, current.translation.y + value / 100f, current.translation.z),
                         current.rotation
                     ))
                 }
             })
 
             layout.addView(makeSpacer(8))
-            layout.addView(makeSectionLabel("Appearance"))
+            layout.addView(makeSectionLabel("Model Appearance"))
 
             // Exposure: dims the MODEL only, does NOT affect passthrough
             // Uses entity alpha — model becomes semi-transparent against real world
@@ -2609,16 +2611,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         // Instructions
         layout.addView(makeSpacer(16))
         layout.addView(TextView(this).apply {
-            text = "Controls (ShapesXR-style):\n" +
-                    "  Grip = Grab & move model\n" +
-                    "  Grip + Stick L/R = Scale (right=bigger)\n" +
-                    "  Grip + Stick fwd/back = Push/pull\n" +
-                    "  Grip + Wrist twist = Rotate\n" +
-                    "  Free stick L/R = Rotate on Y axis\n" +
-                    "  Free stick Up/Down = Adjust height\n" +
-                    "  Y = Cycle selected model\n" +
+            text = "Controls:\n" +
+                    "  Grip = Move model (follows your hand)\n" +
+                    "  Grip + Trigger = Move + rotate model\n" +
+                    "  Grip + Stick L/R = Make model bigger/smaller\n" +
+                    "  Grip + Stick fwd/back = Push model away / pull closer\n" +
+                    "  Free stick L/R = Spin model\n" +
+                    "  Free stick Up/Down = Lift/lower model\n" +
+                    "  Y = Switch between models\n" +
                     "  A = Play/stop animation\n" +
-                    "  Menu = This panel"
+                    "  Menu = This panel\n" +
+                    "\nAll controls affect the MODEL only, never the room/floor."
             textSize = 12f
             setTextColor(0xFF666666.toInt())
             setPadding(0, 8, 0, 0)
