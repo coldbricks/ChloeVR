@@ -167,9 +167,30 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val file: File,
         val entity: GltfModelEntity,
         var scale: Float = 1f,
-        var anchor: AnchorEntity? = null,  // floor anchor (null = free-floating)
+        val baseScale: Float = 1f,  // auto-scale at load time (for reset)
+        var anchor: AnchorEntity? = null,
         var isAnchored: Boolean = false
-    )
+    ) {
+        /** After scale change, keep model grounded (bottom at y=0) */
+        fun groundToFloor() {
+            try {
+                val bbox = entity.gltfModelBoundingBox
+                val bottomLocalY = bbox.min.y  // bottom of model in local space
+                val bottomWorldY = bottomLocalY * scale
+                val pose = entity.getPose()
+                entity.setPose(Pose(
+                    Vector3(pose.translation.x, -bottomWorldY, pose.translation.z),
+                    pose.rotation
+                ))
+            } catch (e: Exception) {}
+        }
+
+        fun applyScale(newScale: Float) {
+            scale = newScale.coerceIn(0.05f, 10f)
+            entity.setScale(scale)
+            groundToFloor()
+        }
+    }
     private var placedModels = mutableListOf<PlacedModel>()
     private var selectedModelIndex = -1
     private var modelMode = false
@@ -2357,7 +2378,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val autoScale = targetSize / maxExtent
                 entity.setScale(autoScale)
 
-                val placed = PlacedModel(file, entity, autoScale)
+                val placed = PlacedModel(file, entity, autoScale, baseScale = autoScale)
+                placed.groundToFloor()
                 placedModels.add(placed)
                 selectedModelIndex = placedModels.size - 1
 
@@ -2487,6 +2509,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             layout.addView(makeSpacer(16))
             layout.addView(makeSectionLabel("Transform"))
             layout.addView(makeModelScaleSlider(model))
+            layout.addView(makeButtonRow(
+                "Reset Scale" to {
+                    placedModels.getOrNull(selectedModelIndex)?.let {
+                        it.applyScale(it.baseScale)
+                        showModelPanel() // refresh slider
+                    }
+                }
+            ))
 
             // Height offset (useful for fine-tuning floor contact)
             layout.addView(makeEffectSliderNoSave("Height", -100, 100, 0) { value ->
@@ -2675,10 +2705,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         val value = progress + min
                         val newScale = value / 100f
                         valueLabel.text = "Size: $value  (${String.format("%.2f", newScale)}x)"
-                        placedModels.getOrNull(selectedModelIndex)?.let {
-                            it.scale = newScale
-                            it.entity.setScale(newScale)
-                        }
+                        placedModels.getOrNull(selectedModelIndex)?.applyScale(newScale)
                     }
                     override fun onStartTrackingTouch(sb: SeekBar?) {}
                     override fun onStopTrackingTouch(sb: SeekBar?) {}
@@ -3523,8 +3550,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
                     // Thumbstick L/R while gripping = scale
                     if (kotlin.math.abs(grabThumbX) > NATIVE_STICK_DEADZONE) {
-                        selected.scale = (selected.scale + grabThumbX * 0.03f).coerceIn(0.05f, 10f)
-                        entity.setScale(selected.scale)
+                        selected.applyScale(selected.scale + grabThumbX * 0.03f)
                     }
 
                     // Is trigger also held?
