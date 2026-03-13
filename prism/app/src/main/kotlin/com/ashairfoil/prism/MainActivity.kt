@@ -175,10 +175,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var modelMode = false
     private var floorAnchor: AnchorEntity? = null  // shared floor anchor for all models
     private var modelGrabbing = false
+    private var modelGrabStartAimDir = floatArrayOf(0f, 0f, -1f)
     private var modelGrabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
+    private var modelGrabStartHandPos = floatArrayOf(0f, 0f, 0f)
     private var modelGrabStartPose = Pose()
     private var modelGrabStartScale = 1f
-    private var modelGrabDistance = 2f  // distance from hand to model along aim ray
+    private var modelGrabDistance = 2f  // hand-to-model distance, scales aim leverage
     private var currentPlaylist: List<File> = emptyList()
     private var currentPlaylistIndex = -1
     private var lastFileNavTime = 0L
@@ -3507,28 +3509,62 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             if (grabbing && grabAimValid && grabAimRot != null && grabHandPos != null) {
                 val rollRot = grabAimRot
                 if (!modelGrabbing) {
+                    // ── Grab start: snapshot everything, model stays in place ──
                     modelGrabbing = true
+                    modelGrabStartAimDir = quatForward(grabAimRot)
                     modelGrabStartAimRot = rollRot.copyOf()
+                    modelGrabStartHandPos = grabHandPos.copyOf()
                     modelGrabStartPose = entity.getPose()
                     modelGrabStartScale = selected.scale
-                    // Calculate initial distance from hand to model
+                    // Distance determines aim leverage: far objects move more per degree
                     val modelPos = modelGrabStartPose.translation
                     val dx = modelPos.x - grabHandPos[0]
                     val dy = modelPos.y - grabHandPos[1]
                     val dz = modelPos.z - grabHandPos[2]
                     modelGrabDistance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(0.5f)
                 } else {
-                    // Ray-based placement: model follows where you point, at maintained distance
+                    // ── Delta-based grab: model moves by the CHANGE in aim + hand ──
+                    // No snap. Model starts from where it was and moves from there.
                     val aimDir = quatForward(grabAimRot)
+                    val dAimX = aimDir[0] - modelGrabStartAimDir[0]
+                    val dAimY = aimDir[1] - modelGrabStartAimDir[1]
+                    val dAimZ = aimDir[2] - modelGrabStartAimDir[2]
+
+                    // Hand translation delta (for close-range physical movement)
+                    val dHandX = grabHandPos[0] - modelGrabStartHandPos[0]
+                    val dHandY = grabHandPos[1] - modelGrabStartHandPos[1]
+                    val dHandZ = grabHandPos[2] - modelGrabStartHandPos[2]
+
+                    // Combine: aim delta (scaled by distance) + hand delta
+                    // Far models: aim dominates (laser-pointer feel)
+                    // Close models: hand dominates (physical grab feel)
+                    val aimScale = modelGrabDistance * 2f
+                    val startPos = modelGrabStartPose.translation
+                    val targetX = startPos.x + dAimX * aimScale + dHandX
+                    val targetY = startPos.y + dAimY * aimScale + dHandY
+                    val targetZ = startPos.z + dAimZ * aimScale + dHandZ
+
+                    // Smooth for fluid feel
+                    val smooth = 0.5f
+                    val curPos = entity.getPose().translation
                     val newPos = Vector3(
-                        grabHandPos[0] + aimDir[0] * modelGrabDistance,
-                        grabHandPos[1] + aimDir[1] * modelGrabDistance,
-                        grabHandPos[2] + aimDir[2] * modelGrabDistance
+                        curPos.x + (targetX - curPos.x) * smooth,
+                        curPos.y + (targetY - curPos.y) * smooth,
+                        curPos.z + (targetZ - curPos.z) * smooth
                     )
 
-                    // Thumbstick forward/back = push/pull (change grab distance)
+                    // Thumbstick forward/back = push/pull along aim direction
                     if (kotlin.math.abs(grabThumbY) > NATIVE_STICK_DEADZONE) {
-                        modelGrabDistance = (modelGrabDistance + grabThumbY * 0.08f).coerceIn(0.3f, 20f)
+                        val fwd = quatForward(grabAimRot)
+                        val pushSpeed = grabThumbY * 0.08f
+                        entity.setPose(Pose(
+                            Vector3(
+                                newPos.x + fwd[0] * pushSpeed,
+                                newPos.y + fwd[1] * pushSpeed,
+                                newPos.z + fwd[2] * pushSpeed
+                            ),
+                            entity.getPose().rotation
+                        ))
                     }
 
                     // Thumbstick left/right while grabbing = scale
@@ -3537,7 +3573,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         entity.setScale(selected.scale)
                     }
 
-                    // Wrist twist = rotate on Y axis (like ShapesXR grab-rotate)
+                    // Wrist twist = rotate model on Y axis
                     var rollDelta = relativeRollDeg(modelGrabStartAimRot, rollRot)
                     while (rollDelta > 180f) rollDelta -= 360f
                     while (rollDelta < -180f) rollDelta += 360f
