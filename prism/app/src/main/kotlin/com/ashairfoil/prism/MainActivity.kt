@@ -167,7 +167,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val file: File,
         val entity: GltfModelEntity,
         var scale: Float = 1f,
-        val baseScale: Float = 1f,  // auto-scale at load time (for reset)
+        val baseScale: Float = 1f,
+        var meshName: String = "",    // parsed from GLB for material overrides
+        var currentMaterial: KhronosPbrMaterial? = null,
+        var exposure: Float = 1f,
+        var metallic: Float = 0f,
+        var roughness: Float = 0.9f,
         var anchor: AnchorEntity? = null,
         var isAnchored: Boolean = false
     ) {
@@ -2332,7 +2337,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         lifecycleScope.launch {
             try {
                 android.util.Log.i("ChloeVR", "Loading model: ${file.absolutePath} (${file.length()} bytes, exists=${file.exists()}, canRead=${file.canRead()})")
-                val gltfModel = GltfModel.create(session, file.readBytes(), file.name)
+                val glbBytes = file.readBytes()
+                val meshName = parseMeshNameFromGlb(glbBytes)
+                val gltfModel = GltfModel.create(session, glbBytes, file.name)
                 android.util.Log.i("ChloeVR", "GltfModel created successfully")
 
                 // Try floor anchoring — place model ON the real floor
@@ -2378,7 +2385,32 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val autoScale = targetSize / maxExtent
                 entity.setScale(autoScale)
 
-                val placed = PlacedModel(file, entity, autoScale, baseScale = autoScale)
+                // Parse original material properties from GLB
+                var origMetallic = 0f
+                var origRoughness = 0.9f
+                try {
+                    val jsonLength = (glbBytes[12].toInt() and 0xFF) or
+                            ((glbBytes[13].toInt() and 0xFF) shl 8) or
+                            ((glbBytes[14].toInt() and 0xFF) shl 16) or
+                            ((glbBytes[15].toInt() and 0xFF) shl 24)
+                    val jsonStr = String(glbBytes, 20, jsonLength.coerceAtMost(glbBytes.size - 20), Charsets.UTF_8)
+                    val json = org.json.JSONObject(jsonStr)
+                    val mats = json.optJSONArray("materials")
+                    if (mats != null && mats.length() > 0) {
+                        val pbr = mats.getJSONObject(0).optJSONObject("pbrMetallicRoughness")
+                        if (pbr != null) {
+                            origMetallic = pbr.optDouble("metallicFactor", 0.0).toFloat()
+                            origRoughness = pbr.optDouble("roughnessFactor", 0.9).toFloat()
+                        }
+                    }
+                } catch (e: Exception) {}
+
+                val placed = PlacedModel(
+                    file = file, entity = entity,
+                    scale = autoScale, baseScale = autoScale,
+                    meshName = meshName,
+                    metallic = origMetallic, roughness = origRoughness
+                )
                 placed.groundToFloor()
                 placedModels.add(placed)
                 selectedModelIndex = placedModels.size - 1
@@ -2532,15 +2564,41 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             })
 
             layout.addView(makeSpacer(8))
-            layout.addView(makeSectionLabel("Model Appearance"))
+            layout.addView(makeSectionLabel("Model Material"))
 
-            // Exposure: dims the MODEL only, does NOT affect passthrough
-            // Uses entity alpha — model becomes semi-transparent against real world
-            layout.addView(makeEffectSliderNoSave("Exposure", 5, 100, 100) { value ->
-                val alpha = value / 100f
-                placedModels.getOrNull(selectedModelIndex)?.entity?.setAlpha(alpha)
-                android.util.Log.d("ChloeVR", "Model alpha set to $alpha")
+            // Exposure: adjusts baseColorFactor on the PBR material (dims the texture)
+            layout.addView(makeEffectSliderNoSave("Exposure", 10, 200, (model.exposure * 100).toInt()) { value ->
+                placedModels.getOrNull(selectedModelIndex)?.let {
+                    it.exposure = value / 100f
+                    updateModelMaterial(it)
+                }
             })
+
+            // Metallic: 0 = pure diffuse, 1 = full metal reflections
+            layout.addView(makeEffectSliderNoSave("Metallic", 0, 100, (model.metallic * 100).toInt()) { value ->
+                placedModels.getOrNull(selectedModelIndex)?.let {
+                    it.metallic = value / 100f
+                    updateModelMaterial(it)
+                }
+            })
+
+            // Roughness: 0 = mirror smooth, 1 = completely rough/matte
+            layout.addView(makeEffectSliderNoSave("Roughness", 0, 100, (model.roughness * 100).toInt()) { value ->
+                placedModels.getOrNull(selectedModelIndex)?.let {
+                    it.roughness = value / 100f
+                    updateModelMaterial(it)
+                }
+            })
+
+            layout.addView(makeButtonRow(
+                "Reset Material" to {
+                    placedModels.getOrNull(selectedModelIndex)?.let {
+                        it.exposure = 1f; it.metallic = 0f; it.roughness = 0.9f
+                        it.entity.clearMaterialOverride(it.meshName)
+                        showModelPanel()
+                    }
+                }
+            ))
 
             layout.addView(makeSpacer(12))
             layout.addView(makeButtonRow(
@@ -2717,17 +2775,57 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
     }
 
-    private fun applyMaterialPreset(modelIndex: Int, metallic: Float, roughness: Float) {
-        val model = placedModels.getOrNull(modelIndex) ?: return
+    /**
+     * Parse the first mesh name from a GLB binary.
+     * GLB format: 12-byte header, then chunks. First chunk is JSON.
+     * We extract the mesh name from the JSON for material overrides.
+     */
+    private fun parseMeshNameFromGlb(bytes: ByteArray): String {
+        try {
+            if (bytes.size < 20) return ""
+            // GLB header: magic(4) + version(4) + length(4)
+            // Chunk 0: length(4) + type(4) + data(JSON)
+            val jsonLength = (bytes[12].toInt() and 0xFF) or
+                    ((bytes[13].toInt() and 0xFF) shl 8) or
+                    ((bytes[14].toInt() and 0xFF) shl 16) or
+                    ((bytes[15].toInt() and 0xFF) shl 24)
+            val jsonStr = String(bytes, 20, jsonLength.coerceAtMost(bytes.size - 20), Charsets.UTF_8)
+            val json = org.json.JSONObject(jsonStr)
+            val meshes = json.optJSONArray("meshes")
+            if (meshes != null && meshes.length() > 0) {
+                val name = meshes.getJSONObject(0).optString("name", "")
+                android.util.Log.i("ChloeVR", "Parsed mesh name from GLB: '$name'")
+                return name
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("ChloeVR", "Failed to parse mesh name from GLB: ${e.message}")
+        }
+        return ""
+    }
+
+    /**
+     * Update material properties on a placed model.
+     * Creates/reuses a KhronosPbrMaterial and applies it as override.
+     */
+    private fun updateModelMaterial(model: PlacedModel) {
         val session = xrSession ?: return
         lifecycleScope.launch {
             try {
+                // Create new material (or we could cache, but create is fast)
                 val material = KhronosPbrMaterial.create(session, AlphaMode.OPAQUE)
-                material.setMetallicFactor(metallic)
-                material.setRoughnessFactor(roughness)
-                model.entity.setMaterialOverride(material, "")
+                // Exposure = baseColorFactor multiplier (dims/brightens the texture)
+                val e = model.exposure
+                material.setBaseColorFactor(androidx.xr.runtime.math.Vector4(e, e, e, 1f))
+                material.setMetallicFactor(model.metallic)
+                material.setRoughnessFactor(model.roughness)
+
+                // Apply with parsed mesh name
+                val meshName = model.meshName
+                android.util.Log.i("ChloeVR", "Applying material: exposure=$e metallic=${model.metallic} roughness=${model.roughness} meshName='$meshName'")
+                model.entity.setMaterialOverride(material, meshName)
+                model.currentMaterial = material
             } catch (e: Exception) {
-                android.util.Log.w("ChloeVR", "Material override failed: ${e.message}")
+                android.util.Log.e("ChloeVR", "Material override failed: ${e.message}", e)
             }
         }
     }
