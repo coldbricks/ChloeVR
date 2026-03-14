@@ -41,7 +41,9 @@ class GlesModelRenderer {
         var boundsCenterZ: Float = 0f,
         var boundsRadius: Float = 1f,
         var boundsMinY: Float = 0f,
-        var selected: Boolean = false
+        var selected: Boolean = false,
+        var contrast: Float = 1f,
+        var saturation: Float = 1f
     )
 
     private val models = mutableListOf<GpuModel>()
@@ -63,6 +65,7 @@ class GlesModelRenderer {
     var shadowLightMatrix = FloatArray(16)
     var shadowDarkness = 0.7f
     var shadowSoftness = 2.0f
+    var shadowSpread = 8f  // ortho extent in meters — larger = wider shadow area
     var shadowEnabled = true
 
     // Laser resources
@@ -109,6 +112,8 @@ class GlesModelRenderer {
     private var uAmbientColor = -1
     private var uAmbientIntensity = -1
     private var uSelected = -1
+    private var uContrast = -1
+    private var uSaturation = -1
 
     // Lighting state
     var lightDir = floatArrayOf(0.3f, 1.0f, 0.5f)
@@ -159,6 +164,8 @@ class GlesModelRenderer {
         uAmbientColor = GLES30.glGetUniformLocation(programId, "uAmbientColor")
         uAmbientIntensity = GLES30.glGetUniformLocation(programId, "uAmbientIntensity")
         uSelected = GLES30.glGetUniformLocation(programId, "uSelected")
+        uContrast = GLES30.glGetUniformLocation(programId, "uContrast")
+        uSaturation = GLES30.glGetUniformLocation(programId, "uSaturation")
 
         // Main FBO
         val fboBuf = intArrayOf(0)
@@ -663,6 +670,8 @@ class GlesModelRenderer {
             GLES30.glUniform1f(uRoughness, m.roughness)
             GLES30.glUniform1f(uExposure, m.exposure)
             GLES30.glUniform1f(uSelected, if (m.selected) 1.0f else 0.0f)
+            GLES30.glUniform1f(uContrast, m.contrast)
+            GLES30.glUniform1f(uSaturation, m.saturation)
             if (m.textureId != 0) {
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.textureId)
@@ -830,7 +839,7 @@ class GlesModelRenderer {
 
     // Panel position — settable for drag
     var panelX = 0f; var panelY = 0f; var panelZ = -1f
-    var panelW = 0.8f; var panelH = 0.9f
+    var panelW = 1.1f; var panelH = 1.2f
 
     fun renderUiOverlay(swapchainTexId: Int, width: Int, height: Int, uiTexId: Int,
                         projection: FloatArray, viewMatrix: FloatArray) {
@@ -1088,7 +1097,8 @@ class GlesModelRenderer {
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
         val view = lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f)
-        val proj = ortho(-8f, 8f, -8f, 8f, 0.1f, 30f)
+        val s = shadowSpread
+        val proj = ortho(-s, s, -s, s, 0.1f, 30f)
         return multiplyMat4(proj, view)
     }
 
@@ -1144,7 +1154,7 @@ in vec3 vNormal, vPosition;
 in vec2 vTexCoord;
 in float vWorldY;
 uniform sampler2D uBaseColor;
-uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected, uClipY, uUseSH;
+uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity, uSelected, uClipY, uUseSH, uContrast, uSaturation;
 uniform vec3 uLightDir, uLightColor, uFillLightDir, uFillLightColor, uAmbientColor;
 uniform vec3 uSH[9]; // L2 spherical harmonics (9 RGB coefficients)
 out vec4 fragColor;
@@ -1199,7 +1209,13 @@ void main() {
     if (uSelected > 0.5) { float rim = pow(1.0 - NdotV, 3.0); color += vec3(0.0, 0.8, 1.0) * rim * 0.8; }
     color *= exp2(uExposure);
     color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
-    color = pow(clamp(color, 0.0, 1.0), vec3(1.0/2.2));
+    color = clamp(color, 0.0, 1.0);
+    // Contrast: pivot around midpoint
+    color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
+    // Saturation: lerp between luminance and color
+    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    color = clamp(mix(vec3(luma), color, uSaturation), 0.0, 1.0);
+    color = pow(color, vec3(1.0/2.2));
     fragColor = vec4(color, 1.0);
 }
 """

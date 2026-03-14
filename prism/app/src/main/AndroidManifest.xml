@@ -21,6 +21,10 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
+    <!-- Audio capture for beat-reactive lighting (Visualizer API) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
     <uses-feature android:name="android.software.xr.api.openxr" android:required="false" />

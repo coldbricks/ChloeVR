@@ -54,7 +54,9 @@ class FilamentModelActivity : ComponentActivity() {
         var rotW: Float = 1f,
         var metallic: Float = 0f,
         var roughness: Float = 0.9f,
-        var exposure: Float = 0f
+        var exposure: Float = 0f,
+        var contrast: Float = 1f,
+        var saturation: Float = 1f
     )
     private val models = mutableListOf<PlacedModel>()
     private var selectedModelIndex = -1
@@ -89,6 +91,15 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var xrLightEstimateAvailable = false
     @Volatile private var xrSHAvailable = false
     @Volatile private var xrLightDebugStr = ""
+
+    // Temporal smoothing for XR light estimation (prevents "moving light" jitter)
+    private var smoothAmbientIntensity = 1f
+    private var smoothAmbientColor = floatArrayOf(1f, 1f, 1f)
+    private var smoothLightIntensity = 2f
+    private var smoothLightDir = floatArrayOf(0f, 1f, 0f)
+    private var smoothLightColor = floatArrayOf(1f, 1f, 1f)
+    private var smoothSH = FloatArray(27)
+    private var lightSmoothed = false  // first frame gets instant values
 
     // ── XR Sensor buffers ──
     private val handTrackingBufferL = FloatArray(209) // 1 + 26×8
@@ -146,8 +157,10 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var pendingUiBitmap: android.graphics.Bitmap? = null
     private var selectedParam = 0
     private val PARAM_NAMES = arrayOf("Metallic", "Roughness", "Exposure",
+        "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
-        "Light Height", "Shadow Dark", "Shadow Soft")
+        "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
+        "BeatReactor", "Beat Intensity")
     private var lastXState = false
     private var lastRightStickClick = false
     private var uiNeedsRefresh = false
@@ -158,14 +171,35 @@ class FilamentModelActivity : ComponentActivity() {
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
     private var panelRotX = 0f; private var panelRotY = 0f; private var panelRotZ = 0f; private var panelRotW = 1f
-    private val PANEL_WIDTH = 0.85f  // meters in world space — big enough to hit easily
-    private val PANEL_HEIGHT = 0.95f
+    private val PANEL_WIDTH = 1.1f  // meters in world space — big enough to read easily
+    private val PANEL_HEIGHT = 1.2f
     private var draggingPanel = false
     private var panelGrabDist = 1.0f // distance from hand at grab time
 
     // Action button hover state: -1=none, 100=back, 101=add object, 102=exit app, 200=title bar
     private var hoveredActionButton = -1
     private var lastHoveredActionButton = -1
+
+    // GLB picker sub-menu (shown when ADD MODEL is tapped)
+    @Volatile private var glbPickerMode = false
+    private var availableGlbFiles: List<File> = emptyList()
+    private var hoveredGlbIndex = -1
+    private var lastHoveredGlbIndex = -1
+    private var glbPickerScrollOffset = 0
+    @Volatile private var pendingModelLoad: File? = null  // queued for render thread (needs GL context)
+
+    // Scene save/load
+    @Volatile private var scenePickerMode = false  // true = showing save/load scene list
+    private var scenePickerIsSave = false  // true = saving, false = loading
+    private var savedSceneFiles: List<File> = emptyList()
+    private var hoveredSceneIndex = -1
+    private var lastHoveredSceneIndex = -1
+    @Volatile private var pendingSceneLoad: File? = null  // queued for render thread
+
+    // Audio-reactive lighting (BeatReactor)
+    private var audioReactor: AudioReactor? = null
+    @Volatile private var beatReactorEnabled = false
+    @Volatile private var beatIntensity = 0.5f  // how strongly beats affect lighting (0..1)
 
     // Head/camera position (extracted from view matrix each frame)
     private var camPosX = 0f; private var camPosY = 1.6f; private var camPosZ = 0f
@@ -196,6 +230,16 @@ class FilamentModelActivity : ComponentActivity() {
             Log.i(TAG, "Ambient light sensor registered (legacy)")
         }
 
+        // Initialize audio reactor (BeatReactor-style)
+        audioReactor = AudioReactor()
+
+        // Scan for available GLB files upfront (for the ADD MODEL picker)
+        Thread {
+            val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
+            availableGlbFiles = glbFiles
+            Log.i(TAG, "Found ${glbFiles.size} GLB files for picker")
+        }.start()
+
         Thread {
             if (!nativeRendererInit(this)) {
                 Log.e(TAG, "Failed to initialize OpenXR renderer")
@@ -212,6 +256,14 @@ class FilamentModelActivity : ComponentActivity() {
             }
             glesRenderer = renderer
             Log.i(TAG, "GLES renderer initialized")
+
+            // Restore persistent floor height
+            val savedGridHeight = getSharedPreferences("chloe_vr", MODE_PRIVATE)
+                .getFloat("grid_height", 0f)
+            if (savedGridHeight != 0f) {
+                renderer.gridHeight = savedGridHeight
+                Log.i(TAG, "Restored grid height: $savedGridHeight")
+            }
 
             // Load single model from intent
             val path = intent.getStringExtra(EXTRA_MODEL_PATH)
@@ -306,6 +358,154 @@ class FilamentModelActivity : ComponentActivity() {
         )
     }
 
+    // ── Scene Save/Load ──
+
+    private fun getScenesDir(): File {
+        val dir = File(filesDir, "scenes")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun refreshSceneList() {
+        savedSceneFiles = getScenesDir().listFiles()
+            ?.filter { it.extension == "json" }
+            ?.sortedByDescending { it.lastModified() }
+            ?: emptyList()
+    }
+
+    private fun saveScene(name: String) {
+        try {
+            val renderer = glesRenderer ?: return
+            val scene = org.json.JSONObject()
+
+            // Global lighting
+            val lighting = org.json.JSONObject()
+            lighting.put("lightIntensity", renderer.lightIntensity.toDouble())
+            lighting.put("fillLightIntensity", renderer.fillLightIntensity.toDouble())
+            lighting.put("ambientIntensity", renderer.ambientIntensity.toDouble())
+            lighting.put("lightAngleDeg", renderer.lightAngleDeg.toDouble())
+            lighting.put("lightElevDeg", renderer.lightElevDeg.toDouble())
+            lighting.put("shadowDarkness", renderer.shadowDarkness.toDouble())
+            lighting.put("shadowSoftness", renderer.shadowSoftness.toDouble())
+            lighting.put("shadowSpread", renderer.shadowSpread.toDouble())
+            lighting.put("autoAmbient", autoAmbient)
+            lighting.put("gridVisible", gridVisible)
+            lighting.put("gridHeight", renderer.gridHeight.toDouble())
+            scene.put("lighting", lighting)
+
+            // Models
+            val modelsArr = org.json.JSONArray()
+            for (m in models) {
+                val obj = org.json.JSONObject()
+                obj.put("path", m.file.absolutePath)
+                obj.put("scale", m.scale.toDouble())
+                obj.put("posX", m.posX.toDouble())
+                obj.put("posY", m.posY.toDouble())
+                obj.put("posZ", m.posZ.toDouble())
+                obj.put("rotX", m.rotX.toDouble())
+                obj.put("rotY", m.rotY.toDouble())
+                obj.put("rotZ", m.rotZ.toDouble())
+                obj.put("rotW", m.rotW.toDouble())
+                obj.put("metallic", m.metallic.toDouble())
+                obj.put("roughness", m.roughness.toDouble())
+                obj.put("exposure", m.exposure.toDouble())
+                obj.put("contrast", m.contrast.toDouble())
+                obj.put("saturation", m.saturation.toDouble())
+                modelsArr.put(obj)
+            }
+            scene.put("models", modelsArr)
+
+            val file = File(getScenesDir(), "$name.json")
+            file.writeText(scene.toString(2))
+            Log.i(TAG, "Scene saved: ${file.absolutePath} (${models.size} models)")
+            runOnUiThread { showMessage("Scene saved: $name") }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save scene", e)
+            runOnUiThread { showMessage("Save failed: ${e.message}") }
+        }
+    }
+
+    private fun loadScene(sceneFile: File) {
+        // This must be called on the render thread (needs GL context for loadModel)
+        try {
+            val renderer = glesRenderer ?: return
+            val json = org.json.JSONObject(sceneFile.readText())
+
+            // Clear existing models
+            for (m in models) {
+                renderer.removeModel(m.gpuModelId)
+            }
+            models.clear()
+            selectedModelIndex = -1
+
+            // Restore lighting
+            val lighting = json.optJSONObject("lighting")
+            if (lighting != null) {
+                renderer.lightIntensity = lighting.optDouble("lightIntensity", 2.0).toFloat()
+                renderer.fillLightIntensity = lighting.optDouble("fillLightIntensity", 0.5).toFloat()
+                renderer.ambientIntensity = lighting.optDouble("ambientIntensity", 1.0).toFloat()
+                renderer.lightAngleDeg = lighting.optDouble("lightAngleDeg", 0.0).toFloat()
+                renderer.lightElevDeg = lighting.optDouble("lightElevDeg", 60.0).toFloat()
+                renderer.updateLightDirFromAngles()
+                renderer.shadowDarkness = lighting.optDouble("shadowDarkness", 0.7).toFloat()
+                renderer.shadowSoftness = lighting.optDouble("shadowSoftness", 2.0).toFloat()
+                renderer.shadowSpread = lighting.optDouble("shadowSpread", 8.0).toFloat()
+                autoAmbient = lighting.optBoolean("autoAmbient", true)
+                gridVisible = lighting.optBoolean("gridVisible", true)
+                renderer.gridHeight = lighting.optDouble("gridHeight", 0.0).toFloat()
+            }
+
+            // Load models
+            val modelsArr = json.optJSONArray("models")
+            if (modelsArr != null) {
+                for (i in 0 until modelsArr.length()) {
+                    val obj = modelsArr.getJSONObject(i)
+                    val file = File(obj.getString("path"))
+                    if (!file.exists()) {
+                        Log.w(TAG, "Scene model not found: ${file.absolutePath}")
+                        continue
+                    }
+                    val bytes = file.readBytes()
+                    val gpuId = renderer.loadGlb(bytes)
+                    if (gpuId < 0) continue
+
+                    val gpuModel = renderer.getModel(gpuId) ?: continue
+                    val placed = PlacedModel(
+                        file = file, asset = null, gpuModelId = gpuId,
+                        scale = obj.optDouble("scale", 0.75).toFloat(),
+                        baseScale = obj.optDouble("scale", 0.75).toFloat(),
+                        posX = obj.optDouble("posX", 0.0).toFloat(),
+                        posY = obj.optDouble("posY", 0.0).toFloat(),
+                        posZ = obj.optDouble("posZ", -2.0).toFloat(),
+                        rotX = obj.optDouble("rotX", 0.0).toFloat(),
+                        rotY = obj.optDouble("rotY", 0.0).toFloat(),
+                        rotZ = obj.optDouble("rotZ", 0.0).toFloat(),
+                        rotW = obj.optDouble("rotW", 1.0).toFloat(),
+                        metallic = obj.optDouble("metallic", 0.0).toFloat(),
+                        roughness = obj.optDouble("roughness", 0.9).toFloat(),
+                        exposure = obj.optDouble("exposure", 0.0).toFloat(),
+                        contrast = obj.optDouble("contrast", 1.0).toFloat(),
+                        saturation = obj.optDouble("saturation", 1.0).toFloat()
+                    )
+                    gpuModel.metallic = placed.metallic
+                    gpuModel.roughness = placed.roughness
+                    gpuModel.exposure = placed.exposure
+                    gpuModel.contrast = placed.contrast
+                    gpuModel.saturation = placed.saturation
+                    models.add(placed)
+                    updateModelTransform(placed)
+                }
+            }
+
+            if (models.isNotEmpty()) selectedModelIndex = 0
+            Log.i(TAG, "Scene loaded: ${sceneFile.name} (${models.size} models)")
+            runOnUiThread { showMessage("Scene loaded: ${sceneFile.nameWithoutExtension}") }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load scene", e)
+            runOnUiThread { showMessage("Load failed: ${e.message}") }
+        }
+    }
+
     private fun startRenderLoop() {
         running = true
         renderThread = Thread({
@@ -345,6 +545,23 @@ class FilamentModelActivity : ComponentActivity() {
 
                     val gr = glesRenderer
                     if (gr != null) {
+                        // Process pending model loads on this thread (has GL context)
+                        val pendingFile = pendingModelLoad
+                        if (pendingFile != null) {
+                            pendingModelLoad = null
+                            loadModel(pendingFile, offsetIndex = models.size)
+                            uiNeedsRefresh = true
+                            runOnUiThread { renderUiToBitmap() }
+                        }
+                        // Process pending scene loads
+                        val pendingScene = pendingSceneLoad
+                        if (pendingScene != null) {
+                            pendingSceneLoad = null
+                            loadScene(pendingScene)
+                            uiNeedsRefresh = true
+                            runOnUiThread { renderUiToBitmap() }
+                        }
+
                         try {
                             // Environment lighting: prefer XR light estimation, fall back to lux sensor
                             if (autoAmbient) {
@@ -358,36 +575,53 @@ class FilamentModelActivity : ComponentActivity() {
                                     val dirX = lightEstimateBuffer[10]; val dirY = lightEstimateBuffer[11]; val dirZ = lightEstimateBuffer[12]
                                     val shValid = lightEstimateBuffer[13] > 0.5f
 
-                                    // Set ambient from real room
-                                    val ambScale = (ambR + ambG + ambB) / 3f
-                                    gr.ambientIntensity = (ambScale * 2f).coerceIn(0.1f, 3f)
-                                    gr.ambientColor = floatArrayOf(
-                                        (ccR).coerceIn(0.5f, 1.5f),
-                                        (ccG).coerceIn(0.5f, 1.5f),
-                                        (ccB).coerceIn(0.5f, 1.5f)
-                                    )
+                                    // Temporal smoothing: EMA to prevent jittery "moving light"
+                                    // α = 0.08 for intensity/color (smooth), 0.04 for direction (very smooth)
+                                    val aI = if (lightSmoothed) 0.08f else 1f  // instant on first frame
+                                    val aD = if (lightSmoothed) 0.04f else 1f
+                                    val aS = if (lightSmoothed) 0.06f else 1f
+                                    lightSmoothed = true
 
-                                    // Set directional light from real room
-                                    // XR gives "direction toward light" — ensure Y is positive (from above)
-                                    // If Y is negative, the convention might be "direction OF light" → negate
+                                    // Smooth ambient
+                                    val targetAmbInt = ((ambR + ambG + ambB) / 3f * 2f).coerceIn(0.1f, 3f)
+                                    smoothAmbientIntensity += (targetAmbInt - smoothAmbientIntensity) * aI
+                                    gr.ambientIntensity = smoothAmbientIntensity
+
+                                    val tcc = floatArrayOf(ccR.coerceIn(0.5f, 1.5f), ccG.coerceIn(0.5f, 1.5f), ccB.coerceIn(0.5f, 1.5f))
+                                    for (i in 0..2) smoothAmbientColor[i] += (tcc[i] - smoothAmbientColor[i]) * aI
+                                    gr.ambientColor = smoothAmbientColor.copyOf()
+
+                                    // Smooth directional light
                                     val dirScale = (dirR + dirG + dirB) / 3f
                                     if (dirScale > 0.01f) {
                                         var ldx = dirX; var ldy = dirY; var ldz = dirZ
-                                        // If light direction points down, negate (convention mismatch)
                                         if (ldy < 0f) { ldx = -ldx; ldy = -ldy; ldz = -ldz }
-                                        // Only use XR direction if it makes sense (light from above)
                                         if (ldy > 0.1f) {
-                                            gr.lightDir = floatArrayOf(ldx, ldy, ldz)
+                                            // Smooth direction (slerp-like via EMA + renormalize)
+                                            smoothLightDir[0] += (ldx - smoothLightDir[0]) * aD
+                                            smoothLightDir[1] += (ldy - smoothLightDir[1]) * aD
+                                            smoothLightDir[2] += (ldz - smoothLightDir[2]) * aD
+                                            val len = kotlin.math.sqrt(smoothLightDir[0]*smoothLightDir[0] +
+                                                smoothLightDir[1]*smoothLightDir[1] + smoothLightDir[2]*smoothLightDir[2])
+                                                .coerceAtLeast(0.001f)
+                                            gr.lightDir = floatArrayOf(smoothLightDir[0]/len, smoothLightDir[1]/len, smoothLightDir[2]/len)
                                         }
-                                        gr.lightIntensity = (dirScale * 3f).coerceIn(0.5f, 5f)
+                                        val targetInt = (dirScale * 3f).coerceIn(0.5f, 5f)
+                                        smoothLightIntensity += (targetInt - smoothLightIntensity) * aI
+                                        gr.lightIntensity = smoothLightIntensity
+
                                         val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
-                                        gr.lightColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
+                                        val tColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
+                                        for (i in 0..2) smoothLightColor[i] += (tColor[i] - smoothLightColor[i]) * aI
+                                        gr.lightColor = smoothLightColor.copyOf()
                                     }
 
-                                    // Pass SH coefficients to renderer
+                                    // Smooth SH coefficients
                                     xrSHAvailable = shValid
                                     if (shValid) {
-                                        gr.shCoefficients = lightEstimateBuffer.copyOfRange(14, 41)
+                                        val rawSH = lightEstimateBuffer.copyOfRange(14, 41)
+                                        for (i in 0 until 27) smoothSH[i] += (rawSH[i] - smoothSH[i]) * aS
+                                        gr.shCoefficients = smoothSH.copyOf()
                                         gr.useSH = true
                                     }
 
@@ -409,6 +643,50 @@ class FilamentModelActivity : ComponentActivity() {
                                     val warmth = (1f - (lux / 800f).coerceIn(0f, 1f))
                                     gr.ambientColor = floatArrayOf(1f + warmth * 0.15f, 1f - warmth * 0.02f, 1f - warmth * 0.12f)
                                     gr.lightColor = floatArrayOf(1f + warmth * 0.08f, 0.95f + warmth * 0.02f, 0.9f - warmth * 0.05f)
+                                }
+                            }
+
+                            // ── BeatReactor: audio-reactive lighting ──
+                            val reactor = audioReactor
+                            if (reactor != null && beatReactorEnabled) {
+                                reactor.update()
+                                val bi = beatIntensity
+
+                                // Bass: ambient pulse + shadow deepen + warm color push
+                                val b = reactor.bass * bi
+                                gr.ambientIntensity += b * 2f
+                                gr.shadowDarkness = (gr.shadowDarkness + b * 0.4f).coerceAtMost(1f)
+
+                                // Mid: main light intensity pulse
+                                val m = reactor.mid * bi
+                                gr.lightIntensity += m * 3f
+
+                                // High: fill light sparkle
+                                val h = reactor.high * bi
+                                gr.fillLightIntensity += h * 2f
+
+                                // Color cycling — dance club vibe
+                                // Bass → red/pink, mid → green/teal, high → blue/purple
+                                gr.ambientColor = floatArrayOf(
+                                    (gr.ambientColor[0] + b * 0.6f).coerceAtMost(2.5f),
+                                    (gr.ambientColor[1] + m * 0.3f).coerceAtMost(2f),
+                                    (gr.ambientColor[2] + h * 0.5f).coerceAtMost(2.5f)
+                                )
+
+                                // Light color shifts warm on bass, cool on high
+                                gr.lightColor = floatArrayOf(
+                                    (gr.lightColor[0] + b * 0.4f).coerceAtMost(2f),
+                                    gr.lightColor[1],
+                                    (gr.lightColor[2] + h * 0.3f).coerceAtMost(2f)
+                                )
+
+                                // Per-model exposure pulse (models glow with the beat)
+                                val beatExposure = (b * 0.8f + m * 0.3f)
+                                for (placed in models) {
+                                    val gpuModel = gr.getModel(placed.gpuModelId)
+                                    if (gpuModel != null) {
+                                        gpuModel.exposure = placed.exposure + beatExposure
+                                    }
                                 }
                             }
 
@@ -662,18 +940,54 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Action buttons: bottom ~100px (3 buttons)
-                            if (by > 895f) {
-                                if (bx < 340f) hoveredActionButton = 100      // FILE MENU
-                                else if (bx < 680f) hoveredActionButton = 101 // ADD MODEL
-                                else hoveredActionButton = 102                 // EXIT
-                            }
+                            if (glbPickerMode) {
+                                // GLB picker: back button at bottom
+                                if (by > 920f) {
+                                    hoveredActionButton = 103 // BACK from GLB picker
+                                }
+                                // GLB file rows: ~120..900 in bitmap Y
+                                if (by in 120f..900f) {
+                                    val maxVisible = 13
+                                    val frac = (by - 120f) / (900f - 120f)
+                                    val idx = glbPickerScrollOffset + (frac * maxVisible).toInt()
+                                    if (idx < availableGlbFiles.size) {
+                                        hoveredGlbIndex = idx
+                                    }
+                                }
+                            } else if (scenePickerMode) {
+                                // Scene picker: back button at bottom
+                                if (by > 920f) {
+                                    hoveredActionButton = 106 // BACK from scene picker
+                                }
+                                // Scene file rows: ~120..900
+                                if (by in 120f..900f) {
+                                    val maxVisible = 13
+                                    val frac = (by - 120f) / (900f - 120f)
+                                    val idx = (frac * maxVisible).toInt()
+                                    if (idx < savedSceneFiles.size) {
+                                        hoveredSceneIndex = idx
+                                    }
+                                }
+                            } else {
+                                // Action buttons: 2 rows at bottom
+                                // Row 1 (~870-924): SAVE / LOAD / ADD MODEL
+                                if (by in 860f..930f) {
+                                    if (bx < 360f) hoveredActionButton = 104      // SAVE SCENE
+                                    else if (bx < 690f) hoveredActionButton = 105 // LOAD SCENE
+                                    else hoveredActionButton = 101                 // ADD MODEL
+                                }
+                                // Row 2 (~932-986): FILE MENU / EXIT
+                                if (by > 930f) {
+                                    if (bx < 520f) hoveredActionButton = 100      // FILE MENU
+                                    else hoveredActionButton = 102                 // EXIT
+                                }
 
-                            // Param rows: ~195..770 in bitmap Y
-                            if (by in 195f..770f) {
-                                val frac = (by - 195f) / (770f - 195f)
-                                val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
-                                hoveredMenuParam = idx
+                                // Param rows: ~195..770 in bitmap Y
+                                if (by in 195f..770f) {
+                                    val frac = (by - 195f) / (770f - 195f)
+                                    val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
+                                    hoveredMenuParam = idx
+                                }
                             }
                         }
                     }
@@ -698,9 +1012,13 @@ class FilamentModelActivity : ComponentActivity() {
                 }
 
                 // Refresh only when hover state actually changes
-                if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton) {
+                if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton
+                    || (glbPickerMode && hoveredGlbIndex != lastHoveredGlbIndex)
+                    || (scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)) {
                     lastHoveredMenuParam = hoveredMenuParam
                     lastHoveredActionButton = hoveredActionButton
+                    lastHoveredGlbIndex = hoveredGlbIndex
+                    lastHoveredSceneIndex = hoveredSceneIndex
                     uiNeedsRefresh = true
                 }
 
@@ -783,7 +1101,20 @@ class FilamentModelActivity : ComponentActivity() {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
-            if (menuVisible && hoveredActionButton == 100) {
+            if (menuVisible && glbPickerMode && hoveredActionButton == 103) {
+                // BACK from GLB picker → return to main menu
+                glbPickerMode = false
+                hoveredGlbIndex = -1
+                uiNeedsRefresh = true
+            } else if (menuVisible && glbPickerMode && hoveredGlbIndex >= 0 && hoveredGlbIndex < availableGlbFiles.size) {
+                // Queue GLB for loading on render thread (needs GL context)
+                val file = availableGlbFiles[hoveredGlbIndex]
+                Log.i(TAG, "GLB picker: queuing ${file.name} for load")
+                pendingModelLoad = file
+                glbPickerMode = false
+                hoveredGlbIndex = -1
+                uiNeedsRefresh = true
+            } else if (menuVisible && hoveredActionButton == 100) {
                 // Back to file menu
                 Log.i(TAG, "Action: Return to file menu")
                 finish()
@@ -794,15 +1125,38 @@ class FilamentModelActivity : ComponentActivity() {
                 running = false
                 runOnUiThread { finishAffinity() }
                 return
+            } else if (menuVisible && hoveredActionButton == 104) {
+                // Save scene with timestamp name
+                val ts = java.text.SimpleDateFormat("MMdd_HHmm", java.util.Locale.US).format(java.util.Date())
+                val name = "scene_${ts}_${models.size}m"
+                Log.i(TAG, "Action: Save scene as $name")
+                saveScene(name)
+                uiNeedsRefresh = true
+            } else if (menuVisible && hoveredActionButton == 105) {
+                // Open scene load picker
+                Log.i(TAG, "Action: Load scene — opening scene picker")
+                refreshSceneList()
+                scenePickerMode = true
+                hoveredSceneIndex = -1
+                uiNeedsRefresh = true
+            } else if (menuVisible && scenePickerMode && hoveredActionButton == 106) {
+                // BACK from scene picker
+                scenePickerMode = false
+                hoveredSceneIndex = -1
+                uiNeedsRefresh = true
+            } else if (menuVisible && scenePickerMode && hoveredSceneIndex >= 0 && hoveredSceneIndex < savedSceneFiles.size) {
+                // Queue scene for loading on render thread
+                pendingSceneLoad = savedSceneFiles[hoveredSceneIndex]
+                scenePickerMode = false
+                hoveredSceneIndex = -1
+                uiNeedsRefresh = true
             } else if (menuVisible && hoveredActionButton == 101) {
-                // Add object — open file picker
-                Log.i(TAG, "Action: Add object")
-                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("model/gltf-binary", "application/octet-stream"))
-                }
-                startActivityForResult(intent, REQUEST_ADD_MODEL)
+                // Add object — show GLB picker on the same menu panel
+                Log.i(TAG, "Action: Add object — opening GLB picker")
+                glbPickerMode = true
+                hoveredGlbIndex = -1
+                glbPickerScrollOffset = 0
+                uiNeedsRefresh = true
             } else if (menuVisible && hoveredMenuParam >= 0) {
                 // Select the param the laser is pointing at
                 selectedParam = hoveredMenuParam
@@ -847,8 +1201,22 @@ class FilamentModelActivity : ComponentActivity() {
         }
         lastXState = xButton
 
-        // B = toggle menu panel — always spawns in front of user, facing them
+        // B = toggle menu panel (or close sub-pickers first)
         if (bButton && !lastBState) {
+            if (glbPickerMode) {
+                glbPickerMode = false
+                hoveredGlbIndex = -1
+                uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
+            if (scenePickerMode) {
+                scenePickerMode = false
+                hoveredSceneIndex = -1
+                uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
             menuVisible = !menuVisible
             if (menuVisible && renderer != null) {
                 // Place panel 1.2m in front of the user's head
@@ -870,6 +1238,27 @@ class FilamentModelActivity : ComponentActivity() {
 
         // When menu is visible: param controls (works with or without model selected)
         if (menuVisible) {
+            // GLB picker mode: stick scrolls the file list
+            if (glbPickerMode) {
+                if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
+                    val maxVisible = 13
+                    val maxScroll = (availableGlbFiles.size - maxVisible).coerceAtLeast(0)
+                    if (rightThumbY < -STICK_DEADZONE && glbPickerScrollOffset < maxScroll) {
+                        glbPickerScrollOffset++
+                        uiNeedsRefresh = true
+                    } else if (rightThumbY > STICK_DEADZONE && glbPickerScrollOffset > 0) {
+                        glbPickerScrollOffset--
+                        uiNeedsRefresh = true
+                    }
+                }
+                lastRightStickClick = rightStickClick
+                if (uiNeedsRefresh) {
+                    uiNeedsRefresh = false
+                    runOnUiThread { renderUiToBitmap() }
+                }
+                return
+            }
+
             val model = models.getOrNull(selectedModelIndex)
 
             // Right stick click = cycle parameter (reuse rightStickClick from above)
@@ -896,24 +1285,47 @@ class FilamentModelActivity : ComponentActivity() {
                         model.exposure = (model.exposure + delta * 3f).coerceIn(-5f, 5f)
                         gpuModel?.exposure = model.exposure
                     }
+                    3 -> if (model != null) {
+                        model.contrast = (model.contrast + delta * 2f).coerceIn(0.2f, 3f)
+                        gpuModel?.contrast = model.contrast
+                    }
+                    4 -> if (model != null) {
+                        model.saturation = (model.saturation + delta * 2f).coerceIn(0f, 3f)
+                        gpuModel?.saturation = model.saturation
+                    }
                     // Global params (always work)
-                    3 -> renderer.lightIntensity = (renderer.lightIntensity + delta * 2f).coerceIn(0f, 10f)
-                    4 -> renderer.fillLightIntensity = (renderer.fillLightIntensity + delta).coerceIn(0f, 5f)
-                    5 -> {
+                    5 -> renderer.lightIntensity = (renderer.lightIntensity + delta * 2f).coerceIn(0f, 10f)
+                    6 -> renderer.fillLightIntensity = (renderer.fillLightIntensity + delta).coerceIn(0f, 5f)
+                    7 -> {
                         autoAmbient = false
                         renderer.ambientIntensity = (renderer.ambientIntensity + delta).coerceIn(0f, 5f)
                     }
-                    6 -> {
+                    8 -> {
                         renderer.lightAngleDeg = (renderer.lightAngleDeg + delta * 20f) % 360f
                         if (renderer.lightAngleDeg < 0f) renderer.lightAngleDeg += 360f
                         renderer.updateLightDirFromAngles()
                     }
-                    7 -> {
+                    9 -> {
                         renderer.lightElevDeg = (renderer.lightElevDeg + delta * 10f).coerceIn(5f, 90f)
                         renderer.updateLightDirFromAngles()
                     }
-                    8 -> renderer.shadowDarkness = (renderer.shadowDarkness + delta).coerceIn(0f, 1f)
-                    9 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
+                    10 -> renderer.shadowDarkness = (renderer.shadowDarkness + delta).coerceIn(0f, 1f)
+                    11 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
+                    12 -> renderer.shadowSpread = (renderer.shadowSpread + delta * 10f).coerceIn(2f, 30f)
+                    13 -> {
+                        // BeatReactor toggle (any stick movement toggles)
+                        if (kotlin.math.abs(rightThumbY) > 0.5f) {
+                            beatReactorEnabled = !beatReactorEnabled
+                            val reactor = audioReactor
+                            if (beatReactorEnabled && reactor != null) {
+                                reactor.enabled = true
+                                if (!reactor.isActive) reactor.start()
+                            } else {
+                                reactor?.enabled = false
+                            }
+                        }
+                    }
+                    14 -> beatIntensity = (beatIntensity + delta * 2f).coerceIn(0f, 2f)
                 }
                 uiNeedsRefresh = true
             }
@@ -925,13 +1337,21 @@ class FilamentModelActivity : ComponentActivity() {
                     0 -> if (model != null) { model.metallic = 0f; gpuModel?.metallic = 0f }
                     1 -> if (model != null) { model.roughness = 0.9f; gpuModel?.roughness = 0.9f }
                     2 -> if (model != null) { model.exposure = 0f; gpuModel?.exposure = 0f }
-                    3 -> renderer.lightIntensity = 2.0f
-                    4 -> renderer.fillLightIntensity = 0.5f
-                    5 -> { autoAmbient = true; renderer.ambientIntensity = 1.0f }
-                    6 -> { renderer.lightAngleDeg = 0f; renderer.updateLightDirFromAngles() }
-                    7 -> { renderer.lightElevDeg = 60f; renderer.updateLightDirFromAngles() }
-                    8 -> renderer.shadowDarkness = 0.7f
-                    9 -> renderer.shadowSoftness = 2.0f
+                    3 -> if (model != null) { model.contrast = 1f; gpuModel?.contrast = 1f }
+                    4 -> if (model != null) { model.saturation = 1f; gpuModel?.saturation = 1f }
+                    5 -> renderer.lightIntensity = 2.0f
+                    6 -> renderer.fillLightIntensity = 0.5f
+                    7 -> { autoAmbient = true; renderer.ambientIntensity = 1.0f }
+                    8 -> { renderer.lightAngleDeg = 0f; renderer.updateLightDirFromAngles() }
+                    9 -> { renderer.lightElevDeg = 60f; renderer.updateLightDirFromAngles() }
+                    10 -> renderer.shadowDarkness = 0.7f
+                    11 -> renderer.shadowSoftness = 2.0f
+                    12 -> renderer.shadowSpread = 8f
+                    13 -> {
+                        beatReactorEnabled = false
+                        audioReactor?.enabled = false
+                    }
+                    14 -> beatIntensity = 0.5f
                 }
                 uiNeedsRefresh = true
             }
@@ -1183,6 +1603,166 @@ class FilamentModelActivity : ComponentActivity() {
         }
         canvas.drawText(if (draggingPanel) "dragging..." else "grip to drag", uiW - 280f, 56f, dragHint)
 
+        // ═══ GLB Picker Sub-Menu ═══
+        if (glbPickerMode) {
+            val headerPaint = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 38f; color = 0xFF10B981.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("Select a 3D Model", 50f, 115f, headerPaint)
+
+            val files = availableGlbFiles
+            if (files.isEmpty()) {
+                val emptyPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 32f; color = 0xFF6B7280.toInt()
+                }
+                canvas.drawText("No .glb files found on device", 50f, 200f, emptyPaint)
+            } else {
+                val maxVisible = 13
+                val rowH = 60f
+                val startY = 130f
+                val normalPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt()
+                }
+                val hoverPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 36f; color = 0xFF10B981.toInt(); isFakeBoldText = true
+                }
+                val sizePaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 26f; color = 0xFF6B7280.toInt()
+                }
+                val hoverBg = android.graphics.Paint().apply { color = 0x2010B981.toInt() }
+                val loadedBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
+
+                val loadedPaths = models.map { it.file.absolutePath }.toSet()
+
+                for (vi in 0 until maxVisible) {
+                    val idx = glbPickerScrollOffset + vi
+                    if (idx >= files.size) break
+                    val file = files[idx]
+                    val ry = startY + vi * rowH
+                    val isHovered = idx == hoveredGlbIndex
+                    val isLoaded = file.absolutePath in loadedPaths
+
+                    if (isHovered) {
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                    }
+                    if (isLoaded) {
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, loadedBg)
+                    }
+
+                    val label = file.nameWithoutExtension
+                    val displayName = if (label.length > 32) label.take(30) + ".." else label
+                    canvas.drawText(displayName, 50f, ry + 34f, if (isHovered) hoverPaint else normalPaint)
+
+                    val sizeStr = "%.1f MB".format(file.length() / 1048576f)
+                    val sw = sizePaint.measureText(sizeStr)
+                    canvas.drawText(sizeStr, uiW - 60f - sw, ry + 34f, sizePaint)
+                }
+
+                // Scroll indicator
+                if (files.size > maxVisible) {
+                    val scrollPaint = android.graphics.Paint().apply {
+                        isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
+                    }
+                    val shown = "${glbPickerScrollOffset + 1}-${minOf(glbPickerScrollOffset + maxVisible, files.size)} of ${files.size}"
+                    canvas.drawText(shown, 50f, startY + maxVisible * rowH + 20f, scrollPaint)
+                }
+            }
+
+            // BACK button at bottom
+            val btnY = uiH - 80f
+            val btnH = 60f
+            val isBackHovered = hoveredActionButton == 103
+            val backBg = android.graphics.Paint().apply {
+                color = if (isBackHovered) 0x70EC4899.toInt() else 0x20EC4899.toInt()
+            }
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBg)
+            val backBorder = android.graphics.Paint().apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isBackHovered) 3f else 1.5f
+                color = if (isBackHovered) 0xFFEC4899.toInt() else 0x60EC4899.toInt()
+                isAntiAlias = true
+            }
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBorder)
+            val backText = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+                isFakeBoldText = true
+            }
+            canvas.drawText("\u25C0 BACK", uiW / 2f, btnY + 40f, backText)
+
+            pendingUiBitmap = bitmap
+            return
+        }
+
+        // ═══ Scene Picker Sub-Menu ═══
+        if (scenePickerMode) {
+            val headerPaint = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 38f; color = 0xFF3B82F6.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("Load Scene", 50f, 115f, headerPaint)
+
+            val scenes = savedSceneFiles
+            if (scenes.isEmpty()) {
+                val emptyPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 32f; color = 0xFF6B7280.toInt()
+                }
+                canvas.drawText("No saved scenes", 50f, 200f, emptyPaint)
+            } else {
+                val maxVisible = 13
+                val rowH = 60f
+                val startY = 130f
+                val normalPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt()
+                }
+                val hoverPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 36f; color = 0xFF3B82F6.toInt(); isFakeBoldText = true
+                }
+                val datePaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
+                }
+                val hoverBg = android.graphics.Paint().apply { color = 0x203B82F6.toInt() }
+
+                for (vi in 0 until minOf(maxVisible, scenes.size)) {
+                    val scene = scenes[vi]
+                    val ry = startY + vi * rowH
+                    val isHovered = vi == hoveredSceneIndex
+
+                    if (isHovered) {
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                    }
+
+                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 34f, if (isHovered) hoverPaint else normalPaint)
+
+                    val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+                        .format(java.util.Date(scene.lastModified()))
+                    val dw = datePaint.measureText(dateStr)
+                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 34f, datePaint)
+                }
+            }
+
+            // BACK button
+            val btnY = uiH - 80f
+            val btnH = 60f
+            val isBackHovered = hoveredActionButton == 106
+            val backBg = android.graphics.Paint().apply {
+                color = if (isBackHovered) 0x703B82F6.toInt() else 0x203B82F6.toInt()
+            }
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBg)
+            val backBorder = android.graphics.Paint().apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isBackHovered) 3f else 1.5f
+                color = if (isBackHovered) 0xFF3B82F6.toInt() else 0x603B82F6.toInt()
+                isAntiAlias = true
+            }
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBorder)
+            val backText = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("\u25C0 BACK", uiW / 2f, btnY + 40f, backText)
+
+            pendingUiBitmap = bitmap
+            return
+        }
+
         // ── Status line ──
         val renderer = glesRenderer
         val dim = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF6B7280.toInt() }
@@ -1218,6 +1798,8 @@ class FilamentModelActivity : ComponentActivity() {
             "Metallic" to (if (model != null) "%.0f%%".format(model.metallic * 100) else noModel),
             "Roughness" to (if (model != null) "%.0f%%".format(model.roughness * 100) else noModel),
             "Exposure" to (if (model != null) "%+.1f EV".format(model.exposure) else noModel),
+            "Contrast" to (if (model != null) "%.0f%%".format(model.contrast * 100) else noModel),
+            "Saturation" to (if (model != null) "%.0f%%".format(model.saturation * 100) else noModel),
             "Light" to "%.1f".format(renderer?.lightIntensity ?: 2f),
             "Fill" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
             "Ambient" to "%.1f%s".format(renderer?.ambientIntensity ?: 1f, if (autoAmbient) " auto" else ""),
@@ -1225,15 +1807,21 @@ class FilamentModelActivity : ComponentActivity() {
             "Elevation" to "%.0f\u00B0".format(renderer?.lightElevDeg ?: 60f),
             "Shadow" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.7f) * 100),
             "Softness" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
+            "Spread" to "%.1fm".format(renderer?.shadowSpread ?: 8f),
+            "BeatReactor" to if (beatReactorEnabled) {
+                val r = audioReactor
+                if (r != null) "ON ${r.statusString()}" else "ON"
+            } else "OFF",
+            "Beat Intensity" to "%.0f%%".format(beatIntensity * 100),
         )
 
-        val rowH = 55f
-        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 40f; color = 0xFFF3F4F6.toInt() }
+        val rowH = 42f  // compact rows to fit 15 params
+        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt() }
         val highlight = android.graphics.Paint().apply {
-            isAntiAlias = true; textSize = 42f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+            isAntiAlias = true; textSize = 36f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
         }
-        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 40f; color = 0xFF3A3A42.toInt() }
-        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 36f; color = 0xFF9CA3AF.toInt() }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 34f; color = 0xFF3A3A42.toInt() }
+        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF9CA3AF.toInt() }
         val hoverBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
         val selectedBg = android.graphics.Paint().apply { color = 0x3030D8D0.toInt() }
         val selectedBar = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
@@ -1252,7 +1840,7 @@ class FilamentModelActivity : ComponentActivity() {
 
             val isSelected = i == selectedParam
             val isHovered = i == hoveredMenuParam
-            val isPerModel = i <= 2
+            val isPerModel = i <= 4
             val labelP = when {
                 isPerModel && model == null -> disabled
                 isSelected || isHovered -> highlight
@@ -1280,58 +1868,55 @@ class FilamentModelActivity : ComponentActivity() {
         y += 28f
         canvas.drawText("Grip:Grab  R-Click:Grid  Menu:Sensors${if (sensorHudVisible) " [ON]" else ""}", 40f, y, hint)
 
-        // ── Action buttons (3 across, y ~900) ──
-        val btnY = uiH - 100f
-        val btnH = 70f
-        val btnGap = 12f
-        val btnW = (uiW - 60f - btnGap * 2f) / 3f // 3 equal-width buttons
+        // ── Action buttons (2 rows) ──
+        val btnGap = 8f
+        val btnH = 54f
 
-        fun drawButton(x1: Float, x2: Float, label: String, hovered: Boolean,
-                       normalColor: Int, hoverColor: Int) {
-            // Neon glow on hover
+        fun drawButton(bx1: Float, bx2: Float, by: Float, label: String, hovered: Boolean, normalColor: Int) {
             if (hovered) {
                 val glow = android.graphics.Paint().apply {
-                    style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f
-                    color = normalColor
+                    style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f; color = normalColor
                     maskFilter = android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.OUTER)
                     isAntiAlias = true
                 }
-                canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, glow)
+                canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, glow)
             }
             val bg = android.graphics.Paint().apply {
                 color = if (hovered) (normalColor and 0x00FFFFFF) or 0x70000000
                 else (normalColor and 0x00FFFFFF) or 0x20000000
             }
-            canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, bg)
+            canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, bg)
             val border = android.graphics.Paint().apply {
                 style = android.graphics.Paint.Style.STROKE; strokeWidth = if (hovered) 3f else 1.5f
                 color = if (hovered) normalColor else (normalColor and 0x00FFFFFF) or 0x60000000.toInt()
                 isAntiAlias = true
             }
-            canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, border)
+            canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, border)
             val text = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 28f; textAlign = android.graphics.Paint.Align.CENTER
-                color = if (hovered) 0xFFFFFFFF.toInt() else normalColor
-                isFakeBoldText = true
-                if (hovered) maskFilter = android.graphics.BlurMaskFilter(2f, android.graphics.BlurMaskFilter.Blur.SOLID)
+                isAntiAlias = true; textSize = 24f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (hovered) 0xFFFFFFFF.toInt() else normalColor; isFakeBoldText = true
             }
-            canvas.drawText(label, (x1 + x2) / 2f, btnY + 44f, text)
+            canvas.drawText(label, (bx1 + bx2) / 2f, by + 35f, text)
         }
 
-        val b1x = 30f
-        val b2x = b1x + btnW + btnGap
-        val b3x = b2x + btnW + btnGap
+        // Row 1: SAVE / LOAD / + ADD MODEL
+        val row1Y = uiH - 130f
+        val btn3W = (uiW - 60f - btnGap * 2f) / 3f
+        val r1b1 = 30f; val r1b2 = r1b1 + btn3W + btnGap; val r1b3 = r1b2 + btn3W + btnGap
+        drawButton(r1b1, r1b1 + btn3W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
+        drawButton(r1b2, r1b2 + btn3W, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
+        drawButton(r1b3, r1b3 + btn3W, row1Y, "+ ADD MODEL", hoveredActionButton == 101, 0xFF10B981.toInt())
 
-        drawButton(b1x, b1x + btnW, "FILE MENU", hoveredActionButton == 100,
-            0xFFEC4899.toInt(), 0xFFFF6BB5.toInt()) // pink
-        drawButton(b2x, b2x + btnW, "+ ADD MODEL", hoveredActionButton == 101,
-            0xFF10B981.toInt(), 0xFF34D399.toInt()) // green
-        drawButton(b3x, b3x + btnW, "EXIT", hoveredActionButton == 102,
-            0xFFF04858.toInt(), 0xFFFF6B6B.toInt()) // red
+        // Row 2: FILE MENU / EXIT
+        val row2Y = row1Y + btnH + btnGap
+        val btn2W = (uiW - 60f - btnGap) / 2f
+        val r2b1 = 30f; val r2b2 = r2b1 + btn2W + btnGap
+        drawButton(r2b1, r2b1 + btn2W, row2Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
+        drawButton(r2b2, r2b2 + btn2W, row2Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
-            y = btnY - 20f
+            y = row1Y - 20f
             val sensorPaint = android.graphics.Paint().apply {
                 isAntiAlias = true; textSize = 20f; color = 0xFF10B981.toInt()
                 typeface = android.graphics.Typeface.MONOSPACE
@@ -1763,6 +2348,17 @@ class FilamentModelActivity : ComponentActivity() {
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
         running = false
+
+        // Persist floor height for next session
+        val gr = glesRenderer
+        if (gr != null) {
+            getSharedPreferences("chloe_vr", MODE_PRIVATE).edit()
+                .putFloat("grid_height", gr.gridHeight)
+                .apply()
+            Log.i(TAG, "Saved grid height: ${gr.gridHeight}")
+        }
+
+        audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()
         renderThread?.join(2000)
