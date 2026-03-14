@@ -11,22 +11,25 @@
 #define XR_TYPE_LIGHT_ESTIMATOR_CREATE_INFO_ANDROID        ((XrStructureType)1000700000)
 #define XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID             ((XrStructureType)1000700001)
 #define XR_TYPE_LIGHT_ESTIMATE_ANDROID                      ((XrStructureType)1000700002)
+// Corrected from Chromium xr_android.h — developer.android.com docs had these SWAPPED
 #define XR_TYPE_DIRECTIONAL_LIGHT_ANDROID                   ((XrStructureType)1000700003)
-#define XR_TYPE_AMBIENT_LIGHT_ANDROID                       ((XrStructureType)1000700004)
-#define XR_TYPE_SPHERICAL_HARMONICS_ANDROID                 ((XrStructureType)1000700005)
-#define XR_TYPE_ENVIRONMENT_LIGHTING_CUBEMAP_ANDROID        ((XrStructureType)1000700006)
-#define XR_TYPE_SYSTEM_LIGHT_ESTIMATION_PROPERTIES_ANDROID  ((XrStructureType)1000700007)
+#define XR_TYPE_SPHERICAL_HARMONICS_ANDROID                 ((XrStructureType)1000700004)
+#define XR_TYPE_AMBIENT_LIGHT_ANDROID                       ((XrStructureType)1000700005)
+#define XR_TYPE_SYSTEM_LIGHT_ESTIMATION_PROPERTIES_ANDROID  ((XrStructureType)1000700006)
+// Note: XR_TYPE_ENVIRONMENT_LIGHTING_CUBEMAP_ANDROID is Revision 2 only, not in v1 runtime
 
 XR_DEFINE_HANDLE(XrLightEstimatorANDROID)
 
 typedef enum XrLightEstimateStateANDROID {
     XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID = 0,
     XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID = 1,
+    XR_LIGHT_ESTIMATE_STATE_MAX_ENUM_ANDROID = 0x7FFFFFFF
 } XrLightEstimateStateANDROID;
 
 typedef enum XrSphericalHarmonicsKindANDROID {
     XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID = 0,
     XR_SPHERICAL_HARMONICS_KIND_AMBIENT_ANDROID = 1,
+    XR_SPHERICAL_HARMONICS_KIND_MAX_ENUM_ANDROID = 0x7FFFFFFF
 } XrSphericalHarmonicsKindANDROID;
 
 typedef struct XrSystemLightEstimationPropertiesANDROID {

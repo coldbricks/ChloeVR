@@ -11,11 +11,27 @@
     <!-- XR permissions -->
     <uses-permission android:name="android.permission.HAND_TRACKING" />
     <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_COARSE" />
+    <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_FINE" />
+    <uses-permission android:name="android.permission.EYE_TRACKING_COARSE" />
+    <uses-permission android:name="android.permission.EYE_TRACKING_FINE" />
+    <uses-permission android:name="android.permission.FACE_TRACKING" />
+
+    <!-- Hardware sensor permissions -->
+    <uses-permission android:name="android.permission.BODY_SENSORS" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
 
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
     <uses-feature android:name="android.software.xr.api.openxr" android:required="false" />
     <uses-feature android:name="android.hardware.xr.input.hand_tracking" android:required="false" />
+    <uses-feature android:name="android.hardware.xr.input.eye_tracking" android:required="false" />
+    <uses-feature android:name="android.hardware.xr.input.face_tracking" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.barometer" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.stepcounter" android:required="false" />
 
     <application
         android:label="ChloeVR"

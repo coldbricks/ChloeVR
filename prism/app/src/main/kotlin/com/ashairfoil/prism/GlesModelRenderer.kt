@@ -40,6 +40,7 @@ class GlesModelRenderer {
         var boundsCenterY: Float = 0f,
         var boundsCenterZ: Float = 0f,
         var boundsRadius: Float = 1f,
+        var boundsMinY: Float = 0f,
         var selected: Boolean = false
     )
 
@@ -480,6 +481,7 @@ class GlesModelRenderer {
             model.indexCount = idxCnt
             model.boundsCenterX = cx; model.boundsCenterY = cy; model.boundsCenterZ = cz
             model.boundsRadius = radius
+            model.boundsMinY = minY
 
             // Material + texture: follow material → texture → image chain
             val images = json.optJSONArray("images")
@@ -582,10 +584,6 @@ class GlesModelRenderer {
 
         GLES30.glUseProgram(shadowDepthProgramId)
         val uLightMVP = GLES30.glGetUniformLocation(shadowDepthProgramId, "uMVP")
-
-        if (frameCount < 3) {
-            Log.i(TAG, "Shadow pass: ${models.size} models, light=(${lightDir[0]},${lightDir[1]},${lightDir[2]})")
-        }
 
         for (m in models) {
             if (m.indexCount == 0) continue
@@ -830,6 +828,10 @@ class GlesModelRenderer {
 
     fun finishEyePass() { GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0) }
 
+    // Panel position — settable for drag
+    var panelX = 0f; var panelY = 0f; var panelZ = -1f
+    var panelW = 0.8f; var panelH = 0.9f
+
     fun renderUiOverlay(swapchainTexId: Int, width: Int, height: Int, uiTexId: Int,
                         projection: FloatArray, viewMatrix: FloatArray) {
         if (uiProgramId == 0 || uiVao == 0) return
@@ -840,8 +842,37 @@ class GlesModelRenderer {
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
-        // Panel: 0.8m wide, 0.9m tall, at Z=-1.0, centered at origin
-        val panelModel = floatArrayOf(0.8f,0f,0f,0f, 0f,0.9f,0f,0f, 0f,0f,1f,0f, 0f,0f,-1f,1f)
+
+        // Billboard: extract camera position from view matrix (inverse translation)
+        val camX = -(viewMatrix[0]*viewMatrix[12] + viewMatrix[1]*viewMatrix[13] + viewMatrix[2]*viewMatrix[14])
+        val camY = -(viewMatrix[4]*viewMatrix[12] + viewMatrix[5]*viewMatrix[13] + viewMatrix[6]*viewMatrix[14])
+        val camZ = -(viewMatrix[8]*viewMatrix[12] + viewMatrix[9]*viewMatrix[13] + viewMatrix[10]*viewMatrix[14])
+
+        // Forward = camera → panel (panel's Z axis points away from camera)
+        var fwdX = panelX - camX; var fwdY = panelY - camY; var fwdZ = panelZ - camZ
+        val fwdLen = kotlin.math.sqrt(fwdX*fwdX + fwdY*fwdY + fwdZ*fwdZ).coerceAtLeast(0.001f)
+        fwdX /= fwdLen; fwdY /= fwdLen; fwdZ /= fwdLen
+
+        // Right = cross(fwd, worldUp) — left-to-right from viewer's perspective
+        var rightX = fwdY*0f - fwdZ*1f  // fwd cross up=(0,1,0)
+        var rightY = fwdZ*0f - fwdX*0f
+        var rightZ = fwdX*1f - fwdY*0f
+        val rLen = kotlin.math.sqrt(rightX*rightX + rightY*rightY + rightZ*rightZ).coerceAtLeast(0.001f)
+        rightX /= rLen; rightY /= rLen; rightZ /= rLen
+
+        // Up = cross(fwd, right)
+        val bupX = fwdY*rightZ - fwdZ*rightY
+        val bupY = fwdZ*rightX - fwdX*rightZ
+        val bupZ = fwdX*rightY - fwdY*rightX
+
+        // Column-major: right axis scaled by W, up axis (negated) scaled by H, fwd, translation
+        val panelModel = floatArrayOf(
+            rightX*panelW,  rightY*panelW,  rightZ*panelW,  0f,
+            -bupX*panelH,  -bupY*panelH,  -bupZ*panelH,   0f,
+            fwdX,          fwdY,          fwdZ,          0f,
+            panelX,        panelY,        panelZ,        1f
+        )
+
         val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, panelModel))
         GLES30.glUseProgram(uiProgramId)
         GLES30.glUniformMatrix4fv(uiUMvp, 1, false, mvp, 0)
@@ -1182,9 +1213,7 @@ void main() { gl_Position = uMVP * vec4(aPosition, 1.0); }
 private const val SHADOW_FRAGMENT_SHADER = """#version 300 es
 precision highp float;
 out vec4 fragColor;
-void main() {
-    fragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0);
-}
+void main() { fragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0); }
 """
 
 private const val LASER_VERTEX_SHADER = """#version 300 es
@@ -1226,7 +1255,7 @@ float getShadow() {
     vec4 lp = uShadowMVP * vec4(vWorldPos, 1.0);
     vec3 pc = lp.xyz / lp.w * 0.5 + 0.5;
     if (pc.x < 0.0 || pc.x > 1.0 || pc.y < 0.0 || pc.y > 1.0 || pc.z > 1.0) return 0.0;
-    float bias = 0.005;
+    float bias = 0.0;
     float shadow = 0.0;
     vec2 ts = vec2(1.0) / vec2(textureSize(uShadowMap, 0));
     float r = uShadowSoftness;

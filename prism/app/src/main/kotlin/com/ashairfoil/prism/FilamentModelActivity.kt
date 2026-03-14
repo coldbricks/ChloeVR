@@ -77,7 +77,10 @@ class FilamentModelActivity : ComponentActivity() {
     private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var grabStartModelRot = floatArrayOf(0f, 0f, 0f, 1f)
 
-    // Ambient light sensor
+    // ── Sensor Hub (ALL Android hardware sensors) ──
+    private var sensorHub: SensorHub? = null
+
+    // Legacy sensor compat (SensorHub now owns these)
     private var sensorManager: SensorManager? = null
     private var lightSensor: Sensor? = null
     @Volatile private var roomLux = 200f  // default indoor
@@ -86,6 +89,36 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var xrLightEstimateAvailable = false
     @Volatile private var xrSHAvailable = false
     @Volatile private var xrLightDebugStr = ""
+
+    // ── XR Sensor buffers ──
+    private val handTrackingBufferL = FloatArray(209) // 1 + 26×8
+    private val handTrackingBufferR = FloatArray(209)
+    private val eyeTrackingBuffer = FloatArray(25)
+    private val faceTrackingBuffer = FloatArray(69) // 1 + 68
+    private val planeBuffer = FloatArray(322) // 2 + 32×10
+    private val perfMetricsBuffer = FloatArray(5)
+
+    // ── XR Sensor state ──
+    @Volatile private var xrSensorCaps = 0 // bitmask
+    @Volatile private var handTrackingActive = booleanArrayOf(false, false)
+    @Volatile private var eyeTrackingActive = false
+    @Volatile private var faceTrackingActive = false
+    @Volatile private var detectedPlaneCount = 0
+    @Volatile private var gpuFrameTimeMs = 0f
+    @Volatile private var cpuFrameTimeMs = 0f
+    @Volatile private var displayRefreshRate = 0f
+    @Volatile private var droppedFrames = 0f
+    @Volatile private var passthroughState = 0
+
+    // Combined eye gaze (for gaze cursor)
+    @Volatile private var gazeOriginX = 0f; @Volatile private var gazeOriginY = 0f; @Volatile private var gazeOriginZ = 0f
+    @Volatile private var gazeRotX = 0f; @Volatile private var gazeRotY = 0f
+    @Volatile private var gazeRotZ = 0f; @Volatile private var gazeRotW = 1f
+
+    // Sensor debug HUD
+    @Volatile private var sensorHudVisible = false
+    @Volatile private var sensorDebugStr = ""
+    private var sensorPollFrame = 0
 
     // Laser / selection state
     private var laserHandPos = floatArrayOf(0f, 0f, 0f)
@@ -122,6 +155,22 @@ class FilamentModelActivity : ComponentActivity() {
     private var hoveredMenuParam = -1
     private var lastHoveredMenuParam = -1
 
+    // Draggable panel state
+    private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
+    private var panelRotX = 0f; private var panelRotY = 0f; private var panelRotZ = 0f; private var panelRotW = 1f
+    private val PANEL_WIDTH = 0.85f  // meters in world space — big enough to hit easily
+    private val PANEL_HEIGHT = 0.95f
+    private var draggingPanel = false
+    private var panelGrabDist = 1.0f // distance from hand at grab time
+
+    // Action button hover state: -1=none, 100=back, 101=add object, 102=exit app, 200=title bar
+    private var hoveredActionButton = -1
+    private var lastHoveredActionButton = -1
+
+    // Head/camera position (extracted from view matrix each frame)
+    private var camPosX = 0f; private var camPosY = 1.6f; private var camPosZ = 0f
+    private var camFwdX = 0f; private var camFwdY = 0f; private var camFwdZ = -1f
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: initializing Filament model viewer")
@@ -135,14 +184,16 @@ class FilamentModelActivity : ComponentActivity() {
             android.content.pm.PackageManager.PERMISSION_GRANTED
         Log.i(TAG, "SCENE_UNDERSTANDING_COARSE: ${if (hasScenePerm) "granted" else "not granted (light est will use sensor)"}")
 
-        // Register ambient light sensor
+        // Initialize ALL Android hardware sensors via SensorHub
+        sensorHub = SensorHub(this).also { it.start() }
+        Log.i(TAG, "SensorHub started: ${sensorHub?.activeCount() ?: 0} sensors active")
+
+        // Legacy sensor compat (light sensor also available via SensorHub)
         sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
         lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)
         if (lightSensor != null) {
             sensorManager?.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_UI)
-            Log.i(TAG, "Ambient light sensor registered")
-        } else {
-            Log.i(TAG, "No ambient light sensor available, using default lighting")
+            Log.i(TAG, "Ambient light sensor registered (legacy)")
         }
 
         Thread {
@@ -262,6 +313,12 @@ class FilamentModelActivity : ComponentActivity() {
 
             Log.i(TAG, "Render loop started")
             nativeMakeGLContextCurrent()
+
+            // Init XR compositor quad for stereo-correct menu panel
+            if (nativeInitUiQuad(1024, 1024)) {
+                Log.i(TAG, "Compositor UI quad initialized (1024x1024)")
+            }
+
             while (running) {
                 if (!nativeWaitFrame(frameData)) {
                     try { Thread.sleep(10) } catch (_: Exception) {}
@@ -276,6 +333,13 @@ class FilamentModelActivity : ComponentActivity() {
                     val rightProj = frameData.copyOfRange(19, 35)
                     val leftView = frameData.copyOfRange(35, 51)
                     val rightView = frameData.copyOfRange(51, 67)
+
+                    // Extract camera position + forward from left view matrix
+                    val v = leftView
+                    camPosX = -(v[0]*v[12] + v[1]*v[13] + v[2]*v[14])
+                    camPosY = -(v[4]*v[12] + v[5]*v[13] + v[6]*v[14])
+                    camPosZ = -(v[8]*v[12] + v[9]*v[13] + v[10]*v[14])
+                    camFwdX = -v[2]; camFwdY = -v[6]; camFwdZ = -v[10]
                     val width = frameData[67].toInt()
                     val height = frameData[68].toInt()
 
@@ -304,9 +368,17 @@ class FilamentModelActivity : ComponentActivity() {
                                     )
 
                                     // Set directional light from real room
+                                    // XR gives "direction toward light" — ensure Y is positive (from above)
+                                    // If Y is negative, the convention might be "direction OF light" → negate
                                     val dirScale = (dirR + dirG + dirB) / 3f
                                     if (dirScale > 0.01f) {
-                                        gr.lightDir = floatArrayOf(dirX, dirY, dirZ)
+                                        var ldx = dirX; var ldy = dirY; var ldz = dirZ
+                                        // If light direction points down, negate (convention mismatch)
+                                        if (ldy < 0f) { ldx = -ldx; ldy = -ldy; ldz = -ldz }
+                                        // Only use XR direction if it makes sense (light from above)
+                                        if (ldy > 0.1f) {
+                                            gr.lightDir = floatArrayOf(ldx, ldy, ldz)
+                                        }
                                         gr.lightIntensity = (dirScale * 3f).coerceIn(0.5f, 5f)
                                         val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
                                         gr.lightColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
@@ -340,20 +412,23 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Upload pending UI bitmap
+                            // Upload pending UI bitmap to compositor quad layer (swapchain texture)
                             val bmp = pendingUiBitmap
                             if (bmp != null) {
                                 pendingUiBitmap = null
-                                if (uiTextureId == 0) {
-                                    val buf = intArrayOf(0)
-                                    android.opengl.GLES30.glGenTextures(1, buf, 0)
-                                    uiTextureId = buf[0]
+                                if (menuVisible) {
+                                    val quadTex = nativeAcquireUiImage()
+                                    if (quadTex > 0) {
+                                        // Flip bitmap vertically — compositor quad UVs are bottom-up
+                                        val matrix = android.graphics.Matrix().apply { postScale(1f, -1f, bmp.width / 2f, bmp.height / 2f) }
+                                        val flipped = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, false)
+                                        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
+                                        android.opengl.GLUtils.texSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, 0, 0, flipped)
+                                        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
+                                        nativeReleaseUiImage()
+                                        flipped.recycle()
+                                    }
                                 }
-                                android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, uiTextureId)
-                                android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_MIN_FILTER, android.opengl.GLES30.GL_LINEAR)
-                                android.opengl.GLES30.glTexParameteri(android.opengl.GLES30.GL_TEXTURE_2D, android.opengl.GLES30.GL_TEXTURE_MAG_FILTER, android.opengl.GLES30.GL_LINEAR)
-                                android.opengl.GLUtils.texImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, bmp, 0)
-                                android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
                                 bmp.recycle()
                             }
 
@@ -374,7 +449,7 @@ class FilamentModelActivity : ComponentActivity() {
                             if (laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 laserHandPos, laserAimRot, hitDistance)
                             gr.finishEyePass()
-                            if (menuVisible && uiTextureId != 0) gr.renderUiOverlay(leftTexId, width, height, uiTextureId, leftProj, leftView)
+                            // Menu rendered via compositor quad layer (stereo-correct)
 
                             // Right eye
                             gr.renderEye(rightTexId, width, height, rightProj, rightView)
@@ -385,7 +460,7 @@ class FilamentModelActivity : ComponentActivity() {
                             if (laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
                                 laserHandPos, laserAimRot, hitDistance)
                             gr.finishEyePass()
-                            if (menuVisible && uiTextureId != 0) gr.renderUiOverlay(rightTexId, width, height, uiTextureId, rightProj, rightView)
+                            // Menu rendered via compositor quad layer (stereo-correct)
 
                             android.opengl.GLES30.glFlush()
                         } catch (e: Exception) {
@@ -394,10 +469,42 @@ class FilamentModelActivity : ComponentActivity() {
                     }
                 }
 
+                // Sync compositor quad visibility + pose (always face camera)
+                nativeSetUiVisible(menuVisible)
+                if (menuVisible) {
+                    val gr = glesRenderer
+                    if (gr != null) {
+                        // Recompute rotation every frame so panel always faces user
+                        val dx = camPosX - gr.panelX
+                        val dz = camPosZ - gr.panelZ
+                        val yaw = kotlin.math.atan2(dx, dz)
+                        panelRotX = 0f
+                        panelRotY = kotlin.math.sin(yaw * 0.5f)
+                        panelRotZ = 0f
+                        panelRotW = kotlin.math.cos(yaw * 0.5f)
+
+                        nativeSetUiPose(gr.panelX, gr.panelY, gr.panelZ,
+                            panelRotX, panelRotY, panelRotZ, panelRotW)
+                        nativeSetUiSize(gr.panelW, gr.panelH)
+                    }
+                }
+
                 nativeSubmitFrame()
 
                 if (nativePollInput(inputBuffer)) {
                     handleInput()
+                }
+
+                // ── Poll ALL XR sensors (every few frames to save CPU) ──
+                sensorPollFrame++
+                if (sensorPollFrame % 3 == 0) {
+                    pollXrSensors()
+                }
+                // Update roomLux from SensorHub
+                sensorHub?.let { roomLux = it.lightLux }
+                // Refresh sensor HUD at ~4Hz when visible
+                if (sensorHudVisible && menuVisible && sensorPollFrame % 18 == 0) {
+                    uiNeedsRefresh = true
                 }
             }
             Log.i(TAG, "Render loop stopped")
@@ -468,6 +575,16 @@ class FilamentModelActivity : ComponentActivity() {
             inputLogCount++
         }
 
+        // Menu button toggles sensor debug HUD
+        if (menuButton && !lastMenuState) {
+            sensorHudVisible = !sensorHudVisible
+            Log.i(TAG, "Sensor HUD: ${if (sensorHudVisible) "ON" else "OFF"}")
+            if (sensorHudVisible) {
+                sensorDebugStr = buildSensorDebugString()
+                uiNeedsRefresh = true
+            }
+            uiNeedsRefresh = true
+        }
         lastMenuState = menuButton
 
         // ── Laser pointer + ray intersection + gizmo hover ──
@@ -479,55 +596,131 @@ class FilamentModelActivity : ComponentActivity() {
 
             val rayDir = renderer.quatForward(laserAimRot)
 
-            // ── Menu panel hit test (when visible) ──
+            // ── Menu panel hit test ──
+            // Panel rendered by renderUiOverlay — position tracked in renderer.panelX/Y/Z
             hoveredMenuParam = -1
-            if (menuVisible) {
-                // Panel: 0.8m wide × 0.9m tall, center at (0, 0, -1.0), normal = +Z
-                // Ray-plane intersection: plane Z = -1.0
-                val panelCZ = -1.0f
-                val panelHW = 0.4f   // half-width (X)
-                val panelHH = 0.45f  // half-height (Y)
+            hoveredActionButton = -1
+            var laserOnPanel = false
+            if (menuVisible && renderer != null) {
+                val pcx = renderer.panelX
+                val pcy = renderer.panelY
+                val pcz = renderer.panelZ
+                val panelHW = renderer.panelW * 0.5f
+                val panelHH = renderer.panelH * 0.5f
 
-                // Only if ray has a meaningful Z component toward the panel
-                if (kotlin.math.abs(rayDir[2]) > 0.01f) {
-                    val t = (panelCZ - laserHandPos[2]) / rayDir[2]
+                // Billboard axes — must match renderer exactly
+                // Forward = panel → camera (same as renderer: panelPos - camPos then negate = camPos - panelPos...
+                // renderer uses fwd = panel - cam, right = cross(fwd, up), up = -cross(fwd, right))
+                var fwdX = pcx - camPosX; var fwdY = pcy - camPosY; var fwdZ = pcz - camPosZ
+                val fLen = kotlin.math.sqrt(fwdX*fwdX + fwdY*fwdY + fwdZ*fwdZ).coerceAtLeast(0.001f)
+                fwdX /= fLen; fwdY /= fLen; fwdZ /= fLen
+
+                // Right = cross(fwd, worldUp) — matches renderer
+                var rx = fwdY*0f - fwdZ*1f
+                var ry = fwdZ*0f - fwdX*0f
+                var rz = fwdX*1f - fwdY*0f
+                val rLen = kotlin.math.sqrt(rx*rx + ry*ry + rz*rz).coerceAtLeast(0.001f)
+                rx /= rLen; ry /= rLen; rz /= rLen
+
+                // Up = cross(fwd, right) then negate — matches renderer's -bup
+                val bupX = fwdY*rz - fwdZ*ry
+                val bupY = fwdZ*rx - fwdX*rz
+                val bupZ = fwdX*ry - fwdY*rx
+                val ux = -bupX; val uy = -bupY; val uz = -bupZ
+
+                // Normal for ray-plane intersection (panel faces camera)
+                val nx = -fwdX; val ny = -fwdY; val nz = -fwdZ
+
+                val denom = rayDir[0]*nx + rayDir[1]*ny + rayDir[2]*nz
+                if (kotlin.math.abs(denom) > 0.01f) {
+                    val t = ((pcx - laserHandPos[0])*nx + (pcy - laserHandPos[1])*ny + (pcz - laserHandPos[2])*nz) / denom
                     if (t > 0f && t < 8f) {
-                        val hx = laserHandPos[0] + rayDir[0] * t
-                        val hy = laserHandPos[1] + rayDir[1] * t
+                        val wx = laserHandPos[0] + rayDir[0] * t
+                        val wy = laserHandPos[1] + rayDir[1] * t
+                        val wz = laserHandPos[2] + rayDir[2] * t
+
+                        // Project onto panel's local right/up axes
+                        val dx = wx - pcx; val dy = wy - pcy; val dz = wz - pcz
+                        val hx = dx*rx + dy*ry + dz*rz
+                        val hy = dx*ux + dy*uy + dz*uz
 
                         if (hx in -panelHW..panelHW && hy in -panelHH..panelHH) {
+                            laserOnPanel = true
                             hitDistance = t
-                            // Map panel Y to param index
-                            // Params: start at bitmap Y~260, 10 rows × 55px → end ~810
-                            val paramTopY = panelHH - (255f / 1024f) * (panelHH * 2f)
-                            val paramBotY = panelHH - (815f / 1024f) * (panelHH * 2f)
-                            if (hy in paramBotY..paramTopY) {
-                                val frac = (paramTopY - hy) / (paramTopY - paramBotY)
+                            val u = (hx + panelHW) / (panelHW * 2f)
+                            val v = 1f - (hy + panelHH) / (panelHH * 2f)
+                            val bx = u * 1024f
+                            val by = v * 1024f
+
+                            // Title bar drag zone: top ~80px
+                            if (by < 85f) {
+                                hoveredActionButton = 200 // title bar hover
+                                val rg = inputBuffer[7]
+                                if (rg > 0.7f && !draggingPanel) {
+                                    draggingPanel = true
+                                    panelGrabDist = t // remember how far the panel was
+                                }
+                            }
+
+                            // Action buttons: bottom ~100px (3 buttons)
+                            if (by > 895f) {
+                                if (bx < 340f) hoveredActionButton = 100      // FILE MENU
+                                else if (bx < 680f) hoveredActionButton = 101 // ADD MODEL
+                                else hoveredActionButton = 102                 // EXIT
+                            }
+
+                            // Param rows: ~195..770 in bitmap Y
+                            if (by in 195f..770f) {
+                                val frac = (by - 195f) / (770f - 195f)
                                 val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
                                 hoveredMenuParam = idx
                             }
                         }
                     }
                 }
-                // Refresh UI when hover changes
-                if (hoveredMenuParam != lastHoveredMenuParam) {
+
+                // Drag update — full 3D: place panel along laser ray at grab distance
+                if (draggingPanel && renderer != null) {
+                    val rg = inputBuffer[7]
+                    if (rg > 0.5f) {
+                        // Right stick Y to push/pull distance
+                        val stickY = inputBuffer[3]
+                        if (kotlin.math.abs(stickY) > STICK_DEADZONE) {
+                            panelGrabDist += stickY * 0.03f
+                            panelGrabDist = panelGrabDist.coerceIn(0.3f, 5f)
+                        }
+                        renderer.panelX = laserHandPos[0] + rayDir[0] * panelGrabDist
+                        renderer.panelY = laserHandPos[1] + rayDir[1] * panelGrabDist
+                        renderer.panelZ = laserHandPos[2] + rayDir[2] * panelGrabDist
+                    } else {
+                        draggingPanel = false
+                    }
+                }
+
+                // Refresh only when hover state actually changes
+                if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton) {
                     lastHoveredMenuParam = hoveredMenuParam
+                    lastHoveredActionButton = hoveredActionButton
                     uiNeedsRefresh = true
                 }
+
+                // When menu is up, block ALL model/gizmo interaction
+                hoveredModelIndex = -1
+                hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
             }
 
-            // Test gizmo first (priority over model hover)
+            // Test gizmo + model only when menu is NOT up
             hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
             val selModel = models.getOrNull(selectedModelIndex)
-            if (gizmoVisible && selModel != null && !gizmoDragging) {
+            if (!menuVisible && gizmoVisible && selModel != null && !gizmoDragging) {
                 val gPos = floatArrayOf(selModel.posX, selModel.posY, selModel.posZ)
                 val gRot = floatArrayOf(selModel.rotX, selModel.rotY, selModel.rotZ, selModel.rotW)
                 val (axis, _) = renderer.testGizmoHit(laserHandPos, rayDir, gPos, gRot)
                 hoveredGizmoAxis = axis
             }
 
-            // Test model intersection (only if not hovering gizmo)
-            if (hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE) {
+            // Test model intersection (only if not hovering gizmo and menu is closed)
+            if (!menuVisible && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE) {
                 var nearestDist = Float.MAX_VALUE
                 var nearestIdx = -1
                 for ((i, placed) in models.withIndex()) {
@@ -590,7 +783,27 @@ class FilamentModelActivity : ComponentActivity() {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
-            if (menuVisible && hoveredMenuParam >= 0) {
+            if (menuVisible && hoveredActionButton == 100) {
+                // Back to file menu
+                Log.i(TAG, "Action: Return to file menu")
+                finish()
+                return
+            } else if (menuVisible && hoveredActionButton == 102) {
+                // Exit app entirely
+                Log.i(TAG, "Action: Exit app")
+                running = false
+                runOnUiThread { finishAffinity() }
+                return
+            } else if (menuVisible && hoveredActionButton == 101) {
+                // Add object — open file picker
+                Log.i(TAG, "Action: Add object")
+                val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("model/gltf-binary", "application/octet-stream"))
+                }
+                startActivityForResult(intent, REQUEST_ADD_MODEL)
+            } else if (menuVisible && hoveredMenuParam >= 0) {
                 // Select the param the laser is pointing at
                 selectedParam = hoveredMenuParam
                 uiNeedsRefresh = true
@@ -634,18 +847,24 @@ class FilamentModelActivity : ComponentActivity() {
         }
         lastXState = xButton
 
-        // B = open panel / close panel / exit
+        // B = toggle menu panel — always spawns in front of user, facing them
         if (bButton && !lastBState) {
-            if (menuVisible) {
-                menuVisible = false
-            } else if (System.currentTimeMillis() - lastBCloseTime < 1000) {
-                running = false
-                runOnUiThread { finish() }
-            } else {
-                menuVisible = true
-                uiNeedsRefresh = true
+            menuVisible = !menuVisible
+            if (menuVisible && renderer != null) {
+                // Place panel 1.2m in front of the user's head
+                renderer.panelX = camPosX + camFwdX * 1.2f
+                renderer.panelY = camPosY + camFwdY * 1.2f
+                renderer.panelZ = camPosZ + camFwdZ * 1.2f
+
+                // Compute Y-axis rotation so quad faces the camera
+                // Default quad faces -Z. Rotate around Y so it faces back toward user.
+                val yaw = kotlin.math.atan2(-camFwdX, -camFwdZ)
+                panelRotX = 0f
+                panelRotY = kotlin.math.sin(yaw * 0.5f)
+                panelRotZ = 0f
+                panelRotW = kotlin.math.cos(yaw * 0.5f)
             }
-            if (!menuVisible) lastBCloseTime = System.currentTimeMillis()
+            uiNeedsRefresh = true
         }
         lastBState = bButton
 
@@ -879,8 +1098,22 @@ class FilamentModelActivity : ComponentActivity() {
         }
         lastYState = yButton
 
-        if (aButton && !lastAState) {
-            // Reserved for future use (animation)
+        if (aButton && !lastAState && !menuVisible) {
+            // Snap selected model to grid floor
+            val model = models.getOrNull(selectedModelIndex)
+            val gr = glesRenderer
+            if (model != null && gr != null) {
+                val gpuModel = gr.getModel(model.gpuModelId)
+                if (gpuModel != null) {
+                    // Model's lowest point in local space = boundsMinY
+                    // In world space: posY + boundsMinY * scale
+                    // Snap so lowest point = gridHeight
+                    val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
+                    model.posY += (gr.gridHeight - worldMinY)
+                    updateModelTransform(model)
+                    Log.i(TAG, "Snap to ground: posY=${model.posY} (minY=${gpuModel.boundsMinY}, grid=${gr.gridHeight})")
+                }
+            }
         }
         lastAState = aButton
 
@@ -893,89 +1126,225 @@ class FilamentModelActivity : ComponentActivity() {
     /** Render HUD text panel to bitmap */
     private fun renderUiToBitmap() {
         val uiW = 1024
-        val uiH = 1024  // taller to fit more params
+        val uiH = 1024
         val bitmap = android.graphics.Bitmap.createBitmap(uiW, uiH, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bitmap)
-        canvas.drawColor(0xD0101010.toInt())
 
-        val title = android.graphics.Paint().apply { isAntiAlias = true; textSize = 56f; color = 0xFFFFFFFF.toInt(); isFakeBoldText = true }
-        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 44f; color = 0xFFDDDDDD.toInt() }
-        val highlight = android.graphics.Paint().apply { isAntiAlias = true; textSize = 48f; color = 0xFF00CCFF.toInt(); isFakeBoldText = true }
-        val dim = android.graphics.Paint().apply { isAntiAlias = true; textSize = 36f; color = 0xFF777777.toInt() }
+        // ═══ ChloeVibes Neon Theme ═══
+        // Background: dark with subtle purple gradient
+        val bgPaint = android.graphics.Paint()
+        val bgGrad = android.graphics.LinearGradient(
+            0f, 0f, 0f, uiH.toFloat(),
+            intArrayOf(0xE8100818.toInt(), 0xE80A0A14.toInt(), 0xE8120818.toInt()),
+            floatArrayOf(0f, 0.5f, 1f),
+            android.graphics.Shader.TileMode.CLAMP)
+        bgPaint.shader = bgGrad
+        canvas.drawRect(0f, 0f, uiW.toFloat(), uiH.toFloat(), bgPaint)
 
-        var y = 80f
-        canvas.drawText("3D Model Viewer", 50f, y, title)
-        y += 60f
+        // Neon border glow
+        val borderPink = android.graphics.Paint().apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 3f; color = 0xFFEC4899.toInt()
+            maskFilter = android.graphics.BlurMaskFilter(6f, android.graphics.BlurMaskFilter.Blur.OUTER)
+            isAntiAlias = true
+        }
+        canvas.drawRoundRect(8f, 8f, uiW - 8f, uiH - 8f, 20f, 20f, borderPink)
+        val borderSolid = android.graphics.Paint().apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; color = 0xAAEC4899.toInt()
+            isAntiAlias = true
+        }
+        canvas.drawRoundRect(8f, 8f, uiW - 8f, uiH - 8f, 20f, 20f, borderSolid)
 
+        // ── Title bar (drag zone) — illuminates on hover ──
+        val titleHovered = hoveredActionButton == 200
+        val titleBg = android.graphics.Paint().apply {
+            color = if (titleHovered) 0x80EC4899.toInt() else 0x40EC4899.toInt()
+        }
+        canvas.drawRoundRect(10f, 10f, uiW - 10f, 80f, 18f, 18f, titleBg)
+        if (titleHovered) {
+            val glow = android.graphics.Paint().apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = 3f
+                color = 0xFFEC4899.toInt()
+                maskFilter = android.graphics.BlurMaskFilter(8f, android.graphics.BlurMaskFilter.Blur.OUTER)
+                isAntiAlias = true
+            }
+            canvas.drawRoundRect(10f, 10f, uiW - 10f, 80f, 18f, 18f, glow)
+        }
+
+        val titlePaint = android.graphics.Paint().apply {
+            isAntiAlias = true; textSize = 48f
+            color = if (titleHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+            isFakeBoldText = true
+            maskFilter = android.graphics.BlurMaskFilter(2f, android.graphics.BlurMaskFilter.Blur.SOLID)
+        }
+        canvas.drawText("ChloeVR", 50f, 62f, titlePaint)
+        val dragHint = android.graphics.Paint().apply {
+            isAntiAlias = true; textSize = 24f
+            color = if (titleHovered) 0xFFEC4899.toInt() else 0x60FFFFFF.toInt()
+        }
+        canvas.drawText(if (draggingPanel) "dragging..." else "grip to drag", uiW - 280f, 56f, dragHint)
+
+        // ── Status line ──
         val renderer = glesRenderer
-        // Model count + grid state
+        val dim = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF6B7280.toInt() }
+        val teal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF10B981.toInt() }
+
+        var y = 118f
         val luxStr = when {
             !autoAmbient -> "Manual"
-            xrLightEstimateAvailable && xrSHAvailable -> "XR Light+SH"
-            xrLightEstimateAvailable -> "XR Light Est"
-            else -> "Sensor (%.0f lux)".format(roomLux)
+            xrLightEstimateAvailable && xrSHAvailable -> "XR+SH"
+            xrLightEstimateAvailable -> "XR Light"
+            else -> "%.0f lux".format(roomLux)
         }
-        val gridStr = if (gridVisible) "ON (Y=%.1f)".format(renderer?.gridHeight ?: 0f) else "OFF"
-        val gizmoStr = if (gizmoVisible) "ON" else "OFF"
-        canvas.drawText("${models.size} model${if (models.size != 1) "s" else ""}  |  Grid: $gridStr  |  Gizmo: $gizmoStr", 50f, y, dim)
-        y += 40f
-        // Show environment light source and data
-        if (xrLightEstimateAvailable) {
-            val activeColor = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF00FF88.toInt() }
-            canvas.drawText("ENV: $luxStr  $xrLightDebugStr", 50f, y, activeColor)
-        } else {
-            canvas.drawText("ENV: $luxStr", 50f, y, dim)
-        }
-        y += 70f
+        val gridStr = if (gridVisible) "ON" else "OFF"
+        canvas.drawText("${models.size} models  |  Grid: $gridStr  |  Light: $luxStr", 50f, y, dim)
+        y += 32f
 
         val model = models.getOrNull(selectedModelIndex)
-        val modelName = model?.file?.name ?: "No model selected"
-        canvas.drawText(modelName, 50f, y, dim)
-        y += 70f
+        val modelName = model?.file?.nameWithoutExtension ?: "No selection"
+        val namePaint = android.graphics.Paint().apply {
+            isAntiAlias = true; textSize = 32f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+        }
+        canvas.drawText(modelName, 50f, y, namePaint)
+        y += 16f
 
+        // ── Separator ──
+        val sepPaint = android.graphics.Paint().apply { color = 0x30EC4899.toInt(); strokeWidth = 1f }
+        canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
+        y += 22f
+
+        // ── Parameters (start ~260) ──
         val noModel = "---"
         val params = arrayOf(
             "Metallic" to (if (model != null) "%.0f%%".format(model.metallic * 100) else noModel),
             "Roughness" to (if (model != null) "%.0f%%".format(model.roughness * 100) else noModel),
             "Exposure" to (if (model != null) "%+.1f EV".format(model.exposure) else noModel),
-            "Light Intensity" to "%.1f".format(renderer?.lightIntensity ?: 2f),
-            "Fill Intensity" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
-            "Ambient" to "%.1f%s".format(renderer?.ambientIntensity ?: 1f,
-                if (autoAmbient) " (auto)" else ""),
-            "Light Azimuth" to "%.0f°".format(renderer?.lightAngleDeg ?: 0f),
-            "Light Height" to "%.0f°".format(renderer?.lightElevDeg ?: 60f),
-            "Shadow Dark" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.7f) * 100),
-            "Shadow Soft" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
+            "Light" to "%.1f".format(renderer?.lightIntensity ?: 2f),
+            "Fill" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
+            "Ambient" to "%.1f%s".format(renderer?.ambientIntensity ?: 1f, if (autoAmbient) " auto" else ""),
+            "Azimuth" to "%.0f\u00B0".format(renderer?.lightAngleDeg ?: 0f),
+            "Elevation" to "%.0f\u00B0".format(renderer?.lightElevDeg ?: 60f),
+            "Shadow" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.7f) * 100),
+            "Softness" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
         )
-        val hoverBg = android.graphics.Paint().apply { color = 0x40FFFFFF.toInt() }
-        val selectedBg = android.graphics.Paint().apply { color = 0x3000CCFF.toInt() }
-        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 44f; color = 0xFF555555.toInt() }
+
+        val rowH = 55f
+        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 40f; color = 0xFFF3F4F6.toInt() }
+        val highlight = android.graphics.Paint().apply {
+            isAntiAlias = true; textSize = 42f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+        }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 40f; color = 0xFF3A3A42.toInt() }
+        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 36f; color = 0xFF9CA3AF.toInt() }
+        val hoverBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
+        val selectedBg = android.graphics.Paint().apply { color = 0x3030D8D0.toInt() }
+        val selectedBar = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
+
         for ((i, param) in params.withIndex()) {
-            if (i == hoveredMenuParam && hoveredMenuParam != selectedParam) {
-                canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, hoverBg)
-            }
+            val rowTop = y - 10f
+            val rowBot = y + rowH - 16f
+
             if (i == selectedParam) {
-                canvas.drawRect(20f, y - 48f, uiW - 20f, y + 14f, selectedBg)
+                canvas.drawRoundRect(24f, rowTop, uiW - 24f, rowBot, 8f, 8f, selectedBg)
+                canvas.drawRect(24f, rowTop, 30f, rowBot, selectedBar) // pink accent bar
             }
-            val isHovered = i == hoveredMenuParam
+            if (i == hoveredMenuParam && hoveredMenuParam != selectedParam) {
+                canvas.drawRoundRect(24f, rowTop, uiW - 24f, rowBot, 8f, 8f, hoverBg)
+            }
+
             val isSelected = i == selectedParam
+            val isHovered = i == hoveredMenuParam
             val isPerModel = i <= 2
-            val p = when {
+            val labelP = when {
                 isPerModel && model == null -> disabled
                 isSelected || isHovered -> highlight
                 else -> normal
             }
-            val arrow = if (isSelected) ">" else if (isHovered) "-" else " "
-            canvas.drawText("$arrow ${param.first}:  ${param.second}", 50f, y, p)
-            y += 55f
+            val arrow = if (isSelected) "\u25B6 " else "  "
+            canvas.drawText("$arrow${param.first}", 50f, y + 30f, labelP)
+
+            // Value right-aligned
+            val valStr = param.second
+            val valW = valuePaint.measureText(valStr)
+            canvas.drawText(valStr, uiW - 60f - valW, y + 30f, valuePaint)
+
+            y += rowH
         }
 
-        y += 20f
-        canvas.drawText("[Laser+Trigger] Select   [R Stick] Adjust", 50f, y, dim)
-        y += 40f
-        canvas.drawText("[A] Reset   [B] Close   [X] Gizmo", 50f, y, dim)
-        y += 40f
-        canvas.drawText("[Grip] Grab   [R Stick Click] Grid   [Y] Next", 50f, y, dim)
+        // ── Separator ──
+        y += 8f
+        canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
+        y += 16f
+
+        // ── Controls hint ──
+        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFF58585F.toInt() }
+        canvas.drawText("Trigger:Select  Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next", 40f, y, hint)
+        y += 28f
+        canvas.drawText("Grip:Grab  R-Click:Grid  Menu:Sensors${if (sensorHudVisible) " [ON]" else ""}", 40f, y, hint)
+
+        // ── Action buttons (3 across, y ~900) ──
+        val btnY = uiH - 100f
+        val btnH = 70f
+        val btnGap = 12f
+        val btnW = (uiW - 60f - btnGap * 2f) / 3f // 3 equal-width buttons
+
+        fun drawButton(x1: Float, x2: Float, label: String, hovered: Boolean,
+                       normalColor: Int, hoverColor: Int) {
+            // Neon glow on hover
+            if (hovered) {
+                val glow = android.graphics.Paint().apply {
+                    style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f
+                    color = normalColor
+                    maskFilter = android.graphics.BlurMaskFilter(12f, android.graphics.BlurMaskFilter.Blur.OUTER)
+                    isAntiAlias = true
+                }
+                canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, glow)
+            }
+            val bg = android.graphics.Paint().apply {
+                color = if (hovered) (normalColor and 0x00FFFFFF) or 0x70000000
+                else (normalColor and 0x00FFFFFF) or 0x20000000
+            }
+            canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, bg)
+            val border = android.graphics.Paint().apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = if (hovered) 3f else 1.5f
+                color = if (hovered) normalColor else (normalColor and 0x00FFFFFF) or 0x60000000.toInt()
+                isAntiAlias = true
+            }
+            canvas.drawRoundRect(x1, btnY, x2, btnY + btnH, 12f, 12f, border)
+            val text = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 28f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (hovered) 0xFFFFFFFF.toInt() else normalColor
+                isFakeBoldText = true
+                if (hovered) maskFilter = android.graphics.BlurMaskFilter(2f, android.graphics.BlurMaskFilter.Blur.SOLID)
+            }
+            canvas.drawText(label, (x1 + x2) / 2f, btnY + 44f, text)
+        }
+
+        val b1x = 30f
+        val b2x = b1x + btnW + btnGap
+        val b3x = b2x + btnW + btnGap
+
+        drawButton(b1x, b1x + btnW, "FILE MENU", hoveredActionButton == 100,
+            0xFFEC4899.toInt(), 0xFFFF6BB5.toInt()) // pink
+        drawButton(b2x, b2x + btnW, "+ ADD MODEL", hoveredActionButton == 101,
+            0xFF10B981.toInt(), 0xFF34D399.toInt()) // green
+        drawButton(b3x, b3x + btnW, "EXIT", hoveredActionButton == 102,
+            0xFFF04858.toInt(), 0xFFFF6B6B.toInt()) // red
+
+        // ── Sensor debug HUD overlay ──
+        if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
+            y = btnY - 20f
+            val sensorPaint = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 20f; color = 0xFF10B981.toInt()
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val sensorBg = android.graphics.Paint().apply { color = 0xC0080810.toInt() }
+            canvas.drawRoundRect(20f, y - 260f, uiW - 20f, y, 8f, 8f, sensorBg)
+            var sy = y - 240f
+            for (line in sensorDebugStr.lines()) {
+                if (sy > y - 10f) break
+                canvas.drawText(line, 30f, sy, sensorPaint)
+                sy += 22f
+            }
+        }
 
         pendingUiBitmap = bitmap
     }
@@ -1214,6 +1583,174 @@ class FilamentModelActivity : ComponentActivity() {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // ── XR Sensor Polling ──
+    // ═══════════════════════════════════════════════════════════════
+
+    private fun pollXrSensors() {
+        // Get capabilities once
+        if (xrSensorCaps == 0) {
+            xrSensorCaps = nativeGetSensorCapabilities()
+            Log.i(TAG, "XR Sensor capabilities: 0x${xrSensorCaps.toString(16)}")
+            if (xrSensorCaps and (1 shl 0) != 0) Log.i(TAG, "  + Hand tracking")
+            if (xrSensorCaps and (1 shl 1) != 0) Log.i(TAG, "  + Eye tracking")
+            if (xrSensorCaps and (1 shl 2) != 0) Log.i(TAG, "  + Face tracking")
+            if (xrSensorCaps and (1 shl 3) != 0) Log.i(TAG, "  + Plane detection")
+            if (xrSensorCaps and (1 shl 4) != 0) Log.i(TAG, "  + Refresh rate control")
+            if (xrSensorCaps and (1 shl 5) != 0) Log.i(TAG, "  + Performance metrics")
+            if (xrSensorCaps and (1 shl 6) != 0) Log.i(TAG, "  + Passthrough state")
+        }
+
+        // Hand tracking (both hands)
+        if (xrSensorCaps and (1 shl 0) != 0) {
+            handTrackingActive[0] = nativePollHandTracking(0, handTrackingBufferL) &&
+                    handTrackingBufferL[0] > 0.5f
+            handTrackingActive[1] = nativePollHandTracking(1, handTrackingBufferR) &&
+                    handTrackingBufferR[0] > 0.5f
+        }
+
+        // Eye tracking
+        if (xrSensorCaps and (1 shl 1) != 0) {
+            if (nativePollEyeTracking(eyeTrackingBuffer) && eyeTrackingBuffer[0] > 0.5f) {
+                eyeTrackingActive = true
+                // Combined gaze: indices 17-24
+                if (eyeTrackingBuffer[17] > 0.5f) {
+                    gazeOriginX = eyeTrackingBuffer[18]; gazeOriginY = eyeTrackingBuffer[19]; gazeOriginZ = eyeTrackingBuffer[20]
+                    gazeRotX = eyeTrackingBuffer[21]; gazeRotY = eyeTrackingBuffer[22]
+                    gazeRotZ = eyeTrackingBuffer[23]; gazeRotW = eyeTrackingBuffer[24]
+                }
+            } else {
+                eyeTrackingActive = false
+            }
+        }
+
+        // Face tracking
+        if (xrSensorCaps and (1 shl 2) != 0) {
+            faceTrackingActive = nativePollFaceTracking(faceTrackingBuffer) &&
+                    faceTrackingBuffer[0] > 0.5f
+        }
+
+        // Plane detection (less frequently - every 30 frames)
+        if (xrSensorCaps and (1 shl 3) != 0 && sensorPollFrame % 30 == 0) {
+            if (nativePollPlanes(planeBuffer) && planeBuffer[0] > 0.5f) {
+                detectedPlaneCount = planeBuffer[1].toInt()
+            }
+        }
+
+        // Performance metrics (every 15 frames)
+        if (xrSensorCaps and (1 shl 5) != 0 && sensorPollFrame % 15 == 0) {
+            if (nativePollPerfMetrics(perfMetricsBuffer) && perfMetricsBuffer[0] > 0.5f) {
+                gpuFrameTimeMs = perfMetricsBuffer[1]
+                cpuFrameTimeMs = perfMetricsBuffer[2]
+                droppedFrames = perfMetricsBuffer[3]
+                displayRefreshRate = perfMetricsBuffer[4]
+            }
+        }
+
+        // Passthrough state
+        if (xrSensorCaps and (1 shl 6) != 0 && sensorPollFrame % 60 == 0) {
+            passthroughState = nativeGetPassthroughState()
+        }
+
+        // Build debug string (every 10 frames)
+        if (sensorHudVisible && sensorPollFrame % 10 == 0) {
+            sensorDebugStr = buildSensorDebugString()
+        }
+    }
+
+    private fun buildSensorDebugString(): String {
+        val sb = StringBuilder()
+
+        // Android hardware sensors
+        sensorHub?.let { hub ->
+            sb.appendLine(hub.getDebugString())
+            sb.appendLine()
+        }
+
+        // XR extensions
+        sb.appendLine("=== XR SENSORS (caps=0x${xrSensorCaps.toString(16)}) ===")
+
+        // XR Light
+        if (xrLightEstimateAvailable)
+            sb.appendLine("XR Light: $xrLightDebugStr")
+
+        // Hand tracking
+        if (handTrackingActive[0] || handTrackingActive[1]) {
+            val lPalm = if (handTrackingActive[0]) {
+                val px = handTrackingBufferL[1]; val py = handTrackingBufferL[2]; val pz = handTrackingBufferL[3]
+                "(%.2f,%.2f,%.2f)".format(px, py, pz)
+            } else "inactive"
+            val rPalm = if (handTrackingActive[1]) {
+                val px = handTrackingBufferR[1]; val py = handTrackingBufferR[2]; val pz = handTrackingBufferR[3]
+                "(%.2f,%.2f,%.2f)".format(px, py, pz)
+            } else "inactive"
+            sb.appendLine("Hands: L=$lPalm R=$rPalm")
+
+            // Pinch distance (thumb tip to index tip)
+            if (handTrackingActive[1]) {
+                val thumbOff = 1 + 5 * 8 // thumb tip = joint 5
+                val indexOff = 1 + 10 * 8 // index tip = joint 10
+                val dx = handTrackingBufferR[thumbOff] - handTrackingBufferR[indexOff]
+                val dy = handTrackingBufferR[thumbOff+1] - handTrackingBufferR[indexOff+1]
+                val dz = handTrackingBufferR[thumbOff+2] - handTrackingBufferR[indexOff+2]
+                val pinchDist = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz)
+                sb.appendLine("R Pinch: %.3f m %s".format(pinchDist, if (pinchDist < 0.02f) "PINCHED" else ""))
+            }
+        } else if (xrSensorCaps and (1 shl 0) != 0) {
+            sb.appendLine("Hands: not tracked (controllers active?)")
+        }
+
+        // Eye tracking
+        if (eyeTrackingActive) {
+            sb.appendLine("Gaze: (%.3f,%.3f,%.3f) rot(%.2f,%.2f,%.2f,%.2f)".format(
+                gazeOriginX, gazeOriginY, gazeOriginZ,
+                gazeRotX, gazeRotY, gazeRotZ, gazeRotW))
+        } else if (xrSensorCaps and (1 shl 1) != 0) {
+            sb.appendLine("Eyes: not tracked (need permission?)")
+        }
+
+        // Face tracking
+        if (faceTrackingActive) {
+            // Show a few key blend shapes
+            val jaw = faceTrackingBuffer[1]
+            val smileL = faceTrackingBuffer[2]
+            val smileR = faceTrackingBuffer[3]
+            val browL = faceTrackingBuffer[4]
+            sb.appendLine("Face: jaw=%.2f smile(%.2f,%.2f) brow=%.2f".format(jaw, smileL, smileR, browL))
+        } else if (xrSensorCaps and (1 shl 2) != 0) {
+            sb.appendLine("Face: not tracked (need permission?)")
+        }
+
+        // Planes
+        if (detectedPlaneCount > 0) {
+            sb.appendLine("Planes: $detectedPlaneCount detected")
+            val count = minOf(detectedPlaneCount, 5)
+            for (i in 0 until count) {
+                val off = 2 + i * 10
+                val labels = arrayOf("unknown", "floor", "ceiling", "wall", "table")
+                val lbl = planeBuffer[off + 9].toInt().coerceIn(0, 4)
+                sb.appendLine("  ${labels[lbl]}: (%.1f,%.1f,%.1f) %.1fx%.1f m".format(
+                    planeBuffer[off], planeBuffer[off+1], planeBuffer[off+2],
+                    planeBuffer[off+7]*2, planeBuffer[off+8]*2))
+            }
+        } else if (xrSensorCaps and (1 shl 3) != 0) {
+            sb.appendLine("Planes: scanning...")
+        }
+
+        // Performance
+        if (displayRefreshRate > 0) {
+            sb.appendLine("Perf: GPU=%.1fms CPU=%.1fms @%.0fHz drop=%.0f".format(
+                gpuFrameTimeMs, cpuFrameTimeMs, displayRefreshRate, droppedFrames))
+        }
+
+        // Passthrough
+        val ptState = when(passthroughState) { 0 -> "disabled"; 1 -> "initializing"; 2 -> "enabled"; else -> "unknown" }
+        sb.appendLine("Passthrough: $ptState")
+        sb.appendLine("Blend: ${if (passthroughState == 2) "ALPHA_BLEND (MR)" else "OPAQUE (VR)"}")
+
+        return sb.toString().trimEnd()
+    }
+
     // ── Lifecycle ──
 
     private val lightListener = object : SensorEventListener {
@@ -1227,6 +1764,7 @@ class FilamentModelActivity : ComponentActivity() {
         Log.i(TAG, "onDestroy")
         running = false
         sensorManager?.unregisterListener(lightListener)
+        sensorHub?.stop()
         renderThread?.join(2000)
         glesRenderer?.destroy()
         glesRenderer = null
@@ -1247,4 +1785,21 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeIsRunning(): Boolean
     private external fun nativeMakeGLContextCurrent(): Boolean
     private external fun nativePollLightEstimate(outData: FloatArray): Boolean
+
+    // Panel pose JNI
+    private external fun nativeSetUiPose(px: Float, py: Float, pz: Float, rx: Float, ry: Float, rz: Float, rw: Float)
+    private external fun nativeSetUiSize(w: Float, h: Float)
+    private external fun nativeInitUiQuad(width: Int, height: Int): Boolean
+    private external fun nativeAcquireUiImage(): Int
+    private external fun nativeReleaseUiImage()
+    private external fun nativeSetUiVisible(visible: Boolean)
+
+    // Sensor JNI
+    private external fun nativePollHandTracking(hand: Int, outData: FloatArray): Boolean
+    private external fun nativePollEyeTracking(outData: FloatArray): Boolean
+    private external fun nativePollFaceTracking(outData: FloatArray): Boolean
+    private external fun nativePollPlanes(outData: FloatArray): Boolean
+    private external fun nativePollPerfMetrics(outData: FloatArray): Boolean
+    private external fun nativeGetSensorCapabilities(): Int
+    private external fun nativeGetPassthroughState(): Int
 }

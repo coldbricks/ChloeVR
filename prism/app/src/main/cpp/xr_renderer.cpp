@@ -41,6 +41,24 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
     if (!createActions()) return false;
     // Light estimation init deferred to first poll (needs runtime permission first)
 
+    // Initialize all sensor extensions (deferred/lazy where needed)
+    if (handTrackingSupported_) initHandTracking();
+    if (eyeTrackingSupported_) initEyeTracking();
+    if (faceTrackingSupported_) initFaceTracking();
+    if (trackablesSupported_) initPlaneTracking();
+    if (perfMetricsSupported_) initPerfMetrics();
+
+    // Load refresh rate function pointers
+    if (refreshRateSupported_) {
+        xrGetInstanceProcAddr(instance_, "xrEnumerateDisplayRefreshRatesFB",
+            (PFN_xrVoidFunction*)&xrEnumRefreshRates_);
+        xrGetInstanceProcAddr(instance_, "xrGetDisplayRefreshRateFB",
+            (PFN_xrVoidFunction*)&xrGetRefreshRate_);
+        xrGetInstanceProcAddr(instance_, "xrRequestDisplayRefreshRateFB",
+            (PFN_xrVoidFunction*)&xrRequestRefreshRate_);
+        XR_LOGI("Refresh rate functions loaded");
+    }
+
     // Pump events to catch IDLE→READY transition during init
     XR_LOGI("Pumping initial events...");
     for (int i = 0; i < 600; i++) { // up to 30 seconds
@@ -92,21 +110,69 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         "XR_KHR_convert_timespec_time",
     };
 
-    // Optional: light estimation
-    bool hasLightEst = false;
-    for (auto& ext : availExts) {
-        if (strcmp(ext.extensionName, XR_ANDROID_LIGHT_ESTIMATION_EXTENSION_NAME) == 0) {
-            hasLightEst = true;
-            break;
+    // Check availability of all optional extensions
+    auto hasExt = [&](const char* name) -> bool {
+        for (auto& ext : availExts) {
+            if (strcmp(ext.extensionName, name) == 0) return true;
         }
-    }
-    if (hasLightEst) {
+        return false;
+    };
+
+    // Light estimation
+    if (hasExt(XR_ANDROID_LIGHT_ESTIMATION_EXTENSION_NAME)) {
         extensions.push_back(XR_ANDROID_LIGHT_ESTIMATION_EXTENSION_NAME);
-        XR_LOGI("Light estimation extension available, enabling");
-    } else {
-        XR_LOGI("Light estimation extension not available");
+        lightEstimationSupported_ = true;
+        XR_LOGI("  + Light estimation");
     }
-    lightEstimationSupported_ = hasLightEst;
+
+    // Hand tracking
+    if (hasExt(XR_EXT_HAND_TRACKING_EXTENSION_NAME)) {
+        extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
+        handTrackingSupported_ = true;
+        XR_LOGI("  + Hand tracking");
+    }
+
+    // Eye tracking
+    if (hasExt(XR_ANDROID_EYE_TRACKING_EXTENSION_NAME)) {
+        extensions.push_back(XR_ANDROID_EYE_TRACKING_EXTENSION_NAME);
+        eyeTrackingSupported_ = true;
+        XR_LOGI("  + Eye tracking");
+    }
+
+    // Face tracking
+    if (hasExt(XR_ANDROID_FACE_TRACKING_EXTENSION_NAME)) {
+        extensions.push_back(XR_ANDROID_FACE_TRACKING_EXTENSION_NAME);
+        faceTrackingSupported_ = true;
+        XR_LOGI("  + Face tracking");
+    }
+
+    // Trackables (plane detection)
+    if (hasExt(XR_ANDROID_TRACKABLES_EXTENSION_NAME)) {
+        extensions.push_back(XR_ANDROID_TRACKABLES_EXTENSION_NAME);
+        trackablesSupported_ = true;
+        XR_LOGI("  + Trackables (planes)");
+    }
+
+    // Display refresh rate
+    if (hasExt(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)) {
+        extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+        refreshRateSupported_ = true;
+        XR_LOGI("  + Display refresh rate");
+    }
+
+    // Performance metrics
+    if (hasExt(XR_ANDROID_PERFORMANCE_METRICS_EXTENSION_NAME)) {
+        extensions.push_back(XR_ANDROID_PERFORMANCE_METRICS_EXTENSION_NAME);
+        perfMetricsSupported_ = true;
+        XR_LOGI("  + Performance metrics");
+    }
+
+    // Passthrough camera state
+    if (hasExt(XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME)) {
+        passthroughStateSupported_ = true;
+        extensions.push_back(XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME);
+        XR_LOGI("  + Passthrough camera state");
+    }
 
     // Create instance
     XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
@@ -616,9 +682,10 @@ void XrRenderer::submitFrame(const FrameData& frame) {
         quadLayer.subImage.imageRect.offset = {0, 0};
         quadLayer.subImage.imageRect.extent = {(int32_t)uiWidth_, (int32_t)uiHeight_};
         quadLayer.subImage.imageArrayIndex = 0;
-        // Position: 1.2m in front, at eye level (~1.6m up), 0.6m wide
-        quadLayer.pose = {{0, 0, 0, 1}, {0, 1.6f, -1.2f}};
-        quadLayer.size = {0.6f, 0.6f * (float)uiHeight_ / (float)uiWidth_};
+        // Position: set from Kotlin via setUiPose()
+        quadLayer.pose = {{uiRotX_, uiRotY_, uiRotZ_, uiRotW_},
+                          {uiPoseX_, uiPoseY_, uiPoseZ_}};
+        quadLayer.size = {uiWorldW_, uiWorldH_};
     }
 
     const XrCompositionLayerBaseHeader* layers[2] = {};
@@ -902,6 +969,35 @@ void XrRenderer::shutdown() {
         xrDestroyLightEstimator_(lightEstimator_);
         lightEstimator_ = XR_NULL_HANDLE;
     }
+    // Destroy hand trackers
+    for (int i = 0; i < 2; i++) {
+        if (handTrackers_[i] != XR_NULL_HANDLE && xrDestroyHandTracker_) {
+            xrDestroyHandTracker_(handTrackers_[i]);
+            handTrackers_[i] = XR_NULL_HANDLE;
+        }
+    }
+    // Destroy eye tracker
+    if (eyeTracker_ != XR_NULL_HANDLE && xrDestroyEyeTracker_) {
+        xrDestroyEyeTracker_(eyeTracker_);
+        eyeTracker_ = XR_NULL_HANDLE;
+    }
+    // Destroy face tracker
+    if (faceTracker_ != XR_NULL_HANDLE && xrDestroyFaceTracker_) {
+        xrDestroyFaceTracker_(faceTracker_);
+        faceTracker_ = XR_NULL_HANDLE;
+    }
+    // Destroy plane tracker
+    if (planeTracker_ != XR_NULL_HANDLE && xrDestroyTrackableTracker_) {
+        xrDestroyTrackableTracker_(planeTracker_);
+        planeTracker_ = XR_NULL_HANDLE;
+    }
+    // Disable perf metrics
+    if (perfMetricsSupported_ && xrSetPerfState_ && session_) {
+        XrPerformanceMetricsStateANDROID state = {};
+        state.type = XR_TYPE_PERFORMANCE_METRICS_STATE_ANDROID;
+        state.enabled = XR_FALSE;
+        xrSetPerfState_(session_, &state);
+    }
     if (appSpace_ != XR_NULL_HANDLE) xrDestroySpace(appSpace_);
     if (session_ != XR_NULL_HANDLE) xrDestroySession(session_);
     if (instance_ != XR_NULL_HANDLE) xrDestroyInstance(instance_);
@@ -1006,14 +1102,27 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         return estimate.valid;
     }
 
-    // Ambient only — directional struct crashes Samsung's runtime (struct layout mismatch)
-    XrAmbientLightANDROID amb = {
-        .type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID,
-    };
-    XrLightEstimateANDROID out = {
-        .type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID,
-        .next = &amb,
-    };
+    // Full chain: ambient → directional → spherical harmonics
+    // (Fixed: type enum values were swapped in developer.android.com docs vs actual runtime)
+    XrSphericalHarmonicsANDROID sh = {};
+    sh.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
+    sh.next = nullptr;
+    sh.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+    sh.kind = XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID;
+
+    XrDirectionalLightANDROID dir = {};
+    dir.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dir.next = &sh;
+    dir.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
+    XrAmbientLightANDROID amb = {};
+    amb.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    amb.next = &dir;
+    amb.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
+    XrLightEstimateANDROID out = {};
+    out.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
+    out.next = &amb;
 
     // Log struct sizes for debugging
     static bool loggedSizes = false;
@@ -1046,6 +1155,26 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         estimate.valid = true;
     }
 
+    // Directional light
+    if (dir.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.dirIntensityR = dir.intensity.x;
+        estimate.dirIntensityG = dir.intensity.y;
+        estimate.dirIntensityB = dir.intensity.z;
+        estimate.dirX = dir.direction.x;
+        estimate.dirY = dir.direction.y;
+        estimate.dirZ = dir.direction.z;
+    }
+
+    // Spherical harmonics
+    if (sh.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
+        estimate.shValid = true;
+        for (int i = 0; i < 9; i++) {
+            estimate.sh[i * 3 + 0] = sh.coefficients[i][0];
+            estimate.sh[i * 3 + 1] = sh.coefficients[i][1];
+            estimate.sh[i * 3 + 2] = sh.coefficients[i][2];
+        }
+    }
+
     lastLightEstimate_ = estimate;
 
     static int logCount = 0;
@@ -1057,4 +1186,487 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     }
 
     return estimate.valid;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Hand Tracking ──
+// ═══════════════════════════════════════════════════════════════════════
+
+bool XrRenderer::initHandTracking() {
+    XrResult r;
+    r = xrGetInstanceProcAddr(instance_, "xrCreateHandTrackerEXT",
+        (PFN_xrVoidFunction*)&xrCreateHandTracker_);
+    r = xrGetInstanceProcAddr(instance_, "xrDestroyHandTrackerEXT",
+        (PFN_xrVoidFunction*)&xrDestroyHandTracker_);
+    r = xrGetInstanceProcAddr(instance_, "xrLocateHandJointsEXT",
+        (PFN_xrVoidFunction*)&xrLocateHandJoints_);
+
+    if (!xrCreateHandTracker_ || !xrDestroyHandTracker_ || !xrLocateHandJoints_) {
+        XR_LOGE("Failed to load hand tracking functions");
+        handTrackingSupported_ = false;
+        return false;
+    }
+
+    // Create hand trackers (deferred until session is ready — called from init after session)
+    // Will be lazily created on first poll if session isn't ready yet
+    XR_LOGI("Hand tracking functions loaded");
+    return true;
+}
+
+bool XrRenderer::pollHandTracking(int hand, HandJointData& data) {
+    data.active = false;
+    if (!handTrackingSupported_ || !session_ || !sessionReady_) return false;
+    if (!xrLocateHandJoints_ || !xrCreateHandTracker_) return false;
+    if (hand < 0 || hand > 1) return false;
+
+    // Lazy create tracker
+    if (handTrackers_[hand] == XR_NULL_HANDLE) {
+        XrHandTrackerCreateInfoEXT ci = {};
+        ci.type = XR_TYPE_HAND_TRACKER_CREATE_INFO_EXT;
+        ci.hand = (hand == 0) ? XR_HAND_LEFT_EXT : XR_HAND_RIGHT_EXT;
+        ci.handJointSet = XR_HAND_JOINT_SET_DEFAULT_EXT;
+        XrResult r = xrCreateHandTracker_(session_, &ci, &handTrackers_[hand]);
+        if (XR_FAILED(r)) {
+            static int logCount = 0;
+            if (logCount++ < 3) XR_LOGE("xrCreateHandTrackerEXT hand=%d failed: %d", hand, (int)r);
+            return false;
+        }
+        XR_LOGI("Hand tracker created: hand=%d", hand);
+    }
+
+    if (lastPredictedTime_ == 0) return false;
+
+    XrHandJointsLocateInfoEXT locateInfo = {};
+    locateInfo.type = XR_TYPE_HAND_JOINTS_LOCATE_INFO_EXT;
+    locateInfo.baseSpace = appSpace_;
+    locateInfo.time = lastPredictedTime_;
+
+    XrHandJointLocationEXT jointLocs[XR_HAND_JOINT_COUNT_EXT] = {};
+    XrHandJointLocationsEXT locations = {};
+    locations.type = XR_TYPE_HAND_JOINT_LOCATIONS_EXT;
+    locations.jointCount = XR_HAND_JOINT_COUNT_EXT;
+    locations.jointLocations = jointLocs;
+
+    XrResult r = xrLocateHandJoints_(handTrackers_[hand], &locateInfo, &locations);
+    if (XR_FAILED(r)) return false;
+
+    data.active = locations.isActive;
+    if (!data.active) return false;
+
+    for (int j = 0; j < XR_HAND_JOINT_COUNT_EXT; j++) {
+        auto& src = jointLocs[j];
+        auto& dst = data.joints[j];
+        dst.valid = (src.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+        dst.posX = src.pose.position.x;
+        dst.posY = src.pose.position.y;
+        dst.posZ = src.pose.position.z;
+        dst.rotX = src.pose.orientation.x;
+        dst.rotY = src.pose.orientation.y;
+        dst.rotZ = src.pose.orientation.z;
+        dst.rotW = src.pose.orientation.w;
+        dst.radius = src.radius;
+    }
+
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Eye Tracking ──
+// ═══════════════════════════════════════════════════════════════════════
+
+bool XrRenderer::initEyeTracking() {
+    xrGetInstanceProcAddr(instance_, "xrCreateEyeTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrCreateEyeTracker_);
+    xrGetInstanceProcAddr(instance_, "xrDestroyEyeTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrDestroyEyeTracker_);
+    xrGetInstanceProcAddr(instance_, "xrGetEyeStateANDROID",
+        (PFN_xrVoidFunction*)&xrGetEyeState_);
+
+    if (!xrCreateEyeTracker_ || !xrDestroyEyeTracker_ || !xrGetEyeState_) {
+        XR_LOGE("Failed to load eye tracking functions");
+        eyeTrackingSupported_ = false;
+        return false;
+    }
+
+    XR_LOGI("Eye tracking functions loaded");
+    return true;
+}
+
+bool XrRenderer::pollEyeTracking(EyeTrackingData& data) {
+    data.valid = false;
+    if (!eyeTrackingSupported_ || !session_ || !sessionReady_) return false;
+    if (!xrGetEyeState_ || !xrCreateEyeTracker_) return false;
+
+    // Lazy create
+    if (eyeTracker_ == XR_NULL_HANDLE) {
+        XrEyeTrackerCreateInfoANDROID ci = {};
+        ci.type = XR_TYPE_EYE_TRACKER_CREATE_INFO_ANDROID;
+        XrResult r = xrCreateEyeTracker_(session_, &ci, &eyeTracker_);
+        if (XR_FAILED(r)) {
+            static int logCount = 0;
+            if (logCount++ < 3) XR_LOGE("xrCreateEyeTrackerANDROID failed: %d", (int)r);
+            return false;
+        }
+        XR_LOGI("Eye tracker created");
+    }
+
+    if (lastPredictedTime_ == 0) return false;
+
+    XrEyeTrackerGetInfoANDROID getInfo = {};
+    getInfo.type = XR_TYPE_EYE_TRACKER_GET_INFO_ANDROID;
+    getInfo.baseSpace = appSpace_;
+    getInfo.time = lastPredictedTime_;
+
+    XrEyeStateDataANDROID eyeState = {};
+    eyeState.type = XR_TYPE_EYE_STATE_ANDROID;
+
+    XrResult r = xrGetEyeState_(eyeTracker_, &getInfo, &eyeState);
+    if (XR_FAILED(r)) return false;
+
+    data.leftValid = (eyeState.leftEyeState == XR_EYE_VALIDITY_VALID_ANDROID);
+    if (data.leftValid) {
+        data.leftPosX = eyeState.leftEyePose.position.x;
+        data.leftPosY = eyeState.leftEyePose.position.y;
+        data.leftPosZ = eyeState.leftEyePose.position.z;
+        data.leftRotX = eyeState.leftEyePose.orientation.x;
+        data.leftRotY = eyeState.leftEyePose.orientation.y;
+        data.leftRotZ = eyeState.leftEyePose.orientation.z;
+        data.leftRotW = eyeState.leftEyePose.orientation.w;
+    }
+
+    data.rightValid = (eyeState.rightEyeState == XR_EYE_VALIDITY_VALID_ANDROID);
+    if (data.rightValid) {
+        data.rightPosX = eyeState.rightEyePose.position.x;
+        data.rightPosY = eyeState.rightEyePose.position.y;
+        data.rightPosZ = eyeState.rightEyePose.position.z;
+        data.rightRotX = eyeState.rightEyePose.orientation.x;
+        data.rightRotY = eyeState.rightEyePose.orientation.y;
+        data.rightRotZ = eyeState.rightEyePose.orientation.z;
+        data.rightRotW = eyeState.rightEyePose.orientation.w;
+    }
+
+    data.combinedValid = (eyeState.combinedEyeState == XR_EYE_VALIDITY_VALID_ANDROID);
+    if (data.combinedValid) {
+        data.combPosX = eyeState.combinedEyePose.position.x;
+        data.combPosY = eyeState.combinedEyePose.position.y;
+        data.combPosZ = eyeState.combinedEyePose.position.z;
+        data.combRotX = eyeState.combinedEyePose.orientation.x;
+        data.combRotY = eyeState.combinedEyePose.orientation.y;
+        data.combRotZ = eyeState.combinedEyePose.orientation.z;
+        data.combRotW = eyeState.combinedEyePose.orientation.w;
+    }
+
+    data.valid = data.leftValid || data.rightValid || data.combinedValid;
+
+    static int eyeLogCount = 0;
+    if (data.valid && eyeLogCount++ < 3) {
+        XR_LOGI("Eye gaze: combined=(%.3f,%.3f,%.3f) rot=(%.3f,%.3f,%.3f,%.3f)",
+            data.combPosX, data.combPosY, data.combPosZ,
+            data.combRotX, data.combRotY, data.combRotZ, data.combRotW);
+    }
+
+    return data.valid;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Face Tracking ──
+// ═══════════════════════════════════════════════════════════════════════
+
+bool XrRenderer::initFaceTracking() {
+    xrGetInstanceProcAddr(instance_, "xrCreateFaceTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrCreateFaceTracker_);
+    xrGetInstanceProcAddr(instance_, "xrDestroyFaceTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrDestroyFaceTracker_);
+    xrGetInstanceProcAddr(instance_, "xrGetFaceStateANDROID",
+        (PFN_xrVoidFunction*)&xrGetFaceState_);
+
+    if (!xrCreateFaceTracker_ || !xrDestroyFaceTracker_ || !xrGetFaceState_) {
+        XR_LOGE("Failed to load face tracking functions");
+        faceTrackingSupported_ = false;
+        return false;
+    }
+
+    XR_LOGI("Face tracking functions loaded");
+    return true;
+}
+
+bool XrRenderer::pollFaceTracking(FaceTrackingData& data) {
+    data.valid = false;
+    if (!faceTrackingSupported_ || !session_ || !sessionReady_) return false;
+    if (!xrGetFaceState_ || !xrCreateFaceTracker_) return false;
+
+    // Lazy create
+    if (faceTracker_ == XR_NULL_HANDLE) {
+        XrFaceTrackerCreateInfoANDROID ci = {};
+        ci.type = XR_TYPE_FACE_TRACKER_CREATE_INFO_ANDROID;
+        XrResult r = xrCreateFaceTracker_(session_, &ci, &faceTracker_);
+        if (XR_FAILED(r)) {
+            static int logCount = 0;
+            if (logCount++ < 3) XR_LOGE("xrCreateFaceTrackerANDROID failed: %d", (int)r);
+            return false;
+        }
+        XR_LOGI("Face tracker created");
+    }
+
+    if (lastPredictedTime_ == 0) return false;
+
+    XrFaceStateGetInfoANDROID getInfo = {};
+    getInfo.type = XR_TYPE_FACE_STATE_GET_INFO_ANDROID;
+    getInfo.time = lastPredictedTime_;
+
+    XrFaceStateANDROID faceState = {};
+    faceState.type = XR_TYPE_FACE_STATE_ANDROID;
+    faceState.blendShapeCount = XR_FACE_BLEND_SHAPE_COUNT_ANDROID;
+    faceState.blendShapeWeights = faceBlendShapes_;
+
+    XrResult r = xrGetFaceState_(faceTracker_, &getInfo, &faceState);
+    if (XR_FAILED(r)) return false;
+
+    if (faceState.validFlags & XR_FACE_STATE_BLEND_SHAPES_VALID_BIT_ANDROID) {
+        data.valid = true;
+        memcpy(data.blendShapes, faceBlendShapes_, sizeof(float) * XR_FACE_BLEND_SHAPE_COUNT_ANDROID);
+    }
+
+    static int faceLogCount = 0;
+    if (data.valid && faceLogCount++ < 3) {
+        XR_LOGI("Face: %d blend shapes, jaw=%.2f, smile_L=%.2f, smile_R=%.2f",
+            XR_FACE_BLEND_SHAPE_COUNT_ANDROID,
+            data.blendShapes[0], data.blendShapes[1], data.blendShapes[2]);
+    }
+
+    return data.valid;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Plane Detection (Trackables) ──
+// ═══════════════════════════════════════════════════════════════════════
+
+bool XrRenderer::initPlaneTracking() {
+    xrGetInstanceProcAddr(instance_, "xrCreateTrackableTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrCreateTrackableTracker_);
+    xrGetInstanceProcAddr(instance_, "xrDestroyTrackableTrackerANDROID",
+        (PFN_xrVoidFunction*)&xrDestroyTrackableTracker_);
+    xrGetInstanceProcAddr(instance_, "xrGetAllTrackablesANDROID",
+        (PFN_xrVoidFunction*)&xrGetAllTrackables_);
+    xrGetInstanceProcAddr(instance_, "xrGetTrackablePlaneANDROID",
+        (PFN_xrVoidFunction*)&xrGetTrackablePlane_);
+
+    if (!xrCreateTrackableTracker_ || !xrGetAllTrackables_ || !xrGetTrackablePlane_) {
+        XR_LOGE("Failed to load trackable functions");
+        trackablesSupported_ = false;
+        return false;
+    }
+
+    XR_LOGI("Trackable (plane) functions loaded");
+    return true;
+}
+
+bool XrRenderer::pollPlanes(PlaneData& data) {
+    data.valid = false;
+    data.planeCount = 0;
+    if (!trackablesSupported_ || !session_ || !sessionReady_) return false;
+    if (!xrGetAllTrackables_ || !xrGetTrackablePlane_ || !xrCreateTrackableTracker_) return false;
+
+    // Lazy create
+    if (planeTracker_ == XR_NULL_HANDLE) {
+        XrTrackableTrackerCreateInfoANDROID ci = {};
+        ci.type = XR_TYPE_TRACKABLE_TRACKER_CREATE_INFO_ANDROID;
+        ci.trackableType = XR_TRACKABLE_TYPE_PLANE_ANDROID;
+        XrResult r = xrCreateTrackableTracker_(session_, &ci, &planeTracker_);
+        if (XR_FAILED(r)) {
+            static int logCount = 0;
+            if (logCount++ < 3) XR_LOGE("xrCreateTrackableTrackerANDROID failed: %d", (int)r);
+            return false;
+        }
+        XR_LOGI("Plane tracker created");
+    }
+
+    if (lastPredictedTime_ == 0) return false;
+
+    // Get all trackable IDs
+    XrAllTrackablesGetInfoANDROID allInfo = {};
+    allInfo.type = XR_TYPE_ALL_TRACKABLES_GET_INFO_ANDROID;
+
+    uint32_t trackableCount = 0;
+    XrResult r = xrGetAllTrackables_(planeTracker_, &allInfo, 0, &trackableCount, nullptr);
+    if (XR_FAILED(r) || trackableCount == 0) return false;
+
+    uint32_t maxGet = (trackableCount > PlaneData::MAX_PLANES) ? PlaneData::MAX_PLANES : trackableCount;
+    XrTrackableANDROID trackableIds[PlaneData::MAX_PLANES];
+    r = xrGetAllTrackables_(planeTracker_, &allInfo, maxGet, &trackableCount, trackableIds);
+    if (XR_FAILED(r)) return false;
+
+    uint32_t count = (trackableCount > PlaneData::MAX_PLANES) ? PlaneData::MAX_PLANES : trackableCount;
+
+    for (uint32_t i = 0; i < count; i++) {
+        XrTrackableGetInfoANDROID getInfo = {};
+        getInfo.type = XR_TYPE_TRACKABLE_GET_INFO_ANDROID;
+        getInfo.trackable = trackableIds[i];
+        getInfo.baseSpace = appSpace_;
+        getInfo.time = lastPredictedTime_;
+
+        XrTrackablePlaneANDROID plane = {};
+        plane.type = XR_TYPE_TRACKABLE_PLANE_ANDROID;
+        plane.vertexCapacityInput = 0;  // don't need polygon vertices
+        plane.vertices = nullptr;
+
+        r = xrGetTrackablePlane_(planeTracker_, &getInfo, &plane);
+        if (XR_FAILED(r)) continue;
+
+        auto& dst = data.planes[data.planeCount];
+        dst.posX = plane.centerPose.position.x;
+        dst.posY = plane.centerPose.position.y;
+        dst.posZ = plane.centerPose.position.z;
+        dst.rotX = plane.centerPose.orientation.x;
+        dst.rotY = plane.centerPose.orientation.y;
+        dst.rotZ = plane.centerPose.orientation.z;
+        dst.rotW = plane.centerPose.orientation.w;
+        dst.extentX = plane.extents.width * 0.5f;
+        dst.extentY = plane.extents.height * 0.5f;
+        dst.label = (int)plane.planeLabel;
+        data.planeCount++;
+    }
+
+    data.valid = (data.planeCount > 0);
+
+    static int planeLogCount = 0;
+    if (data.valid && planeLogCount++ < 3) {
+        XR_LOGI("Detected %d planes", data.planeCount);
+        for (int i = 0; i < data.planeCount && i < 5; i++) {
+            const char* labels[] = {"unknown", "floor", "ceiling", "wall", "table"};
+            int lbl = data.planes[i].label;
+            XR_LOGI("  Plane %d: %s (%.2f,%.2f,%.2f) ext=(%.2f,%.2f)",
+                i, (lbl >= 0 && lbl <= 4) ? labels[lbl] : "?",
+                data.planes[i].posX, data.planes[i].posY, data.planes[i].posZ,
+                data.planes[i].extentX, data.planes[i].extentY);
+        }
+    }
+
+    return data.valid;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Display Refresh Rate ──
+// ═══════════════════════════════════════════════════════════════════════
+
+float XrRenderer::getDisplayRefreshRate() {
+    if (!refreshRateSupported_ || !xrGetRefreshRate_ || !session_) return 0;
+    float rate = 0;
+    xrGetRefreshRate_(session_, &rate);
+    return rate;
+}
+
+int XrRenderer::getAvailableRefreshRates(float* out, int maxCount) {
+    if (!refreshRateSupported_ || !xrEnumRefreshRates_ || !session_) return 0;
+    uint32_t count = 0;
+    xrEnumRefreshRates_(session_, 0, &count, nullptr);
+    if (count == 0) return 0;
+    uint32_t get = (count > (uint32_t)maxCount) ? (uint32_t)maxCount : count;
+    xrEnumRefreshRates_(session_, get, &count, out);
+    return (int)count;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Performance Metrics ──
+// ═══════════════════════════════════════════════════════════════════════
+
+bool XrRenderer::initPerfMetrics() {
+    xrGetInstanceProcAddr(instance_, "xrEnumeratePerformanceMetricsCounterPathsANDROID",
+        (PFN_xrVoidFunction*)&xrEnumPerfPaths_);
+    xrGetInstanceProcAddr(instance_, "xrSetPerformanceMetricsStateANDROID",
+        (PFN_xrVoidFunction*)&xrSetPerfState_);
+    xrGetInstanceProcAddr(instance_, "xrQueryPerformanceMetricsCounterANDROID",
+        (PFN_xrVoidFunction*)&xrQueryPerfCounter_);
+
+    if (!xrEnumPerfPaths_ || !xrSetPerfState_ || !xrQueryPerfCounter_) {
+        XR_LOGE("Failed to load performance metrics functions");
+        perfMetricsSupported_ = false;
+        return false;
+    }
+
+    // Enumerate available counter paths
+    uint32_t pathCount = 0;
+    xrEnumPerfPaths_(instance_, 0, &pathCount, nullptr);
+    if (pathCount > 0) {
+        std::vector<XrPath> paths(pathCount);
+        xrEnumPerfPaths_(instance_, pathCount, &pathCount, paths.data());
+        XR_LOGI("Performance metrics: %u counter paths available", pathCount);
+
+        // Log all available paths
+        char pathStr[256];
+        for (uint32_t i = 0; i < pathCount; i++) {
+            uint32_t len = 0;
+            xrPathToString(instance_, paths[i], sizeof(pathStr), &len, pathStr);
+            XR_LOGI("  Perf path: %s", pathStr);
+
+            // Try to match common paths
+            if (strstr(pathStr, "gpu") && strstr(pathStr, "time"))
+                perfPathGpuTime_ = paths[i];
+            else if (strstr(pathStr, "cpu") && strstr(pathStr, "time"))
+                perfPathCpuTime_ = paths[i];
+            else if (strstr(pathStr, "drop"))
+                perfPathDropped_ = paths[i];
+        }
+    }
+
+    XR_LOGI("Performance metrics initialized");
+    return true;
+}
+
+bool XrRenderer::pollPerfMetrics(PerfMetrics& data) {
+    data.valid = false;
+    if (!perfMetricsSupported_ || !session_ || !sessionReady_) return false;
+    if (!xrQueryPerfCounter_ || !xrSetPerfState_) return false;
+
+    // Enable metrics collection (idempotent) — must pass struct pointer, not raw bool
+    static bool metricsEnabled = false;
+    if (!metricsEnabled) {
+        XrPerformanceMetricsStateANDROID state = {};
+        state.type = XR_TYPE_PERFORMANCE_METRICS_STATE_ANDROID;
+        state.enabled = XR_TRUE;
+        XrResult r = xrSetPerfState_(session_, &state);
+        if (XR_FAILED(r)) {
+            XR_LOGE("xrSetPerformanceMetricsState failed: %d", (int)r);
+        } else {
+            metricsEnabled = true;
+            XR_LOGI("Performance metrics enabled");
+        }
+    }
+
+    if (metricsEnabled) {
+        XrPerformanceMetricsCounterANDROID counter = {};
+        counter.type = XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID;
+
+        if (perfPathGpuTime_ != XR_NULL_PATH) {
+            if (XR_SUCCEEDED(xrQueryPerfCounter_(session_, perfPathGpuTime_, &counter)))
+                data.gpuFrameTimeMs = counter.floatValue;
+        }
+        if (perfPathCpuTime_ != XR_NULL_PATH) {
+            counter = {};
+            counter.type = XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID;
+            if (XR_SUCCEEDED(xrQueryPerfCounter_(session_, perfPathCpuTime_, &counter)))
+                data.cpuFrameTimeMs = counter.floatValue;
+        }
+        if (perfPathDropped_ != XR_NULL_PATH) {
+            counter = {};
+            counter.type = XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID;
+            if (XR_SUCCEEDED(xrQueryPerfCounter_(session_, perfPathDropped_, &counter)))
+                data.compositorDroppedFrames = (float)counter.uintValue;
+        }
+    }
+
+    data.displayRefreshRate = getDisplayRefreshRate();
+    data.valid = true;
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Passthrough Camera State ──
+// ═══════════════════════════════════════════════════════════════════════
+
+int XrRenderer::getPassthroughState() {
+    // Passthrough state is inferred from blend mode selection
+    // ALPHA_BLEND = passthrough enabled, OPAQUE = passthrough disabled
+    if (blendMode_ == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) return 2; // enabled
+    return 0; // disabled
 }

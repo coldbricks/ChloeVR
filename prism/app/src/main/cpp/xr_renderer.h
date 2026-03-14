@@ -11,6 +11,7 @@
 #include <vector>
 #include "openxr_input.h"  // reuse ControllerState
 #include "xr_light_estimation.h"
+#include "xr_sensors.h"
 
 #define XRLOG_TAG "ChloeVR-XRRenderer"
 #define XR_LOGI(...) __android_log_print(ANDROID_LOG_INFO, XRLOG_TAG, __VA_ARGS__)
@@ -56,12 +57,105 @@ public:
     };
     bool pollLightEstimate(LightEstimate& estimate);
 
+    // ── Hand tracking ──
+    struct HandJointData {
+        bool active = false;
+        struct Joint {
+            float posX = 0, posY = 0, posZ = 0;
+            float rotX = 0, rotY = 0, rotZ = 0, rotW = 1;
+            float radius = 0;
+            bool valid = false;
+        };
+        Joint joints[XR_HAND_JOINT_COUNT_EXT]; // 26 joints
+        // JNI buffer: [0]=active, then 26×8 floats (pos xyz, rot xyzw, radius)
+        static constexpr int SIZE = 1 + XR_HAND_JOINT_COUNT_EXT * 8; // 209
+    };
+    bool pollHandTracking(int hand, HandJointData& data); // hand: 0=left, 1=right
+
+    // ── Eye tracking ──
+    struct EyeTrackingData {
+        bool valid = false;
+        // Left eye
+        bool leftValid = false;
+        float leftPosX = 0, leftPosY = 0, leftPosZ = 0;
+        float leftRotX = 0, leftRotY = 0, leftRotZ = 0, leftRotW = 1;
+        // Right eye
+        bool rightValid = false;
+        float rightPosX = 0, rightPosY = 0, rightPosZ = 0;
+        float rightRotX = 0, rightRotY = 0, rightRotZ = 0, rightRotW = 1;
+        // Combined gaze
+        bool combinedValid = false;
+        float combPosX = 0, combPosY = 0, combPosZ = 0;
+        float combRotX = 0, combRotY = 0, combRotZ = 0, combRotW = 1;
+        // JNI: 1 + 3×(1 + 7) = 25 floats
+        static constexpr int SIZE = 25;
+    };
+    bool pollEyeTracking(EyeTrackingData& data);
+
+    // ── Face tracking ──
+    struct FaceTrackingData {
+        bool valid = false;
+        float blendShapes[XR_FACE_BLEND_SHAPE_COUNT_ANDROID]; // 68 weights
+        // JNI: 1 + 68 = 69 floats
+        static constexpr int SIZE = 1 + XR_FACE_BLEND_SHAPE_COUNT_ANDROID;
+    };
+    bool pollFaceTracking(FaceTrackingData& data);
+
+    // ── Plane detection ──
+    struct DetectedPlane {
+        float posX, posY, posZ;
+        float rotX, rotY, rotZ, rotW;
+        float extentX, extentY; // half-extents
+        int label; // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
+    };
+    struct PlaneData {
+        bool valid = false;
+        int planeCount = 0;
+        static constexpr int MAX_PLANES = 32;
+        DetectedPlane planes[MAX_PLANES];
+        // JNI: 1 + 1 + 32×10 = 322 floats
+        static constexpr int SIZE = 2 + MAX_PLANES * 10;
+    };
+    bool pollPlanes(PlaneData& data);
+
+    // ── Display refresh rate ──
+    float getDisplayRefreshRate();
+    int getAvailableRefreshRates(float* out, int maxCount);
+
+    // ── Performance metrics ──
+    struct PerfMetrics {
+        bool valid = false;
+        float gpuFrameTimeMs = 0;
+        float cpuFrameTimeMs = 0;
+        float compositorDroppedFrames = 0;
+        float displayRefreshRate = 0;
+        static constexpr int SIZE = 5;
+    };
+    bool pollPerfMetrics(PerfMetrics& data);
+
+    // ── Passthrough state ──
+    int getPassthroughState(); // 0=disabled, 1=initializing, 2=enabled
+
+    // ── Extension availability ──
+    bool hasHandTracking() const { return handTrackingSupported_; }
+    bool hasEyeTracking() const { return eyeTrackingSupported_; }
+    bool hasFaceTracking() const { return faceTrackingSupported_; }
+    bool hasPlaneDetection() const { return trackablesSupported_; }
+    bool hasRefreshRateControl() const { return refreshRateSupported_; }
+    bool hasPerfMetrics() const { return perfMetricsSupported_; }
+    bool hasPassthroughState() const { return passthroughStateSupported_; }
+
     // UI quad
     bool initUiQuad(uint32_t width, uint32_t height);
     uint32_t acquireUiImage();  // returns GL texture ID
     void releaseUiImage();
     void setUiVisible(bool visible) { uiVisible_ = visible; }
     bool isUiVisible() const { return uiVisible_; }
+    void setUiPose(float px, float py, float pz, float rx, float ry, float rz, float rw) {
+        uiPoseX_ = px; uiPoseY_ = py; uiPoseZ_ = pz;
+        uiRotX_ = rx; uiRotY_ = ry; uiRotZ_ = rz; uiRotW_ = rw;
+    }
+    void setUiSize(float width, float height) { uiWorldW_ = width; uiWorldH_ = height; }
 
     // EGL handles for shared context
     EGLDisplay getEglDisplay() const { return eglDisplay_; }
@@ -108,6 +202,9 @@ private:
     uint32_t uiWidth_ = 0, uiHeight_ = 0;
     bool uiVisible_ = false;
     bool createUiSwapchain(uint32_t width, uint32_t height);
+    float uiPoseX_ = 0, uiPoseY_ = 1.6f, uiPoseZ_ = -1.2f;
+    float uiRotX_ = 0, uiRotY_ = 0, uiRotZ_ = 0, uiRotW_ = 1;
+    float uiWorldW_ = 0.6f, uiWorldH_ = 0.6f;
 
     // Environment blend mode
     XrEnvironmentBlendMode blendMode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -130,8 +227,60 @@ private:
     PFN_xrDestroyLightEstimatorANDROID xrDestroyLightEstimator_ = nullptr;
     PFN_xrGetLightEstimateANDROID xrGetLightEstimate_ = nullptr;
     bool initLightEstimation();
-
     LightEstimate lastLightEstimate_;
+
+    // ── Hand tracking ──
+    bool handTrackingSupported_ = false;
+    XrHandTrackerEXT handTrackers_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    PFN_xrCreateHandTrackerEXT xrCreateHandTracker_ = nullptr;
+    PFN_xrDestroyHandTrackerEXT xrDestroyHandTracker_ = nullptr;
+    PFN_xrLocateHandJointsEXT xrLocateHandJoints_ = nullptr;
+    bool initHandTracking();
+
+    // ── Eye tracking ──
+    bool eyeTrackingSupported_ = false;
+    XrEyeTrackerANDROID eyeTracker_ = XR_NULL_HANDLE;
+    PFN_xrCreateEyeTrackerANDROID xrCreateEyeTracker_ = nullptr;
+    PFN_xrDestroyEyeTrackerANDROID xrDestroyEyeTracker_ = nullptr;
+    PFN_xrGetEyeStateANDROID xrGetEyeState_ = nullptr;
+    bool initEyeTracking();
+
+    // ── Face tracking ──
+    bool faceTrackingSupported_ = false;
+    XrFaceTrackerANDROID faceTracker_ = XR_NULL_HANDLE;
+    PFN_xrCreateFaceTrackerANDROID xrCreateFaceTracker_ = nullptr;
+    PFN_xrDestroyFaceTrackerANDROID xrDestroyFaceTracker_ = nullptr;
+    PFN_xrGetFaceStateANDROID xrGetFaceState_ = nullptr;
+    bool initFaceTracking();
+    float faceBlendShapes_[XR_FACE_BLEND_SHAPE_COUNT_ANDROID] = {};
+
+    // ── Plane tracking ──
+    bool trackablesSupported_ = false;
+    XrTrackableTrackerANDROID planeTracker_ = XR_NULL_HANDLE;
+    PFN_xrCreateTrackableTrackerANDROID xrCreateTrackableTracker_ = nullptr;
+    PFN_xrDestroyTrackableTrackerANDROID xrDestroyTrackableTracker_ = nullptr;
+    PFN_xrGetAllTrackablesANDROID xrGetAllTrackables_ = nullptr;
+    PFN_xrGetTrackablePlaneANDROID xrGetTrackablePlane_ = nullptr;
+    bool initPlaneTracking();
+
+    // ── Display refresh rate ──
+    bool refreshRateSupported_ = false;
+    PFN_xrEnumerateDisplayRefreshRatesFB xrEnumRefreshRates_ = nullptr;
+    PFN_xrGetDisplayRefreshRateFB xrGetRefreshRate_ = nullptr;
+    PFN_xrRequestDisplayRefreshRateFB xrRequestRefreshRate_ = nullptr;
+
+    // ── Performance metrics ──
+    bool perfMetricsSupported_ = false;
+    PFN_xrEnumeratePerformanceMetricsCounterPathsANDROID xrEnumPerfPaths_ = nullptr;
+    PFN_xrSetPerformanceMetricsStateANDROID xrSetPerfState_ = nullptr;
+    PFN_xrQueryPerformanceMetricsCounterANDROID xrQueryPerfCounter_ = nullptr;
+    bool initPerfMetrics();
+    XrPath perfPathGpuTime_ = XR_NULL_PATH;
+    XrPath perfPathCpuTime_ = XR_NULL_PATH;
+    XrPath perfPathDropped_ = XR_NULL_PATH;
+
+    // ── Passthrough camera state ──
+    bool passthroughStateSupported_ = false;
 
     // Actions (controller input) — same structure as OpenXRInput
     XrActionSet actionSet_ = XR_NULL_HANDLE;
