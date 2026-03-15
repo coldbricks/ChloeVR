@@ -226,9 +226,24 @@ class FilamentModelActivity : ComponentActivity() {
 
         showMessage("Initializing 3D renderer...")
 
-        // Check scene understanding permission for XR light estimation
-        // (Don't requestPermissions here — it restarts the activity and kills OpenXR)
-        // Permission granted via system Settings > Apps > ChloeVR > Permissions
+        // Request all XR + audio permissions upfront
+        val neededPerms = arrayOf(
+            "android.permission.SCENE_UNDERSTANDING_COARSE",
+            "android.permission.SCENE_UNDERSTANDING_FINE",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.HAND_TRACKING",
+            "android.permission.EYE_TRACKING_COARSE",
+            "android.permission.EYE_TRACKING_FINE",
+            "android.permission.FACE_TRACKING",
+            "android.permission.BODY_SENSORS"
+        )
+        val missing = neededPerms.filter {
+            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            Log.i(TAG, "Requesting ${missing.size} permissions: ${missing.joinToString()}")
+            requestPermissions(missing.toTypedArray(), 9999)
+        }
         val hasScenePerm = checkSelfPermission("android.permission.SCENE_UNDERSTANDING_COARSE") ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         Log.i(TAG, "SCENE_UNDERSTANDING_COARSE: ${if (hasScenePerm) "granted" else "not granted (light est will use sensor)"}")
@@ -2367,19 +2382,12 @@ class FilamentModelActivity : ComponentActivity() {
                             val floorY = planeBuffer[off + 1]
                             // Smooth it to avoid jumps (plane detection can jitter)
                             detectedFloorY = if (detectedFloorY == Float.MIN_VALUE) floorY
-                                else detectedFloorY + (floorY - detectedFloorY) * 0.1f
+                                else detectedFloorY + (floorY - detectedFloorY) * 0.03f
                             val gr = glesRenderer
-                            if (gr != null && kotlin.math.abs(gr.gridHeight - detectedFloorY) > 0.001f) {
+                            if (gr != null) {
+                                // Only update grid height, don't re-snap models (causes jitter)
+                                // Models get snapped once on load or when user presses A
                                 gr.gridHeight = detectedFloorY
-                                // Re-snap all models to the real floor
-                                for (placed in models) {
-                                    val gpuModel = gr.getModel(placed.gpuModelId)
-                                    if (gpuModel != null) {
-                                        val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
-                                        placed.posY += (detectedFloorY - worldMinY)
-                                        updateModelTransform(placed)
-                                    }
-                                }
                             }
                             break
                         }
