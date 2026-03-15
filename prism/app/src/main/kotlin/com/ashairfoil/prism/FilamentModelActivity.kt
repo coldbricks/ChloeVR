@@ -774,31 +774,38 @@ class FilamentModelActivity : ComponentActivity() {
 
                                 val pct = reactor.boxFillPct
                                 val bi = beatIntensity
-                                val beatColor = reactor.getBeatColor()
+                                val c = reactor.getBeatColor()
 
-                                // Light intensity driven by box fill
-                                gr.lightIntensity = beatBaseLight + pct * bi * 3f
-                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 1.2f
-                                gr.fillLightIntensity = beatBaseFill + pct * bi * 0.8f
-
-                                // Color tint: blend light color toward beatHue on the beat
-                                gr.lightColor = floatArrayOf(
-                                    gr.lightColor[0] * (1f - pct * 0.7f) + beatColor[0] * pct * 0.7f,
-                                    gr.lightColor[1] * (1f - pct * 0.7f) + beatColor[1] * pct * 0.7f,
-                                    gr.lightColor[2] * (1f - pct * 0.7f) + beatColor[2] * pct * 0.7f
-                                )
+                                // ── THE ENTIRE ROOM THROBS ──
+                                // Ambient is what lights EVERYTHING — crank it with color
+                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 2.5f
                                 gr.ambientColor = floatArrayOf(
-                                    gr.ambientColor[0] + beatColor[0] * pct * bi * 0.3f,
-                                    gr.ambientColor[1] + beatColor[1] * pct * bi * 0.3f,
-                                    gr.ambientColor[2] + beatColor[2] * pct * bi * 0.3f
+                                    c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                    c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                    c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
                                 )
 
-                                // Exposure pulse
-                                val isInstant = reactor.rolloff == AudioReactor.Rolloff.INSTANT
+                                // Main light: full color tint on beat
+                                gr.lightIntensity = beatBaseLight + pct * bi * 4f
+                                gr.lightColor = floatArrayOf(
+                                    c[0] * pct + (1f - pct) * 1f,
+                                    c[1] * pct + (1f - pct) * 0.95f,
+                                    c[2] * pct + (1f - pct) * 0.9f
+                                )
+
+                                // Fill light: complementary color for depth
+                                gr.fillLightIntensity = beatBaseFill + pct * bi * 2f
+                                gr.fillLightColor = floatArrayOf(
+                                    c[2] * pct + (1f - pct) * 0.85f,
+                                    c[0] * pct + (1f - pct) * 0.9f,
+                                    c[1] * pct + (1f - pct) * 1f
+                                )
+
+                                // Exposure pulse — models GLOW
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
-                                        gpuModel.exposure = placed.exposure + pct * bi * (if (isInstant) 1.2f else 0.5f)
+                                        gpuModel.exposure = placed.exposure + pct * bi * 1f
                                     }
                                 }
                             } else if (beatBaseStored) {
@@ -1107,7 +1114,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 beatCursorX = bx; beatCursorY = by  // track for visible cursor
 
                                 // Layout: spectrum 140..390, sliders 418..786, buttons 920+
-                                val specTopHit = 140f; val specBotHit = 390f
+                                val specTopHit = 155f; val specBotHit = 385f
                                 val specLeftHit = 40f; val specRightHit = 984f  // uiW(1024) - 40
                                 val sliderAreaTopHit = 418f
                                 val sliderRowH = 35f
@@ -1116,11 +1123,16 @@ class FilamentModelActivity : ComponentActivity() {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
-                                    // Mode selector buttons (4 modes)
+                                    // Rolloff mode buttons
                                     if (bx in 300f..420f) hoveredActionButton = 113
                                     else if (bx in 430f..550f) hoveredActionButton = 114
                                     else if (bx in 560f..680f) hoveredActionButton = 115
                                     else if (bx in 690f..810f) hoveredActionButton = 116
+                                } else if (by in 130f..150f) {
+                                    // Color mode buttons
+                                    if (bx in 50f..135f) hoveredActionButton = 117
+                                    else if (bx in 141f..226f) hoveredActionButton = 118
+                                    else if (bx in 232f..317f) hoveredActionButton = 119
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
                                     // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
@@ -1380,6 +1392,15 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 116) {
                 audioReactor?.rolloff = AudioReactor.Rolloff.THROB
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 117) {
+                audioReactor?.colorMode = AudioReactor.ColorMode.FIXED
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 118) {
+                audioReactor?.colorMode = AudioReactor.ColorMode.CYCLE
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 119) {
+                audioReactor?.colorMode = AudioReactor.ColorMode.FLASH
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 111) {
                 beatSettingsMode = false
@@ -2115,8 +2136,33 @@ class FilamentModelActivity : ComponentActivity() {
                 mx += mw + 10f
             }
 
+            // Color mode buttons (right side of header)
+            val curColorMode = reactor?.colorMode ?: AudioReactor.ColorMode.CYCLE
+            val colorModes = arrayOf("FIXED" to AudioReactor.ColorMode.FIXED, "CYCLE" to AudioReactor.ColorMode.CYCLE, "FLASH" to AudioReactor.ColorMode.FLASH)
+            val colorHoverIds = arrayOf(117, 118, 119)
+            p.textSize = 16f
+            var cx = 50f
+            for ((ci, pair) in colorModes.withIndex()) {
+                val (clabel, cmode) = pair
+                val isActive = curColorMode == cmode
+                val isHover = hoveredActionButton == colorHoverIds[ci]
+                val cw = 85f
+                p.color = when {
+                    isActive -> 0xFF10B981.toInt()
+                    isHover -> 0x6010B981.toInt()
+                    else -> 0x2010B981.toInt()
+                }
+                canvas.drawRoundRect(cx, 130f, cx + cw, 148f, 4f, 4f, p)
+                p.color = if (isActive || isHover) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.isFakeBoldText = isActive
+                p.textAlign = android.graphics.Paint.Align.CENTER
+                canvas.drawText(clabel, cx + cw / 2f, 145f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+                cx += cw + 6f
+            }
+
             // ── SPECTRUM ANALYZER ──
-            val specLeft = 40f; val specRight = uiW - 80f; val specTop = 140f; val specH = 250f
+            val specLeft = 40f; val specRight = uiW - 80f; val specTop = 155f; val specH = 230f
             val specBot = specTop + specH
 
             // Background

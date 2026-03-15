@@ -55,6 +55,11 @@ class AudioReactor {
     @Volatile var threshold = 0.15f
     @Volatile var trim = 1.0f
     @Volatile var beatHue = 330f
+    enum class ColorMode { FIXED, CYCLE, FLASH }
+    @Volatile var colorMode = ColorMode.CYCLE
+    @Volatile var cycleSpeed = 60f     // degrees per second for CYCLE mode
+    private var cycleHue = 0f
+    private var flashHue = 330f
     @Volatile var smootherAmount = 0.3f
     @Volatile var specZoom = 1.0f     // horizontal zoom (1=full, 8=8x)
     @Volatile var specVZoom = 1.0f    // vertical zoom (amplifies bar heights for display)
@@ -315,19 +320,38 @@ class AudioReactor {
         boxFillPct = prevFillPct + (boxFillPct - prevFillPct) * smoothAlpha
         prevFillPct = boxFillPct
 
-        // Anti-dropout: if no FFT data for 8+ frames, hold last output
+        // Anti-dropout
         updateFrameCount++
         if (updateFrameCount - fftFrameStamp > 8) {
-            // Stale data — hold, don't decay
             boxFillPct = prevFillPct
+        }
+
+        // Color cycling
+        val dt2 = 1f / 72f
+        when (colorMode) {
+            ColorMode.CYCLE -> {
+                cycleHue = (cycleHue + cycleSpeed * dt2) % 360f
+            }
+            ColorMode.FLASH -> {
+                // New random color on each throb/beat trigger
+                if (smoothedOutput > 0.9f && prevFillPct < 0.5f) {
+                    flashHue = (Math.random() * 360f).toFloat()
+                }
+            }
+            ColorMode.FIXED -> {} // use beatHue directly
         }
     }
 
     val isActive: Boolean get() = started && enabled
 
-    /** Convert beatHue to RGB floats (0..1 each) for lighting */
+    /** Get the active beat color as RGB floats (0..1 each) */
     fun getBeatColor(): FloatArray {
-        val h = beatHue / 60f
+        val activeHue = when (colorMode) {
+            ColorMode.FIXED -> beatHue
+            ColorMode.CYCLE -> cycleHue
+            ColorMode.FLASH -> flashHue
+        }
+        val h = activeHue / 60f
         val x = 1f - kotlin.math.abs(h % 2f - 1f)
         val (r, g, b) = when {
             h < 1f -> Triple(1f, x, 0f)
