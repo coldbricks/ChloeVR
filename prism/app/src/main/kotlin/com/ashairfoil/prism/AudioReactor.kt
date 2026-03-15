@@ -55,6 +55,8 @@ class AudioReactor {
     @Volatile var threshold = 0.15f
     @Volatile var trim = 1.0f
     @Volatile var beatHue = 330f      // 0-360 degrees, default hot pink
+    @Volatile var smootherAmount = 0.3f  // 0=raw/jittery, 1=very smooth
+    private var prevFillPct = 0f
 
     // Hard knee state: tracks time since last trigger for linear decay
     private var hardKneeTimer = 0f
@@ -123,7 +125,7 @@ class AudioReactor {
         visualizer = null
         started = false
         bass = 0f; mid = 0f; high = 0f
-        boxFillPct = 0f; smoothedOutput = 0f
+        boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
     }
 
     /**
@@ -204,7 +206,7 @@ class AudioReactor {
      */
     fun update() {
         if (!enabled) {
-            bass = 0f; mid = 0f; high = 0f; boxFillPct = 0f; smoothedOutput = 0f
+            bass = 0f; mid = 0f; high = 0f; boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
             return
         }
 
@@ -279,6 +281,11 @@ class AudioReactor {
         } else { 0f }
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
+
+        // Smoother: IIR low-pass filter to reduce jitter
+        val smoothAlpha = 1f - smootherAmount * 0.9f  // 1.0=no smooth, 0.1=heavy smooth
+        boxFillPct = prevFillPct + (boxFillPct - prevFillPct) * smoothAlpha
+        prevFillPct = boxFillPct
     }
 
     val isActive: Boolean get() = started && enabled

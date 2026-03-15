@@ -223,6 +223,7 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var beatSettingsMode = false
     private var beatDraggingSlider = -1
     private var beatSliderLaserX = 0f
+    private var beatDragCorner = -1  // -1=none, 0=TL, 1=TR, 2=BL, 3=BR, 4=move whole box
     @Volatile private var beatCursorX = -1f  // laser position on panel (bitmap coords)
     @Volatile private var beatCursorY = -1f
 
@@ -595,6 +596,8 @@ class FilamentModelActivity : ComponentActivity() {
             { audioReactor?.attackMs ?: 20f }, { audioReactor?.attackMs = it }),
         BeatSlider("RELEASE", "ms", 10f, 2000f,
             { audioReactor?.releaseMs ?: 150f }, { audioReactor?.releaseMs = it }),
+        BeatSlider("SMOOTHER", "%", 0f, 100f,
+            { (audioReactor?.smootherAmount ?: 0.3f) * 100f }, { audioReactor?.smootherAmount = it / 100f }),
         BeatSlider("COLOR", "\u00B0", 0f, 360f,
             { audioReactor?.beatHue ?: 330f }, { audioReactor?.beatHue = it }),
         BeatSlider("MIX", "%", 0f, 100f,
@@ -1101,7 +1104,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 val specTopHit = 140f; val specBotHit = 390f
                                 val specLeftHit = 40f; val specRightHit = 984f  // uiW(1024) - 40
                                 val sliderAreaTopHit = 418f
-                                val sliderRowH = 48f
+                                val sliderRowH = 43f
 
                                 if (by > 920f) {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
@@ -1112,44 +1115,55 @@ class FilamentModelActivity : ComponentActivity() {
                                     else if (bx in 510f..660f) hoveredActionButton = 114 // STROBE
                                     else if (bx in 670f..820f) hoveredActionButton = 115 // PULSE
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
-                                    // Laser is on the spectrum area — box dragging
+                                    // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
-                                    if (reactor != null && rightTrigger > 0.5f) {
+                                    if (reactor != null) {
                                         val normX = ((bx - specLeftHit) / (specRightHit - specLeftHit)).coerceIn(0f, 1f)
                                         val normY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f) // flip: top=1, bot=0
-                                        val boxW = reactor.boxRight - reactor.boxLeft
-                                        val boxH2 = reactor.boxTop - reactor.boxBottom
 
-                                        // Check if laser is inside the box
-                                        val insideX = normX in reactor.boxLeft..reactor.boxRight
-                                        val insideY = normY in reactor.boxBottom..reactor.boxTop
-                                        if (insideX && insideY) {
-                                            // Drag the whole box (centered on laser)
-                                            val newL = (normX - boxW / 2f).coerceIn(0f, 1f - boxW)
-                                            val newB = (normY - boxH2 / 2f).coerceIn(0f, 1f - boxH2)
-                                            reactor.boxLeft = newL
-                                            reactor.boxRight = newL + boxW
-                                            reactor.boxBottom = newB
-                                            reactor.boxTop = newB + boxH2
-                                        } else {
-                                            // Resize: move nearest edge to laser position
-                                            val dL = kotlin.math.abs(normX - reactor.boxLeft)
-                                            val dR = kotlin.math.abs(normX - reactor.boxRight)
-                                            val dB = kotlin.math.abs(normY - reactor.boxBottom)
-                                            val dT = kotlin.math.abs(normY - reactor.boxTop)
-                                            val minD = minOf(dL, dR, dB, dT)
-                                            when (minD) {
-                                                dL -> reactor.boxLeft = normX.coerceAtMost(reactor.boxRight - 0.02f)
-                                                dR -> reactor.boxRight = normX.coerceAtLeast(reactor.boxLeft + 0.02f)
-                                                dB -> reactor.boxBottom = normY.coerceAtMost(reactor.boxTop - 0.02f)
-                                                dT -> reactor.boxTop = normY.coerceAtLeast(reactor.boxBottom + 0.02f)
+                                        if (rightTrigger > 0.5f) {
+                                            if (beatDragCorner < 0) {
+                                                // First frame of trigger — decide what to grab
+                                                val corners = arrayOf(
+                                                    floatArrayOf(reactor.boxLeft, reactor.boxTop),
+                                                    floatArrayOf(reactor.boxRight, reactor.boxTop),
+                                                    floatArrayOf(reactor.boxLeft, reactor.boxBottom),
+                                                    floatArrayOf(reactor.boxRight, reactor.boxBottom)
+                                                )
+                                                var minDist = Float.MAX_VALUE
+                                                var nearestCorner = -1
+                                                for (ci in corners.indices) {
+                                                    val d = (normX - corners[ci][0]) * (normX - corners[ci][0]) +
+                                                            (normY - corners[ci][1]) * (normY - corners[ci][1])
+                                                    if (d < minDist) { minDist = d; nearestCorner = ci }
+                                                }
+                                                beatDragCorner = if (minDist < 0.008f) nearestCorner  // close to corner
+                                                    else if (normX in reactor.boxLeft..reactor.boxRight && normY in reactor.boxBottom..reactor.boxTop) 4  // inside box = move
+                                                    else -1  // outside everything
                                             }
+                                            // Apply drag
+                                            when (beatDragCorner) {
+                                                0 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.02f, 1f) }
+                                                1 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.02f, 1f) }
+                                                2 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.02f) }
+                                                3 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.02f) }
+                                                4 -> {
+                                                    val bw = reactor.boxRight - reactor.boxLeft
+                                                    val bh = reactor.boxTop - reactor.boxBottom
+                                                    val newL = (normX - bw / 2f).coerceIn(0f, 1f - bw)
+                                                    val newB = (normY - bh / 2f).coerceIn(0f, 1f - bh)
+                                                    reactor.boxLeft = newL; reactor.boxRight = newL + bw
+                                                    reactor.boxBottom = newB; reactor.boxTop = newB + bh
+                                                }
+                                            }
+                                            uiNeedsRefresh = true
+                                        } else {
+                                            beatDragCorner = -1
                                         }
-                                        uiNeedsRefresh = true
                                     }
-                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 9f) {
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 10f) {
                                     // Slider area (9 sliders)
-                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 8)
+                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 9)
                                     beatDraggingSlider = sliderIdx
                                     beatSliderLaserX = ((bx - 260f) / (984f - 260f)).coerceIn(0f, 1f)
                                     if (rightTrigger > 0.5f) {
@@ -2104,72 +2118,80 @@ class FilamentModelActivity : ComponentActivity() {
             canvas.drawText("50%", specLeft + 2f, specBot - 0.5f * specH - 2f, p)
             canvas.drawText("75%", specLeft + 2f, specBot - 0.75f * specH - 2f, p)
 
-            // Spectrum bars — bright, visible, with glow
+            // Spectrum bars — trimmed to box frequency range (zoomed EQ view)
             val bins = reactor?.spectrumBins ?: FloatArray(64)
-            val barCount = 64
             val specW = specRight - specLeft
-            val barW = specW / barCount - 1f
-            for (i in 0 until barCount) {
-                val barX = specLeft + i * (barW + 1f)
-                val level = bins[i].coerceIn(0f, 1f)
-                if (level < 0.005f) continue  // skip silent bins
-                val barH = level * specH
+            val bL = reactor?.boxLeft ?: 0f
+            val bR = reactor?.boxRight ?: 1f
+            // Find bin range matching box left/right
+            val binStart = (bL * 64).toInt().coerceIn(0, 63)
+            val binEnd = (bR * 64).toInt().coerceIn(binStart + 1, 64)
+            val visibleBins = binEnd - binStart
+            if (visibleBins > 0) {
+                val barW = specW / visibleBins - 1f
+                for (vi in 0 until visibleBins) {
+                    val i = binStart + vi
+                    val barX = specLeft + vi * (barW + 1f)
+                    val level = bins[i].coerceIn(0f, 1f)
+                    if (level < 0.005f) continue  // skip silent bins
+                    val barH = level * specH
 
-                // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
-                val frac = i.toFloat() / barCount
-                val cr: Int; val cg: Int; val cb: Int
-                if (frac < 0.3f) {
-                    // Bass: hot pink
-                    cr = 0xFF; cg = 0x40; cb = 0x80
-                } else if (frac < 0.6f) {
-                    // Mid: cyan/green blend
-                    val t = (frac - 0.3f) / 0.3f
-                    cr = (0xFF * (1f - t) + 0x10 * t).toInt().coerceIn(0, 255)
-                    cg = (0x40 * (1f - t) + 0xE0 * t).toInt().coerceIn(0, 255)
-                    cb = (0x80 * (1f - t) + 0xA0 * t).toInt().coerceIn(0, 255)
-                } else {
-                    // High: blue/purple
-                    val t = (frac - 0.6f) / 0.4f
-                    cr = (0x10 + 0x60 * t).toInt().coerceIn(0, 255)
-                    cg = (0xE0 * (1f - t) + 0x40 * t).toInt().coerceIn(0, 255)
-                    cb = 0xF6
-                }
+                    // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
+                    val frac = i.toFloat() / 64
+                    val cr: Int; val cg: Int; val cb: Int
+                    if (frac < 0.3f) {
+                        // Bass: hot pink
+                        cr = 0xFF; cg = 0x40; cb = 0x80
+                    } else if (frac < 0.6f) {
+                        // Mid: cyan/green blend
+                        val t = (frac - 0.3f) / 0.3f
+                        cr = (0xFF * (1f - t) + 0x10 * t).toInt().coerceIn(0, 255)
+                        cg = (0x40 * (1f - t) + 0xE0 * t).toInt().coerceIn(0, 255)
+                        cb = (0x80 * (1f - t) + 0xA0 * t).toInt().coerceIn(0, 255)
+                    } else {
+                        // High: blue/purple
+                        val t = (frac - 0.6f) / 0.4f
+                        cr = (0x10 + 0x60 * t).toInt().coerceIn(0, 255)
+                        cg = (0xE0 * (1f - t) + 0x40 * t).toInt().coerceIn(0, 255)
+                        cb = 0xF6
+                    }
 
-                // Bar glow (slightly wider, dimmer underneath)
-                val glowAlpha = (0x40 * level).toInt().coerceIn(0, 0x60)
-                p.color = (glowAlpha shl 24) or (cr shl 16) or (cg shl 8) or cb
-                canvas.drawRect(barX - 0.5f, specBot - barH - 2f, barX + barW + 0.5f, specBot, p)
+                    // Bar glow (slightly wider, dimmer underneath)
+                    val glowAlpha = (0x40 * level).toInt().coerceIn(0, 0x60)
+                    p.color = (glowAlpha shl 24) or (cr shl 16) or (cg shl 8) or cb
+                    canvas.drawRect(barX - 0.5f, specBot - barH - 2f, barX + barW + 0.5f, specBot, p)
 
-                // Solid bar
-                val alpha = (0xCC + 0x33 * level).toInt().coerceIn(0, 0xFF)
-                p.color = (alpha shl 24) or (cr shl 16) or (cg shl 8) or cb
-                canvas.drawRect(barX, specBot - barH, barX + barW, specBot, p)
+                    // Solid bar
+                    val alpha = (0xCC + 0x33 * level).toInt().coerceIn(0, 0xFF)
+                    p.color = (alpha shl 24) or (cr shl 16) or (cg shl 8) or cb
+                    canvas.drawRect(barX, specBot - barH, barX + barW, specBot, p)
 
-                // Peak cap (bright white line at top of bar)
-                if (level > 0.05f) {
-                    p.color = (0xCC shl 24) or 0xFFFFFF
-                    canvas.drawRect(barX, specBot - barH, barX + barW, specBot - barH + 2f, p)
+                    // Peak cap (bright white line at top of bar)
+                    if (level > 0.05f) {
+                        p.color = (0xCC shl 24) or 0xFFFFFF
+                        canvas.drawRect(barX, specBot - barH, barX + barW, specBot - barH + 2f, p)
+                    }
                 }
             }
 
-            // Bounding box (all 4 edges clearly visible)
+            // Bounding box — zoomed view: left/right edges are at display edges,
+            // only draw top and bottom edges + corner markers
             if (reactor != null) {
-                val bxL = specLeft + reactor.boxLeft * specW
-                val bxR = specLeft + reactor.boxRight * specW
+                val bxL = specLeft   // display IS the box's frequency range
+                val bxR = specRight
                 val bxT = specBot - reactor.boxTop * specH
                 val bxB = specBot - reactor.boxBottom * specH
 
-                // Fill (semi-transparent yellow tint)
-                p.color = 0x20FFFF00.toInt()
+                // Fill (semi-transparent yellow tint between top and bottom)
+                p.color = 0x18FFFF00.toInt()
                 canvas.drawRect(bxL, bxT, bxR, bxB, p)
 
-                // All 4 edges as thick bright lines
-                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 3f
-                p.color = 0xFFFFFF00.toInt()  // yellow border — stands out from spectrum colors
-                canvas.drawRect(bxL, bxT, bxR, bxB, p)
-                p.style = android.graphics.Paint.Style.FILL
+                // Top and bottom edges as thick bright lines
+                p.color = 0xFFFFFF00.toInt(); p.strokeWidth = 3f
+                canvas.drawLine(bxL, bxT, bxR, bxT, p)  // top edge
+                canvas.drawLine(bxL, bxB, bxR, bxB, p)  // bottom edge
 
-                // Corner markers
+                // Corner markers at all 4 corners
                 val cm = 8f
                 p.color = 0xFFFFFF00.toInt()
                 canvas.drawRect(bxL - 1f, bxT - 1f, bxL + cm, bxT + cm, p)
@@ -2222,18 +2244,24 @@ class FilamentModelActivity : ComponentActivity() {
                 p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
             }
 
-            // Frequency labels
+            // Frequency labels — show actual box frequency range
             p.color = 0xFF6B7280.toInt(); p.textSize = 16f
-            canvas.drawText("20", specLeft, specBot + 16f, p)
-            canvas.drawText("100", specLeft + specW * 0.25f, specBot + 16f, p)
-            canvas.drawText("1k", specLeft + specW * 0.55f, specBot + 16f, p)
-            canvas.drawText("10k", specLeft + specW * 0.85f, specBot + 16f, p)
+            val freqL = 20f * Math.pow(1000.0, (reactor?.boxLeft ?: 0f).toDouble()).toFloat()
+            val freqR = 20f * Math.pow(1000.0, (reactor?.boxRight ?: 1f).toDouble()).toFloat()
+            fun fmtHz(hz: Float): String = if (hz >= 1000f) "%.1fk".format(hz / 1000f) else "%.0f".format(hz)
+            canvas.drawText(fmtHz(freqL), specLeft, specBot + 16f, p)
+            val midFreq = 20f * Math.pow(1000.0, (((reactor?.boxLeft ?: 0f) + (reactor?.boxRight ?: 1f)) / 2f).toDouble()).toFloat()
+            p.textAlign = android.graphics.Paint.Align.CENTER
+            canvas.drawText(fmtHz(midFreq), specLeft + specW / 2f, specBot + 16f, p)
+            p.textAlign = android.graphics.Paint.Align.RIGHT
+            canvas.drawText(fmtHz(freqR), specRight, specBot + 16f, p)
+            p.textAlign = android.graphics.Paint.Align.LEFT
 
             // ── SLIDERS (below spectrum) ──
             val sliderAreaTop = specBot + 28f
             val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 24f
-            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFFD1D5DB.toInt() }
-            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFF9CA3AF.toInt() }
+            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD1D5DB.toInt() }
+            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 20f; color = 0xFF9CA3AF.toInt() }
             var sy = sliderAreaTop
 
             for ((i, slider) in beatSliders.withIndex()) {
@@ -2288,7 +2316,7 @@ class FilamentModelActivity : ComponentActivity() {
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                 }
 
-                sy += 48f
+                sy += 43f
             }
 
             // ── Buttons ──
