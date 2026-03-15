@@ -1516,7 +1516,7 @@ class FilamentModelActivity : ComponentActivity() {
                         gpuModel?.exposure = model.exposure
                     }
                     3 -> if (model != null) {
-                        model.contrast = (model.contrast + delta * 0.5f).coerceIn(0.7f, 1.5f)
+                        model.contrast = (model.contrast + delta * 0.3f).coerceIn(0.8f, 1.3f)
                         gpuModel?.contrast = model.contrast
                     }
                     4 -> if (model != null) {
