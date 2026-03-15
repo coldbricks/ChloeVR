@@ -247,10 +247,9 @@ class AudioReactor {
             if (binNormX < boxLeft || binNormX > boxRight) continue
             binsInBox++
 
-            val barHeight = bins[i].coerceIn(0f, 1f)
-            // How much of this bar is within the box's Y range?
-            // If bar is below boxBottom, fill = 0
-            // If bar extends above boxTop, fill = 1 (fully fills the box height)
+            // EXPAND amplifies bar height — bigger swings
+            val barHeight = (bins[i] * dynRange).coerceIn(0f, 1f)
+            // If bar reaches into the box, it contributes to fill
             val fillInBox = ((barHeight - boxBottom) / boxH).coerceIn(0f, 1f)
             fillSum += fillInBox
         }
@@ -312,10 +311,8 @@ class AudioReactor {
             }
         }
 
-        // EXPAND: higher = more dramatic swing
-        // Simple gain with clamp — peaks hit ceiling, valleys stay low
-        // dynRange=1: identity, dynRange=2: 2x gain (more swing), dynRange=0.5: half (less swing)
-        val scaled = (smoothedOutput * dynRange * trim).coerceAtMost(1f)
+        // Output trim only (EXPAND already applied to bar heights for box fill)
+        val scaled = (smoothedOutput * trim).coerceAtMost(1f)
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
 

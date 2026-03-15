@@ -2264,57 +2264,57 @@ class FilamentModelActivity : ComponentActivity() {
             val center = reactor?.specViewCenter ?: 0.5f
             val visLeft = (center - viewWidth / 2f).coerceIn(0f, 1f - viewWidth)
             val visRight = (visLeft + viewWidth).coerceAtMost(1f)
-            // Draw bars by mapping each bin's normalized position to screen coords
+            // Draw DISTINCT bars with clear gaps
             val visRange = (visRight - visLeft).coerceAtLeast(0.001f)
-            for (i in 0 until 64) {
-                    val binNormPos = i.toFloat() / 64f
-                    if (binNormPos < visLeft || binNormPos > visRight) continue
-                    val screenFrac = (binNormPos - visLeft) / visRange
-                    val barW = specW / (64f / (visRange * 64f)) - 1f
-                    val barX = specLeft + screenFrac * specW
-                    val vZoom = reactor?.specVZoom ?: 1f
-                    val rawLevel = bins[i] * vZoom
-                    if (rawLevel < 0.005f) continue
-                    // Don't clamp to 1.0 — let bars clip at spectrum top, not crush
-                    val barH = (rawLevel * specH).coerceAtMost(specH)
+            val vZoom = reactor?.specVZoom ?: 1f
+            val expand = reactor?.dynRange ?: 1f
+            val binScreenW = specW / (visRange * 64f)  // width of one bin on screen
+            val gap = 2f.coerceAtMost(binScreenW * 0.3f)  // gap between bars (proportional)
+            val barW = (binScreenW - gap).coerceAtLeast(2f)
 
-                    // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
-                    val frac = i.toFloat() / 64f
-                    val cr: Int; val cg: Int; val cb: Int
-                    if (frac < 0.3f) {
-                        // Bass: hot pink
-                        cr = 0xFF; cg = 0x40; cb = 0x80
-                    } else if (frac < 0.6f) {
-                        // Mid: cyan/green blend
+            for (i in 0 until 64) {
+                val binLeft = i.toFloat() / 64f
+                val binRight = (i + 1).toFloat() / 64f
+                if (binRight < visLeft || binLeft > visRight) continue
+
+                // Bar position: center of bin mapped to screen
+                val screenX = specLeft + ((binLeft - visLeft) / visRange) * specW
+
+                // EXPAND amplifies the bars visually AND for box fill
+                val rawLevel = bins[i] * vZoom * expand
+                if (rawLevel < 0.003f) continue
+                val barH = (rawLevel * specH).coerceAtMost(specH)
+
+                // Color: bass(pink) → mid(cyan) → high(blue)
+                val frac = i / 64f
+                val cr: Int; val cg: Int; val cb: Int
+                when {
+                    frac < 0.3f -> { cr = 0xFF; cg = 0x40; cb = 0x80 }
+                    frac < 0.6f -> {
                         val t = (frac - 0.3f) / 0.3f
-                        cr = (0xFF * (1f - t) + 0x10 * t).toInt().coerceIn(0, 255)
-                        cg = (0x40 * (1f - t) + 0xE0 * t).toInt().coerceIn(0, 255)
-                        cb = (0x80 * (1f - t) + 0xA0 * t).toInt().coerceIn(0, 255)
-                    } else {
-                        // High: blue/purple
+                        cr = (255 * (1f - t)).toInt().coerceIn(16, 255)
+                        cg = (64 + 176 * t).toInt().coerceIn(64, 240)
+                        cb = (128 + 32 * t).toInt().coerceIn(128, 160)
+                    }
+                    else -> {
                         val t = (frac - 0.6f) / 0.4f
-                        cr = (0x10 + 0x60 * t).toInt().coerceIn(0, 255)
-                        cg = (0xE0 * (1f - t) + 0x40 * t).toInt().coerceIn(0, 255)
+                        cr = (16 + 96 * t).toInt().coerceIn(16, 112)
+                        cg = (240 * (1f - t)).toInt().coerceIn(64, 240)
                         cb = 0xF6
                     }
-
-                    // Bar glow (slightly wider, dimmer underneath)
-                    val level = rawLevel.coerceAtMost(1f)  // for color/alpha calculations
-                    val glowAlpha = (0x40 * level).toInt().coerceIn(0, 0x60)
-                    p.color = (glowAlpha shl 24) or (cr shl 16) or (cg shl 8) or cb
-                    canvas.drawRect(barX - 0.5f, specBot - barH - 2f, barX + barW + 0.5f, specBot, p)
-
-                    // Solid bar
-                    val alpha = (0xCC + 0x33 * level).toInt().coerceIn(0, 0xFF)
-                    p.color = (alpha shl 24) or (cr shl 16) or (cg shl 8) or cb
-                    canvas.drawRect(barX, specBot - barH, barX + barW, specBot, p)
-
-                    // Peak cap (bright white line at top of bar)
-                    if (level > 0.05f) {
-                        p.color = (0xCC shl 24) or 0xFFFFFF
-                        canvas.drawRect(barX, specBot - barH, barX + barW, specBot - barH + 2f, p)
-                    }
                 }
+
+                // Solid bar with hard edges
+                val level = rawLevel.coerceAtMost(1f)
+                p.color = (0xFF shl 24) or (cr shl 16) or (cg shl 8) or cb
+                canvas.drawRect(screenX, specBot - barH, screenX + barW, specBot, p)
+
+                // Bright cap at top
+                if (barH > 4f) {
+                    p.color = (0xDD shl 24) or 0xFFFFFF
+                    canvas.drawRect(screenX, specBot - barH, screenX + barW, specBot - barH + 2f, p)
+                }
+            }
 
             // Bounding box — mapped to visible range
             if (reactor != null) {
