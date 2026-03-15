@@ -238,24 +238,9 @@ class FilamentModelActivity : ComponentActivity() {
 
         showMessage("Initializing 3D renderer...")
 
-        // Request all XR + audio permissions upfront
-        val neededPerms = arrayOf(
-            "android.permission.SCENE_UNDERSTANDING_COARSE",
-            "android.permission.SCENE_UNDERSTANDING_FINE",
-            "android.permission.RECORD_AUDIO",
-            "android.permission.HAND_TRACKING",
-            "android.permission.EYE_TRACKING_COARSE",
-            "android.permission.EYE_TRACKING_FINE",
-            "android.permission.FACE_TRACKING",
-            "android.permission.BODY_SENSORS"
-        )
-        val missing = neededPerms.filter {
-            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) {
-            Log.i(TAG, "Requesting ${missing.size} permissions: ${missing.joinToString()}")
-            requestPermissions(missing.toTypedArray(), 9999)
-        }
+        // DON'T requestPermissions here — it restarts the activity and kills OpenXR
+        // Grant permissions via: Settings > Apps > ChloeVR > Permissions
+        // Or via adb: adb shell pm grant com.ashairfoil.prism android.permission.RECORD_AUDIO (etc)
         val hasScenePerm = checkSelfPermission("android.permission.SCENE_UNDERSTANDING_COARSE") ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         Log.i(TAG, "SCENE_UNDERSTANDING_COARSE: ${if (hasScenePerm) "granted" else "not granted (light est will use sensor)"}")
