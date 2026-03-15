@@ -600,8 +600,10 @@ class FilamentModelActivity : ComponentActivity() {
             { audioReactor?.dynRange ?: 2f }, { audioReactor?.dynRange = it }),
         BeatSlider("SMOOTH", "%", 0f, 100f,
             { (audioReactor?.smootherAmount ?: 0.3f) * 100f }, { audioReactor?.smootherAmount = it / 100f }),
-        BeatSlider("H-ZOOM", "x", 1f, 8f,
+        BeatSlider("ZOOM-H", "x", 1f, 8f,
             { audioReactor?.specZoom ?: 1f }, { audioReactor?.specZoom = it }),
+        BeatSlider("ZOOM-V", "x", 0.5f, 5f,
+            { audioReactor?.specVZoom ?: 1f }, { audioReactor?.specVZoom = it }),
         BeatSlider("COLOR", "\u00B0", 0f, 360f,
             { audioReactor?.beatHue ?: 330f }, { audioReactor?.beatHue = it }),
         BeatSlider("MIX", "%", 0f, 100f,
@@ -1108,7 +1110,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 val specTopHit = 140f; val specBotHit = 390f
                                 val specLeftHit = 40f; val specRightHit = 984f  // uiW(1024) - 40
                                 val sliderAreaTopHit = 418f
-                                val sliderRowH = 38f
+                                val sliderRowH = 35f
 
                                 if (by > 920f) {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
@@ -1171,7 +1173,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             beatDragCorner = -1
                                         }
                                     }
-                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 12f) {
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * beatSliders.size) {
                                     // Slider area
                                     val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, beatSliders.size - 1)
                                     beatDraggingSlider = sliderIdx
@@ -2079,15 +2081,10 @@ class FilamentModelActivity : ComponentActivity() {
             p.textSize = 34f; p.color = 0xFFEC4899.toInt(); p.isFakeBoldText = true
             canvas.drawText("BEATREACTOR", 50f, 105f, p)
 
-            // FILL + BPM display top right
+            // FILL display top right
             val fillPct = reactor?.boxFillPct ?: 0f
-            val bpm = reactor?.detectedBpm ?: 0f
-            p.textSize = 34f; p.color = 0xFFFFFFFF.toInt()
-            canvas.drawText("%.0f%%".format(fillPct * 100), 580f, 105f, p)
-            if (bpm > 0f) {
-                p.color = 0xFF10B981.toInt()
-                canvas.drawText("%.0f BPM".format(bpm), 700f, 105f, p)
-            }
+            p.textSize = 38f; p.color = 0xFFFFFFFF.toInt()
+            canvas.drawText("FILL: %.0f%%".format(fillPct * 100), 550f, 105f, p)
             p.isFakeBoldText = false
 
             // Roll-off mode buttons
@@ -2158,7 +2155,8 @@ class FilamentModelActivity : ComponentActivity() {
             for (vi in 0 until visBinCount) {
                     val i = visLeftBin + vi
                     val barX = specLeft + vi * (barW + 1f)
-                    val level = bins[i].coerceIn(0f, 1f)
+                    val vZoom = reactor?.specVZoom ?: 1f
+                    val level = (bins[i] * vZoom).coerceIn(0f, 1f)
                     if (level < 0.005f) continue
                     val barH = level * specH
 
@@ -2344,7 +2342,7 @@ class FilamentModelActivity : ComponentActivity() {
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                 }
 
-                sy += 38f
+                sy += 35f
             }
 
             // ── Buttons ──

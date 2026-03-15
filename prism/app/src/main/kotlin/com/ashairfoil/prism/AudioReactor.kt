@@ -57,21 +57,17 @@ class AudioReactor {
     @Volatile var beatHue = 330f
     @Volatile var smootherAmount = 0.3f
     @Volatile var specZoom = 1.0f     // horizontal zoom (1=full, 8=8x)
-    @Volatile var specViewCenter = 0.5f  // persisted view center for smooth scrolling
+    @Volatile var specVZoom = 1.0f    // vertical zoom (amplifies bar heights for display)
+    @Volatile var specViewCenter = 0.5f
     private var prevFillPct = 0f
 
     // Hard knee state
     private var hardKneeTimer = 0f
     private var hardKneeTriggered = false
 
-    // BPM detection
-    @Volatile var detectedBpm = 0f; private set
-    private val bpmBufferSize = 216   // ~3 seconds at 72fps
-    private val bpmBuffer = FloatArray(bpmBufferSize)
-    private var bpmWriteIdx = 0
-    private var bpmFrameCount = 0
-    private var lastBeatFrame = -1
-    private val beatIntervals = mutableListOf<Int>()  // frames between beats
+    // Anti-dropout: track when FFT last fired
+    @Volatile private var fftFrameStamp = 0
+    private var updateFrameCount = 0
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -201,6 +197,7 @@ class AudioReactor {
         rawBass = if (bassCnt > 0) (bassE / bassCnt).coerceIn(0f, 1f) else 0f
         rawMid = if (midCnt > 0) (midE / midCnt).coerceIn(0f, 1f) else 0f
         rawHigh = if (highCnt > 0) (highE / highCnt).coerceIn(0f, 1f) else 0f
+        fftFrameStamp = updateFrameCount  // mark that we got fresh data
     }
 
     /**
@@ -298,31 +295,11 @@ class AudioReactor {
         boxFillPct = prevFillPct + (boxFillPct - prevFillPct) * smoothAlpha
         prevFillPct = boxFillPct
 
-        // BPM detection: track bass peaks and measure intervals
-        bpmFrameCount++
-        bpmBuffer[bpmWriteIdx] = bass
-        bpmWriteIdx = (bpmWriteIdx + 1) % bpmBufferSize
-
-        // Detect beat: bass crosses above threshold and is a local peak
-        val prev2 = bpmBuffer[(bpmWriteIdx - 3 + bpmBufferSize) % bpmBufferSize]
-        val prev1 = bpmBuffer[(bpmWriteIdx - 2 + bpmBufferSize) % bpmBufferSize]
-        val curr = bass
-        if (prev1 > threshold && prev1 > prev2 && prev1 >= curr && bpmFrameCount - lastBeatFrame > 10) {
-            // Found a beat peak
-            if (lastBeatFrame > 0) {
-                val interval = bpmFrameCount - lastBeatFrame
-                beatIntervals.add(interval)
-                if (beatIntervals.size > 16) beatIntervals.removeAt(0)
-
-                // Average interval → BPM
-                if (beatIntervals.size >= 4) {
-                    val avgFrames = beatIntervals.average()
-                    detectedBpm = (72f * 60f / avgFrames.toFloat())  // 72fps
-                    // Sanity: typical music is 60-200 BPM
-                    if (detectedBpm < 40f || detectedBpm > 220f) detectedBpm = 0f
-                }
-            }
-            lastBeatFrame = bpmFrameCount
+        // Anti-dropout: if no FFT data for 8+ frames, hold last output
+        updateFrameCount++
+        if (updateFrameCount - fftFrameStamp > 8) {
+            // Stale data — hold, don't decay
+            boxFillPct = prevFillPct
         }
     }
 
@@ -347,7 +324,6 @@ class AudioReactor {
     fun statusString(): String {
         if (!enabled) return "OFF"
         val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT" }
-        val bpmStr = if (detectedBpm > 0f) " %.0fBPM".format(detectedBpm) else ""
-        return "$modeStr %.0f%%$bpmStr".format(boxFillPct * 100)
+        return "$modeStr %.0f%%".format(boxFillPct * 100)
     }
 }
