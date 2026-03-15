@@ -201,6 +201,10 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var beatReactorEnabled = false
     @Volatile private var beatIntensity = 0.5f  // how strongly beats affect lighting (0..1)
 
+    // Auto-floor: lock grid to detected XR floor plane
+    @Volatile private var autoFloorEnabled = true
+    @Volatile private var detectedFloorY = Float.MIN_VALUE
+
     // Head/camera position (extracted from view matrix each frame)
     private var camPosX = 0f; private var camPosY = 1.6f; private var camPosZ = 0f
     private var camFwdX = 0f; private var camFwdY = 0f; private var camFwdZ = -1f
@@ -329,9 +333,19 @@ class FilamentModelActivity : ComponentActivity() {
             )
             models.add(placed)
             selectedModelIndex = models.size - 1
+
+            // Auto-snap to detected floor if available
+            if (detectedFloorY != Float.MIN_VALUE) {
+                val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
+                placed.posY += (detectedFloorY - worldMinY)
+            } else if (renderer.gridHeight != 0f) {
+                val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
+                placed.posY += (renderer.gridHeight - worldMinY)
+            }
+
             updateModelTransform(placed)
 
-            Log.i(TAG, "Model loaded: ${file.name}, scale=$autoScale, gpuId=$gpuId")
+            Log.i(TAG, "Model loaded: ${file.name}, scale=$autoScale, gpuId=$gpuId, floorY=${detectedFloorY}")
         } catch (e: Exception) {
             Log.e(TAG, "Exception loading model: ${file.name}", e)
             runOnUiThread { showMessage("Error: ${e.message}") }
@@ -722,6 +736,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderEye(leftTexId, width, height, leftProj, leftView)
                             gr.renderGrid(leftTexId, width, height, leftProj, leftView,
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
+                            gr.renderShadowPlanes(leftProj, leftView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
@@ -733,6 +748,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderEye(rightTexId, width, height, rightProj, rightView)
                             gr.renderGrid(rightTexId, width, height, rightProj, rightView,
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
+                            gr.renderShadowPlanes(rightProj, rightView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
@@ -1519,19 +1535,36 @@ class FilamentModelActivity : ComponentActivity() {
         lastYState = yButton
 
         if (aButton && !lastAState && !menuVisible) {
-            // Snap selected model to grid floor
+            // Snap selected model to nearest detected surface (or grid floor)
             val model = models.getOrNull(selectedModelIndex)
             val gr = glesRenderer
             if (model != null && gr != null) {
                 val gpuModel = gr.getModel(model.gpuModelId)
                 if (gpuModel != null) {
+                    // Find nearest horizontal plane to snap to
+                    var snapY = gr.gridHeight
+                    val planes = gr.shadowPlanes
+                    if (planes.isNotEmpty()) {
+                        var bestDist = Float.MAX_VALUE
+                        for (p in planes) {
+                            if (p.label != 1 && p.label != 4) continue // only floor/table
+                            val dx = model.posX - p.posX
+                            val dz = model.posZ - p.posZ
+                            val hDist = kotlin.math.sqrt(dx*dx + dz*dz)
+                            // Check if model is within the plane's extents (with margin)
+                            if (hDist < maxOf(p.extentX, p.extentY) * 1.5f && hDist < bestDist) {
+                                bestDist = hDist
+                                snapY = p.posY
+                            }
+                        }
+                    }
                     // Model's lowest point in local space = boundsMinY
                     // In world space: posY + boundsMinY * scale
-                    // Snap so lowest point = gridHeight
+                    // Snap so lowest point = snapY
                     val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
-                    model.posY += (gr.gridHeight - worldMinY)
+                    model.posY += (snapY - worldMinY)
                     updateModelTransform(model)
-                    Log.i(TAG, "Snap to ground: posY=${model.posY} (minY=${gpuModel.boundsMinY}, grid=${gr.gridHeight})")
+                    Log.i(TAG, "Snap to surface: posY=${model.posY} (minY=${gpuModel.boundsMinY}, snapY=$snapY)")
                 }
             }
         }
@@ -2219,6 +2252,51 @@ class FilamentModelActivity : ComponentActivity() {
         if (xrSensorCaps and (1 shl 3) != 0 && sensorPollFrame % 30 == 0) {
             if (nativePollPlanes(planeBuffer) && planeBuffer[0] > 0.5f) {
                 detectedPlaneCount = planeBuffer[1].toInt()
+
+                // Parse planes for shadow receiving
+                val gr = glesRenderer
+                if (gr != null && detectedPlaneCount > 0) {
+                    val planes = mutableListOf<GlesModelRenderer.ShadowPlane>()
+                    for (i in 0 until minOf(detectedPlaneCount, 32)) {
+                        val off = 2 + i * 10
+                        planes.add(GlesModelRenderer.ShadowPlane(
+                            posX = planeBuffer[off], posY = planeBuffer[off+1], posZ = planeBuffer[off+2],
+                            rotX = planeBuffer[off+3], rotY = planeBuffer[off+4],
+                            rotZ = planeBuffer[off+5], rotW = planeBuffer[off+6],
+                            extentX = planeBuffer[off+7], extentY = planeBuffer[off+8],
+                            label = planeBuffer[off+9].toInt()
+                        ))
+                    }
+                    gr.shadowPlanes = planes
+                }
+
+                // Auto-floor: find the floor plane and lock grid to its Y position
+                if (autoFloorEnabled) {
+                    for (i in 0 until minOf(detectedPlaneCount, 32)) {
+                        val off = 2 + i * 10
+                        val label = planeBuffer[off + 9].toInt()
+                        if (label == 1) { // 1 = floor
+                            val floorY = planeBuffer[off + 1]
+                            // Smooth it to avoid jumps (plane detection can jitter)
+                            detectedFloorY = if (detectedFloorY == Float.MIN_VALUE) floorY
+                                else detectedFloorY + (floorY - detectedFloorY) * 0.1f
+                            val gr = glesRenderer
+                            if (gr != null && kotlin.math.abs(gr.gridHeight - detectedFloorY) > 0.001f) {
+                                gr.gridHeight = detectedFloorY
+                                // Re-snap all models to the real floor
+                                for (placed in models) {
+                                    val gpuModel = gr.getModel(placed.gpuModelId)
+                                    if (gpuModel != null) {
+                                        val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
+                                        placed.posY += (detectedFloorY - worldMinY)
+                                        updateModelTransform(placed)
+                                    }
+                                }
+                            }
+                            break
+                        }
+                    }
+                }
             }
         }
 

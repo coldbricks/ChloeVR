@@ -46,6 +46,13 @@ class GlesModelRenderer {
         var saturation: Float = 1f
     )
 
+    data class ShadowPlane(
+        val posX: Float, val posY: Float, val posZ: Float,
+        val rotX: Float, val rotY: Float, val rotZ: Float, val rotW: Float,
+        val extentX: Float, val extentY: Float,
+        val label: Int  // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
+    )
+
     private val models = mutableListOf<GpuModel>()
     private var nextModelId = 1
 
@@ -67,6 +74,7 @@ class GlesModelRenderer {
     var shadowSoftness = 2.0f
     var shadowSpread = 8f  // ortho extent in meters — larger = wider shadow area
     var shadowEnabled = true
+    var shadowPlanes: List<ShadowPlane> = emptyList()
 
     // Laser resources
     private var laserProgramId = 0
@@ -87,6 +95,11 @@ class GlesModelRenderer {
     private var gizmoVbo = 0
     private var gizmoEbo = 0
     private val gizmoIndicesPerAxis = 12
+
+    // Shadow plane resources
+    private var shadowPlaneProgramId = 0
+    private var spVao = 0
+    private var spVbo = 0
 
     // UI overlay resources
     private var uiProgramId = 0
@@ -189,6 +202,35 @@ class GlesModelRenderer {
         gridProgramId = createProgram(GRID_VERTEX_SHADER, GRID_FRAGMENT_SHADER)
         if (gridProgramId == 0) { Log.e(TAG, "Failed to create grid shader"); return false }
         initGridGeometry()
+
+        // Shadow planes
+        shadowPlaneProgramId = createProgram(SP_VERTEX_SHADER, SP_FRAGMENT_SHADER)
+        if (shadowPlaneProgramId == 0) { Log.e(TAG, "Failed to create shadow plane shader"); return false }
+        run {
+            val quadVerts = floatArrayOf(
+                -1f, 0f, -1f, 0f, 0f,
+                 1f, 0f, -1f, 1f, 0f,
+                 1f, 0f,  1f, 1f, 1f,
+                -1f, 0f,  1f, 0f, 1f
+            )
+            val buf = ByteBuffer.allocateDirect(quadVerts.size * 4)
+                .order(ByteOrder.nativeOrder()).asFloatBuffer()
+            buf.put(quadVerts).position(0)
+            val vaoBuf = intArrayOf(0)
+            GLES30.glGenVertexArrays(1, vaoBuf, 0)
+            spVao = vaoBuf[0]
+            GLES30.glBindVertexArray(spVao)
+            val vboBuf = intArrayOf(0)
+            GLES30.glGenBuffers(1, vboBuf, 0)
+            spVbo = vboBuf[0]
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, spVbo)
+            GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, quadVerts.size * 4, buf, GLES30.GL_STATIC_DRAW)
+            GLES30.glEnableVertexAttribArray(0)
+            GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 20, 0)
+            GLES30.glEnableVertexAttribArray(1)
+            GLES30.glVertexAttribPointer(1, 2, GLES30.GL_FLOAT, false, 20, 12)
+            GLES30.glBindVertexArray(0)
+        }
 
         // Gizmo
         gizmoProgramId = createProgram(GIZMO_VERTEX_SHADER, GIZMO_FRAGMENT_SHADER)
@@ -724,6 +766,57 @@ class GlesModelRenderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
+    // ── Shadow Planes ──
+
+    fun renderShadowPlanes(projection: FloatArray, viewMatrix: FloatArray) {
+        if (!initialized || shadowPlaneProgramId == 0 || shadowPlanes.isEmpty() || !shadowEnabled) return
+
+        GLES30.glUseProgram(shadowPlaneProgramId)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+
+        // Shadow map on texture unit 0
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMap"), 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMVP"), 1, false, shadowLightMatrix, 0)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowDarkness"), shadowDarkness)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowSoftness"), shadowSoftness)
+
+        for (plane in shadowPlanes) {
+            if (plane.label == 2) continue  // skip ceilings
+
+            // Build model matrix: translate + rotate(quat) + scale(extents)
+            val q = plane
+            val sx = q.extentX; val sz = q.extentY
+            val x2 = q.rotX*2; val y2 = q.rotY*2; val z2 = q.rotZ*2
+            val xx = q.rotX*x2; val xy = q.rotX*y2; val xz = q.rotX*z2
+            val yy = q.rotY*y2; val yz = q.rotY*z2; val zz = q.rotZ*z2
+            val wx = q.rotW*x2; val wy = q.rotW*y2; val wz = q.rotW*z2
+
+            // Column-major: rotation columns scaled by extents, then translation
+            val model = floatArrayOf(
+                (1f-(yy+zz))*sx, (xy+wz)*sx, (xz-wy)*sx, 0f,
+                (xy-wz), (1f-(xx+zz)), (yz+wx), 0f,
+                (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
+                q.posX, q.posY, q.posZ, 1f
+            )
+            val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
+
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uMVP"), 1, false, mvp, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uModel"), 1, false, model, 0)
+
+            GLES30.glBindVertexArray(spVao)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
+        }
+
+        GLES30.glBindVertexArray(0)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
     // ── Gizmo ──
 
     fun renderGizmo(projection: FloatArray, viewMatrix: FloatArray,
@@ -925,6 +1018,9 @@ class GlesModelRenderer {
         if (gizmoVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(gizmoVao), 0)
         if (gizmoVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoVbo), 0)
         if (gizmoEbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoEbo), 0)
+        if (shadowPlaneProgramId != 0) GLES30.glDeleteProgram(shadowPlaneProgramId)
+        if (spVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(spVao), 0)
+        if (spVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(spVbo), 0)
         if (uiProgramId != 0) GLES30.glDeleteProgram(uiProgramId)
         if (uiVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(uiVao), 0)
         if (uiVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(uiVbo), 0)
@@ -1342,4 +1438,59 @@ in vec2 vUV;
 uniform sampler2D uTex;
 out vec4 fragColor;
 void main() { fragColor = texture(uTex, vUV); }
+"""
+
+private const val SP_VERTEX_SHADER = """#version 300 es
+layout(location=0) in vec3 aPosition;
+layout(location=1) in vec2 aUV;
+uniform mat4 uMVP;
+uniform mat4 uModel;
+out vec3 vWorldPos;
+out vec2 vUV;
+void main() {
+    vec4 wp = uModel * vec4(aPosition, 1.0);
+    vWorldPos = wp.xyz;
+    vUV = aUV;
+    gl_Position = uMVP * vec4(aPosition, 1.0);
+}
+"""
+
+private const val SP_FRAGMENT_SHADER = """#version 300 es
+precision highp float;
+in vec3 vWorldPos;
+in vec2 vUV;
+uniform mat4 uShadowMVP;
+uniform sampler2D uShadowMap;
+uniform float uShadowDarkness;
+uniform float uShadowSoftness;
+out vec4 fragColor;
+
+void main() {
+    // Shadow map lookup
+    vec4 lp = uShadowMVP * vec4(vWorldPos, 1.0);
+    vec3 pc = lp.xyz / lp.w * 0.5 + 0.5;
+    if (pc.x < 0.0 || pc.x > 1.0 || pc.y < 0.0 || pc.y > 1.0 || pc.z > 1.0) discard;
+
+    // 5x5 PCF with variable softness
+    float shadow = 0.0;
+    vec2 ts = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float r = uShadowSoftness;
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            float d = texture(uShadowMap, pc.xy + vec2(float(x), float(y)) * ts * r).r;
+            shadow += pc.z > d ? 1.0 : 0.0;
+        }
+    }
+    shadow /= 25.0;
+
+    // Edge fade - smooth falloff at plane boundaries (no hard clip)
+    float ef = smoothstep(0.0, 0.05, vUV.x) * smoothstep(0.0, 0.05, 1.0 - vUV.x)
+             * smoothstep(0.0, 0.05, vUV.y) * smoothstep(0.0, 0.05, 1.0 - vUV.y);
+
+    float a = shadow * ef * uShadowDarkness;
+    if (a < 0.005) discard;
+
+    // Pure black shadow over passthrough - the most realistic approach for AR
+    fragColor = vec4(0.0, 0.0, 0.0, a);
+}
 """
