@@ -169,7 +169,8 @@ class AudioReactor {
         if (!enabled) return
 
         val binCount = fft.size / 2
-        val freqPerBin = samplingRate.toFloat() / (2f * CAPTURE_SIZE)
+        // samplingRate is in millihertz (48000000 = 48kHz), convert to Hz
+        val freqPerBin = (samplingRate / 1000f) / (2f * CAPTURE_SIZE)
 
         var bassE = 0f; var bassBins = 0
         var midE = 0f; var midBins = 0
