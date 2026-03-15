@@ -1985,112 +1985,120 @@ class FilamentModelActivity : ComponentActivity() {
         }
         canvas.drawText(if (draggingPanel) "dragging..." else "grip to drag", uiW - 280f, 56f, dragHint)
 
-        // ═══ BeatReactor Settings (Slider Panel) ═══
+        // ═══ BeatReactor Settings ═══
         if (beatSettingsMode) {
-            val headerP = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 36f; color = 0xFFEC4899.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("BEATREACTOR", 50f, 108f, headerP)
-
-            // Level meters (top right)
             val reactor = audioReactor
-            val meterP = android.graphics.Paint().apply { isAntiAlias = true }
-            if (reactor != null) {
-                val meterX = 700f; val meterW = 60f; val meterH = 70f
-                // Bass meter
-                meterP.color = 0xFFEC4899.toInt()
-                canvas.drawRect(meterX, 108f - reactor.bass * meterH, meterX + meterW, 108f, meterP)
-                meterP.color = 0x40FFFFFF.toInt()
-                canvas.drawRect(meterX, 108f - meterH, meterX + meterW, 108f, meterP)
-                // Mid meter
-                meterP.color = 0xFF10B981.toInt()
-                canvas.drawRect(meterX + 70f, 108f - reactor.mid * meterH, meterX + 70f + meterW, 108f, meterP)
-                meterP.color = 0x40FFFFFF.toInt()
-                canvas.drawRect(meterX + 70f, 108f - meterH, meterX + 70f + meterW, 108f, meterP)
-                // High meter
-                meterP.color = 0xFF3B82F6.toInt()
-                canvas.drawRect(meterX + 140f, 108f - reactor.high * meterH, meterX + 140f + meterW, 108f, meterP)
-                meterP.color = 0x40FFFFFF.toInt()
-                canvas.drawRect(meterX + 140f, 108f - meterH, meterX + 140f + meterW, 108f, meterP)
+            val p = android.graphics.Paint().apply { isAntiAlias = true }
+
+            // Header
+            p.textSize = 34f; p.color = 0xFFEC4899.toInt(); p.isFakeBoldText = true
+            canvas.drawText("BEATREACTOR", 50f, 105f, p)
+
+            // Output meters (top right): B M H with percentages
+            p.textSize = 22f; p.isFakeBoldText = false
+            val b = reactor?.bass ?: 0f; val m = reactor?.mid ?: 0f; val h = reactor?.high ?: 0f
+            p.color = 0xFFEC4899.toInt(); canvas.drawText("B:%.0f%%".format(b * 100), 700f, 95f, p)
+            p.color = 0xFF10B981.toInt(); canvas.drawText("M:%.0f%%".format(m * 100), 810f, 95f, p)
+            p.color = 0xFF3B82F6.toInt(); canvas.drawText("H:%.0f%%".format(h * 100), 910f, 95f, p)
+
+            // ── SPECTRUM ANALYZER ──
+            val specLeft = 40f; val specRight = uiW - 40f; val specTop = 120f; val specH = 280f
+            val specBot = specTop + specH
+
+            // Background
+            p.color = 0xFF0A0A14.toInt()
+            canvas.drawRoundRect(specLeft, specTop, specRight, specBot, 8f, 8f, p)
+
+            // Grid lines
+            p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
+            for (pct in arrayOf(0.25f, 0.5f, 0.75f)) {
+                val gy = specBot - pct * specH
+                canvas.drawLine(specLeft, gy, specRight, gy, p)
             }
 
-            // Sliders
-            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFFD1D5DB.toInt() }
-            val valueP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFF9CA3AF.toInt() }
-            val trackBg = android.graphics.Paint().apply { color = 0xFF1E1E28.toInt() }
-            val trackFill = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
-            val trackHover = android.graphics.Paint().apply { color = 0xFFFF6BB5.toInt() }
-            val knobP = android.graphics.Paint().apply { color = 0xFFFFFFFF.toInt(); isAntiAlias = true }
+            // Spectrum bars
+            val bins = reactor?.spectrumBins ?: FloatArray(64)
+            val barCount = 64
+            val barW = (specRight - specLeft) / barCount - 1f
+            for (i in 0 until barCount) {
+                val bx = specLeft + i * (barW + 1f)
+                val level = bins[i].coerceIn(0f, 1f)
+                val barH = level * specH
 
-            val trackLeft = 300f; val trackRight = 950f; val trackH = 20f
-            var sy = 135f
+                // Color: bass=pink, mid=green, high=blue (smooth gradient)
+                val frac = i.toFloat() / barCount
+                val cr = if (frac < 0.25f) 0xEC else if (frac < 0.5f) ((0xEC * (1f - (frac - 0.25f) * 4f)).toInt().coerceIn(0x10, 0xEC)) else 0x10
+                val cg = if (frac in 0.15f..0.6f) 0xB9 else 0x30
+                val cb = if (frac > 0.5f) 0xF6 else 0x40
+                p.color = (0xFF shl 24) or (cr shl 16) or (cg shl 8) or cb
+                canvas.drawRect(bx, specBot - barH, bx + barW, specBot, p)
+            }
+
+            // Threshold line
+            val thresh = reactor?.bassConfig?.gateThreshold ?: 0f
+            if (thresh > 0.01f) {
+                p.color = 0xCCFFFF00.toInt(); p.strokeWidth = 2f
+                val threshY = specBot - thresh * specH
+                canvas.drawLine(specLeft, threshY, specRight, threshY, p)
+                p.textSize = 18f; canvas.drawText("THRESH", specRight - 80f, threshY - 4f, p)
+            }
+
+            // Frequency labels
+            p.color = 0xFF6B7280.toInt(); p.textSize = 16f
+            canvas.drawText("20", specLeft, specBot + 16f, p)
+            canvas.drawText("100", specLeft + (specRight - specLeft) * 0.25f, specBot + 16f, p)
+            canvas.drawText("1k", specLeft + (specRight - specLeft) * 0.55f, specBot + 16f, p)
+            canvas.drawText("10k", specLeft + (specRight - specLeft) * 0.85f, specBot + 16f, p)
+
+            // ── SLIDERS (below spectrum) ──
+            val trackLeft = 280f; val trackRight = uiW - 40f; val trackH = 18f
+            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFFD1D5DB.toInt() }
+            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFF9CA3AF.toInt() }
+            var sy = specBot + 30f
 
             for ((i, slider) in beatSliders.withIndex()) {
                 val isHovered = i == beatDraggingSlider
                 val value = slider.get()
                 val norm = ((value - slider.min) / (slider.max - slider.min)).coerceIn(0f, 1f)
 
-                // Label
-                canvas.drawText(slider.name, 40f, sy + 16f, labelP)
-
-                // Value
-                val valStr = when {
-                    slider.unit == "x" -> "%.1f${slider.unit}".format(value)
-                    slider.unit == "Hz" -> "%.0f ${slider.unit}".format(value)
-                    slider.unit == "ms" -> "%.0f ${slider.unit}".format(value)
+                canvas.drawText(slider.name, 40f, sy + 14f, labelP)
+                val valStr = when (slider.unit) {
+                    "x" -> "%.1fx".format(value)
+                    "Hz" -> "%.0f Hz".format(value)
+                    "ms" -> "%.0f ms".format(value)
                     else -> "%.0f%%".format(value)
                 }
-                canvas.drawText(valStr, 160f, sy + 16f, valueP)
+                val vw = valP.measureText(valStr)
+                canvas.drawText(valStr, trackLeft - vw - 8f, sy + 14f, valP)
 
-                // Track background
-                canvas.drawRoundRect(trackLeft, sy, trackRight, sy + trackH, 4f, 4f, trackBg)
-
-                // Track fill
+                // Track
+                p.color = 0xFF1E1E28.toInt()
+                canvas.drawRoundRect(trackLeft, sy, trackRight, sy + trackH, 4f, 4f, p)
                 val fillEnd = trackLeft + norm * (trackRight - trackLeft)
-                canvas.drawRoundRect(trackLeft, sy, fillEnd, sy + trackH, 4f, 4f,
-                    if (isHovered) trackHover else trackFill)
-
+                p.color = if (isHovered) 0xFFFF6BB5.toInt() else 0xFFEC4899.toInt()
+                canvas.drawRoundRect(trackLeft, sy, fillEnd, sy + trackH, 4f, 4f, p)
                 // Knob
-                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 14f else 10f, knobP)
+                p.color = 0xFFFFFFFF.toInt()
+                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 12f else 8f, p)
 
-                // Threshold line (for threshold slider)
-                if (i == 1 && reactor != null) {
-                    val threshX = trackLeft + norm * (trackRight - trackLeft)
-                    val threshP = android.graphics.Paint().apply { color = 0xFFFFFF00.toInt(); strokeWidth = 2f }
-                    canvas.drawLine(threshX, sy - 5f, threshX, sy + trackH + 5f, threshP)
-                }
-
-                sy += 95f
+                sy += 52f
             }
 
-            // OFF button and BACK button at bottom
-            val btnY = uiH - 80f; val btnH = 55f
-            val isOffHovered = hoveredActionButton == 112
-            val isBackHovered = hoveredActionButton == 111
+            // ── Buttons ──
+            val btnY = uiH - 75f; val btnH = 50f
             val halfW = (uiW - 70f) / 2f
 
-            val offBg = android.graphics.Paint().apply {
-                color = if (isOffHovered) 0x80F04858.toInt() else 0x20F04858.toInt()
-            }
-            canvas.drawRoundRect(30f, btnY, 30f + halfW, btnY + btnH, 10f, 10f, offBg)
-            val offTxt = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 26f; textAlign = android.graphics.Paint.Align.CENTER
-                color = if (isOffHovered) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("TURN OFF", 30f + halfW / 2f, btnY + 36f, offTxt)
+            p.color = if (hoveredActionButton == 112) 0x80F04858.toInt() else 0x20F04858.toInt()
+            canvas.drawRoundRect(30f, btnY, 30f + halfW, btnY + btnH, 10f, 10f, p)
+            p.color = if (hoveredActionButton == 112) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt()
+            p.textSize = 24f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
+            canvas.drawText("TURN OFF", 30f + halfW / 2f, btnY + 33f, p)
 
-            val backBg = android.graphics.Paint().apply {
-                color = if (isBackHovered) 0x80EC4899.toInt() else 0x20EC4899.toInt()
-            }
-            canvas.drawRoundRect(40f + halfW, btnY, uiW - 30f, btnY + btnH, 10f, 10f, backBg)
-            val backTxt = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 26f; textAlign = android.graphics.Paint.Align.CENTER
-                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("\u25C0 BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, btnY + 36f, backTxt)
-
-            // Auto-refresh for live meters
-            if (sensorPollFrame % 5 == 0) pendingUiBitmap = bitmap
+            p.color = if (hoveredActionButton == 111) 0x80EC4899.toInt() else 0x20EC4899.toInt()
+            canvas.drawRoundRect(40f + halfW, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
+            p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+            canvas.drawText("\u25C0 BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, btnY + 33f, p)
+            p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
 
             pendingUiBitmap = bitmap
             return

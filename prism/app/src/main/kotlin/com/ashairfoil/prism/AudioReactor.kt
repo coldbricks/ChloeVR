@@ -165,16 +165,27 @@ class AudioReactor {
      * FFT callback from Visualizer thread.
      * FFT format: [real0, imag0, real1, imag1, ...] as signed bytes.
      */
+    // Raw per-bin magnitudes for spectrum visualization (written by FFT thread)
+    @Volatile var spectrumBins = FloatArray(64)  // reduced to 64 bars for display
+    private var spectrumBinsTemp = FloatArray(64)
+
     private fun processFft(fft: ByteArray, samplingRate: Int) {
         if (!enabled) return
 
         val binCount = fft.size / 2
-        // samplingRate is in millihertz (48000000 = 48kHz), convert to Hz
-        val freqPerBin = (samplingRate / 1000f) / (2f * CAPTURE_SIZE)
+        val freqPerBin = (samplingRate / 1000f) / (2f * CAPTURE_SIZE) // Hz per bin
+
+        // Max possible magnitude from signed bytes: sqrt(127^2 + 127^2) ≈ 180
+        val maxMag = 180f
 
         var bassE = 0f; var bassBins = 0
         var midE = 0f; var midBins = 0
         var highE = 0f; var highBins = 0
+
+        // Build spectrum bars (64 display bins, log-spaced)
+        val displayBins = spectrumBinsTemp
+        for (j in displayBins.indices) displayBins[j] = 0f
+        var displayBinCounts = IntArray(64)
 
         for (i in 1 until binCount) {
             val freq = i * freqPerBin
@@ -182,36 +193,38 @@ class AudioReactor {
             val imag = fft[2 * i + 1].toFloat()
             val mag = kotlin.math.sqrt(real * real + imag * imag)
 
-            // Bin into user-configured frequency ranges
-            if (freq >= bassConfig.freqLow && freq < bassConfig.freqHigh) { bassE += mag; bassBins++ }
-            if (freq >= midConfig.freqLow && freq < midConfig.freqHigh) { midE += mag; midBins++ }
-            if (freq >= highConfig.freqLow && freq < highConfig.freqHigh) { highE += mag; highBins++ }
+            // Percentage of max — this is BeatReactor "box percentage" style
+            val pct = (mag / maxMag) * sensitivity
+
+            // Band totals
+            if (freq >= bassConfig.freqLow && freq < bassConfig.freqHigh) { bassE += pct; bassBins++ }
+            if (freq >= midConfig.freqLow && freq < midConfig.freqHigh) { midE += pct; midBins++ }
+            if (freq >= highConfig.freqLow && freq < highConfig.freqHigh) { highE += pct; highBins++ }
+
+            // Map to display bin (log scale: bin 0=~20Hz, bin 63=~20kHz)
+            if (freq > 10f) {
+                val logFreq = kotlin.math.ln(freq / 10f) / kotlin.math.ln(2000f) // 0..1 log scale
+                val dBin = (logFreq * 63f).toInt().coerceIn(0, 63)
+                displayBins[dBin] += pct
+                displayBinCounts[dBin]++
+            }
         }
 
-        // Normalize
-        val norm = sensitivity / 128f
-        val rb = if (bassBins > 0) (bassE / bassBins) * norm else 0f
-        val rm = if (midBins > 0) (midE / midBins) * norm else 0f
-        val rh = if (highBins > 0) (highE / highBins) * norm else 0f
-
-        // Auto-gain: track peak and normalize so output uses full 0..1 range
-        if (autoGain) {
-            val currentPeak = maxOf(rb, rm, rh)
-            // Slow decay on peak tracker so it doesn't jump around
-            peakEnergy = maxOf(peakEnergy * 0.993f, currentPeak, 0.01f)  // faster peak decay = adapts to volume
-            val gainFactor = 1f / peakEnergy
-            rawBass = (rb * gainFactor).coerceAtMost(1.5f)
-            rawMid = (rm * gainFactor).coerceAtMost(1.5f)
-            rawHigh = (rh * gainFactor).coerceAtMost(1.5f)
-        } else {
-            rawBass = rb; rawMid = rm; rawHigh = rh
+        // Average each display bin
+        for (j in displayBins.indices) {
+            if (displayBinCounts[j] > 0) displayBins[j] /= displayBinCounts[j]
         }
+        spectrumBins = displayBins.copyOf()
+
+        // Band outputs: simple average percentage (0..1), no accumulation
+        rawBass = if (bassBins > 0) (bassE / bassBins).coerceIn(0f, 1f) else 0f
+        rawMid = if (midBins > 0) (midE / midBins).coerceIn(0f, 1f) else 0f
+        rawHigh = if (highBins > 0) (highE / highBins).coerceIn(0f, 1f) else 0f
     }
 
     /**
-     * Call once per frame on the render thread (~72fps).
-     * Writes raw values into delay buffer, reads delayed values,
-     * applies per-band envelope + falloff + output mode + floor/ceiling.
+     * Call once per frame. NO accumulation — just passes through the
+     * current percentage with minimal smoothing to avoid flicker.
      */
     fun update() {
         if (!enabled) {
@@ -219,15 +232,18 @@ class AudioReactor {
             return
         }
 
-        // Simple envelope: fast attack, slow decay on raw FFT values
-        val rb = rawBass.coerceAtMost(1f)
-        val rm = rawMid.coerceAtMost(1f)
-        val rh = rawHigh.coerceAtMost(1f)
+        // Light smoothing only (not envelope!) — just removes single-frame noise
+        val smooth = 0.3f  // 0=instant, 1=no change. 0.3 = slight smoothing
+        bass = bass * smooth + rawBass * (1f - smooth)
+        mid = mid * smooth + rawMid * (1f - smooth)
+        high = high * smooth + rawHigh * (1f - smooth)
 
-        // Fast attack (0.4), slow decay (0.08) — simple and reliable
-        bass = if (rb > bass) bass + (rb - bass) * 0.4f else bass + (rb - bass) * 0.08f
-        mid = if (rm > mid) mid + (rm - mid) * 0.4f else mid + (rm - mid) * 0.08f
-        high = if (rh > high) high + (rh - high) * 0.35f else high + (rh - high) * 0.1f
+        // Apply threshold — below this, output is zero
+        val thresh = bassConfig.gateThreshold
+        if (bass < thresh) bass = 0f
+        if (mid < thresh) mid = 0f
+        if (high < thresh) high = 0f
+
         overall = bass * 0.5f + mid * 0.3f + high * 0.2f
     }
 
