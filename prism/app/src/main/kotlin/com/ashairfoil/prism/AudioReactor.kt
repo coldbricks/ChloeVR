@@ -206,10 +206,11 @@ class AudioReactor {
             }
         }
 
-        // Clamp display bins to 0..1 for rendering
+        // Store raw bin values UNCLAMPED — fill calc needs values above 1.0
+        // to reach 100% fill with tight boxes. Display will clamp for rendering.
         val output = FloatArray(DISPLAY_BINS)
         for (j in 0 until DISPLAY_BINS) {
-            output[j] = tempBinMax[j].coerceIn(0f, 1f)
+            output[j] = tempBinMax[j].coerceAtLeast(0f)
         }
         spectrumBins = output
 
