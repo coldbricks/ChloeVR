@@ -37,7 +37,7 @@ class AudioReactor {
 
     // ── Global config ──
     @Volatile var enabled = false
-    @Volatile var sensitivity = 1.5f       // global gain multiplier
+    @Volatile var sensitivity = 0.8f       // global gain — lower = more headroom for dynamics
 
     // ── Per-band configuration (BeatReactor-style) ──
     data class BandConfig(
@@ -71,9 +71,9 @@ class AudioReactor {
         SUSTAIN          // hold peak value for falloffTime, then drop
     }
 
-    val bassConfig = BandConfig(freqLow = 20f, freqHigh = 150f, attack = 0.5f, decay = 0.06f)
-    val midConfig = BandConfig(freqLow = 150f, freqHigh = 2000f, attack = 0.4f, decay = 0.1f)
-    val highConfig = BandConfig(freqLow = 2000f, freqHigh = 8000f, attack = 0.35f, decay = 0.12f)
+    val bassConfig = BandConfig(freqLow = 20f, freqHigh = 150f, attack = 0.6f, decay = 0.25f)
+    val midConfig = BandConfig(freqLow = 150f, freqHigh = 2000f, attack = 0.5f, decay = 0.3f)
+    val highConfig = BandConfig(freqLow = 2000f, freqHigh = 8000f, attack = 0.45f, decay = 0.35f)
 
     // ── Internal state ──
     private var visualizer: Visualizer? = null
@@ -198,7 +198,7 @@ class AudioReactor {
         if (autoGain) {
             val currentPeak = maxOf(rb, rm, rh)
             // Slow decay on peak tracker so it doesn't jump around
-            peakEnergy = maxOf(peakEnergy * 0.998f, currentPeak, 0.01f)
+            peakEnergy = maxOf(peakEnergy * 0.993f, currentPeak, 0.01f)  // faster peak decay = adapts to volume
             val gainFactor = 1f / peakEnergy
             rawBass = (rb * gainFactor).coerceAtMost(1.5f)
             rawMid = (rm * gainFactor).coerceAtMost(1.5f)
