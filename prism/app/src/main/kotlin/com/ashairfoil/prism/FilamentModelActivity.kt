@@ -210,6 +210,8 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var beatReactorEnabled = false
     @Volatile private var beatIntensity = 0.5f  // how strongly beats affect lighting (0..1)
     @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
+    private var beatToggleLatch = false
+    private var foveationToggleLatch = false
 
     // Auto-floor: lock grid to detected XR floor plane
     @Volatile private var autoFloorEnabled = true
@@ -1514,7 +1516,7 @@ class FilamentModelActivity : ComponentActivity() {
                         gpuModel?.exposure = model.exposure
                     }
                     3 -> if (model != null) {
-                        model.contrast = (model.contrast + delta).coerceIn(0.6f, 1.6f)
+                        model.contrast = (model.contrast + delta * 0.5f).coerceIn(0.7f, 1.5f)
                         gpuModel?.contrast = model.contrast
                     }
                     4 -> if (model != null) {
@@ -1541,8 +1543,9 @@ class FilamentModelActivity : ComponentActivity() {
                     11 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
                     12 -> renderer.shadowSpread = (renderer.shadowSpread + delta * 10f).coerceIn(2f, 30f)
                     13 -> {
-                        // BeatReactor toggle (any stick movement toggles)
-                        if (kotlin.math.abs(rightThumbY) > 0.5f) {
+                        // BeatReactor toggle (one-shot on stick push past threshold)
+                        if (!beatToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                            beatToggleLatch = true
                             beatReactorEnabled = !beatReactorEnabled
                             val reactor = audioReactor
                             if (beatReactorEnabled && reactor != null) {
@@ -1552,11 +1555,13 @@ class FilamentModelActivity : ComponentActivity() {
                                 reactor?.enabled = false
                             }
                         }
+                        if (kotlin.math.abs(rightThumbY) < 0.3f) beatToggleLatch = false
                     }
                     14 -> beatIntensity = (beatIntensity + delta * 2f).coerceIn(0f, 2f)
                     15 -> {
-                        // Foveation level toggle (0=off, 1=low, 2=med, 3=high)
-                        if (kotlin.math.abs(rightThumbY) > 0.5f) {
+                        // Foveation level toggle (one-shot)
+                        if (!foveationToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                            foveationToggleLatch = true
                             foveationLevel = if (rightThumbY > 0) {
                                 (foveationLevel + 1).coerceAtMost(3)
                             } else {
@@ -1564,6 +1569,7 @@ class FilamentModelActivity : ComponentActivity() {
                             }
                             nativeSetFoveationLevel(foveationLevel)
                         }
+                        if (kotlin.math.abs(rightThumbY) < 0.3f) foveationToggleLatch = false
                     }
                 }
                 uiNeedsRefresh = true

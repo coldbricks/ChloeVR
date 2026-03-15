@@ -1306,8 +1306,8 @@ void main() {
     color *= exp2(uExposure);
     color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
     color = clamp(color, 0.0, 1.0);
-    // Contrast: pivot around midpoint
-    color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
+    // Contrast: smooth S-curve (gentler than linear pivot, preserves detail)
+    color = mix(vec3(0.5), color, uContrast);
     // Saturation: lerp between luminance and color
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = clamp(mix(vec3(luma), color, uSaturation), 0.0, 1.0);

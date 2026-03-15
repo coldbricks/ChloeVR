@@ -156,10 +156,12 @@ typedef enum XrPassthroughCameraStateValueANDROID {
 
 #define XR_ANDROID_TRACKABLES_EXTENSION_NAME "XR_ANDROID_trackables"
 
-#define XR_TYPE_TRACKABLE_TRACKER_CREATE_INFO_ANDROID   ((XrStructureType)1000455000)
-#define XR_TYPE_ALL_TRACKABLES_GET_INFO_ANDROID         ((XrStructureType)1000455001)
-#define XR_TYPE_TRACKABLE_GET_INFO_ANDROID              ((XrStructureType)1000455002)
+// Values from Khronos registry (NOT the Android docs — those were wrong)
+#define XR_TYPE_TRACKABLE_GET_INFO_ANDROID              ((XrStructureType)1000455000)
 #define XR_TYPE_TRACKABLE_PLANE_ANDROID                 ((XrStructureType)1000455003)
+#define XR_TYPE_TRACKABLE_TRACKER_CREATE_INFO_ANDROID   ((XrStructureType)1000455004)
+// Not in registry — try the next sequential value
+#define XR_TYPE_ALL_TRACKABLES_GET_INFO_ANDROID         ((XrStructureType)1000455001)
 
 XR_DEFINE_ATOM(XrTrackableANDROID)
 
