@@ -160,7 +160,8 @@ class FilamentModelActivity : ComponentActivity() {
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Beat Intensity", "Foveation")
+        "BeatReactor", "Beat Gain", "Beat Attack", "Beat Decay",
+        "Bass Lo Hz", "Bass Hi Hz", "Foveation")
     private var lastXState = false
     private var lastRightStickClick = false
     private var uiNeedsRefresh = false
@@ -208,7 +209,13 @@ class FilamentModelActivity : ComponentActivity() {
     // Audio-reactive lighting (BeatReactor)
     private var audioReactor: AudioReactor? = null
     @Volatile private var beatReactorEnabled = false
-    @Volatile private var beatIntensity = 1.5f  // how strongly beats affect lighting — start high so effect is obvious
+    @Volatile private var beatIntensity = 1.0f
+    // Base values captured when BeatReactor turns on — beat modulates FROM these
+    private var beatBaseStored = false
+    private var beatBaseAmbient = 1f
+    private var beatBaseLight = 2f
+    private var beatBaseFill = 0.5f
+    private var beatBaseShadow = 0.7f
     @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     private var beatToggleLatch = false
     private var foveationToggleLatch = false
@@ -703,50 +710,69 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             // ── BeatReactor: audio-reactive lighting ──
+                            // Like BCC BeatReactor: each band maps to a RANGE on a parameter
+                            // Base value is preserved, beat oscillates between base and base+range
                             val reactor = audioReactor
                             if (reactor != null && beatReactorEnabled) {
                                 reactor.update()
-                                // Refresh menu every ~10 frames to show live B/M/H values
-                                if (menuVisible && sensorPollFrame % 10 == 0) {
-                                    uiNeedsRefresh = true
-                                }
+                                if (menuVisible && sensorPollFrame % 10 == 0) uiNeedsRefresh = true
+
                                 val bi = beatIntensity
+                                val b = reactor.bass   // 0..1
+                                val m = reactor.mid    // 0..1
+                                val h = reactor.high   // 0..1
 
-                                // Bass: ambient pulse + shadow deepen + warm color push
-                                val b = reactor.bass * bi
-                                gr.ambientIntensity += b * 2f
-                                gr.shadowDarkness = (gr.shadowDarkness + b * 0.4f).coerceAtMost(1f)
+                                // Store base values on first beat frame (so we modulate FROM them)
+                                if (!beatBaseStored) {
+                                    beatBaseAmbient = gr.ambientIntensity
+                                    beatBaseLight = gr.lightIntensity
+                                    beatBaseFill = gr.fillLightIntensity
+                                    beatBaseShadow = gr.shadowDarkness
+                                    beatBaseStored = true
+                                }
 
-                                // Mid: main light intensity pulse
-                                val m = reactor.mid * bi
-                                gr.lightIntensity += m * 3f
+                                // Ambient: bass drives between base and base+range
+                                // Range scales with beatIntensity (bi)
+                                gr.ambientIntensity = beatBaseAmbient + b * bi * 0.8f
 
-                                // High: fill light sparkle
-                                val h = reactor.high * bi
-                                gr.fillLightIntensity += h * 2f
+                                // Main light: mid band drives it
+                                gr.lightIntensity = beatBaseLight + m * bi * 1.2f
 
-                                // Color cycling — dance club vibe
-                                // Bass → red/pink, mid → green/teal, high → blue/purple
+                                // Fill light: high frequencies add sparkle
+                                gr.fillLightIntensity = beatBaseFill + h * bi * 0.6f
+
+                                // Shadow: bass deepens shadows on the beat (tight range)
+                                gr.shadowDarkness = (beatBaseShadow + b * bi * 0.15f).coerceAtMost(1f)
+
+                                // Color: subtle warm shift on bass, cool on highs
+                                // Modulate the existing color, don't replace it
+                                val baseR = gr.ambientColor[0]
+                                val baseG = gr.ambientColor[1]
+                                val baseB = gr.ambientColor[2]
                                 gr.ambientColor = floatArrayOf(
-                                    (gr.ambientColor[0] + b * 0.6f).coerceAtMost(2.5f),
-                                    (gr.ambientColor[1] + m * 0.3f).coerceAtMost(2f),
-                                    (gr.ambientColor[2] + h * 0.5f).coerceAtMost(2.5f)
+                                    baseR + b * bi * 0.15f,   // bass warms red
+                                    baseG + m * bi * 0.08f,   // mid tints green
+                                    baseB + h * bi * 0.12f    // high cools blue
                                 )
 
-                                // Light color shifts warm on bass, cool on high
-                                gr.lightColor = floatArrayOf(
-                                    (gr.lightColor[0] + b * 0.4f).coerceAtMost(2f),
-                                    gr.lightColor[1],
-                                    (gr.lightColor[2] + h * 0.3f).coerceAtMost(2f)
-                                )
-
-                                // Per-model exposure pulse (models glow with the beat)
-                                val beatExposure = (b * 0.8f + m * 0.3f)
+                                // Per-model exposure: gentle pulse (not blinding)
+                                val beatExp = b * bi * 0.3f
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
-                                        gpuModel.exposure = placed.exposure + beatExposure
+                                        gpuModel.exposure = placed.exposure + beatExp
                                     }
+                                }
+                            } else if (beatBaseStored) {
+                                // Reactor turned off — restore base values
+                                gr.ambientIntensity = beatBaseAmbient
+                                gr.lightIntensity = beatBaseLight
+                                gr.fillLightIntensity = beatBaseFill
+                                gr.shadowDarkness = beatBaseShadow
+                                beatBaseStored = false
+                                for (placed in models) {
+                                    val gpuModel = gr.getModel(placed.gpuModelId)
+                                    if (gpuModel != null) gpuModel.exposure = placed.exposure
                                 }
                             }
 
@@ -1096,8 +1122,8 @@ class FilamentModelActivity : ComponentActivity() {
                                     else hoveredActionButton = 102                 // EXIT
                                 }
 
-                                // Param rows: ~195..790 in bitmap Y (16 params at 36px)
-                                if (by in 195f..790f) {
+                                // Param rows: ~195..775 in bitmap Y (20 params at 29px)
+                                if (by in 195f..775f) {
                                     val frac = (by - 195f) / (770f - 195f)
                                     val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
                                     hoveredMenuParam = idx
@@ -1349,7 +1375,7 @@ class FilamentModelActivity : ComponentActivity() {
                         reactor?.enabled = false
                         Log.i(TAG, "BeatReactor OFF")
                     }
-                } else if (hoveredMenuParam == 15) {
+                } else if (hoveredMenuParam == 19) {
                     foveationLevel = (foveationLevel + 1) % 4
                     nativeSetFoveationLevel(foveationLevel)
                     Log.i(TAG, "Foveation: $foveationLevel")
@@ -1578,8 +1604,41 @@ class FilamentModelActivity : ComponentActivity() {
                         }
                         if (kotlin.math.abs(rightThumbY) < 0.3f) beatToggleLatch = false
                     }
-                    14 -> beatIntensity = (beatIntensity + delta * 2f).coerceIn(0f, 2f)
+                    14 -> {
+                        // Beat Gain (sensitivity)
+                        val r = audioReactor
+                        if (r != null) r.sensitivity = (r.sensitivity + delta * 3f).coerceIn(0.2f, 5f)
+                        beatIntensity = (beatIntensity + delta * 2f).coerceIn(0.1f, 3f)
+                    }
                     15 -> {
+                        // Attack speed
+                        val r = audioReactor
+                        if (r != null) {
+                            r.bassConfig.attack = (r.bassConfig.attack + delta).coerceIn(0.05f, 0.9f)
+                            r.midConfig.attack = (r.midConfig.attack + delta).coerceIn(0.05f, 0.9f)
+                            r.highConfig.attack = (r.highConfig.attack + delta).coerceIn(0.05f, 0.9f)
+                        }
+                    }
+                    16 -> {
+                        // Decay speed
+                        val r = audioReactor
+                        if (r != null) {
+                            r.bassConfig.decay = (r.bassConfig.decay + delta * 0.5f).coerceIn(0.01f, 0.5f)
+                            r.midConfig.decay = (r.midConfig.decay + delta * 0.5f).coerceIn(0.01f, 0.5f)
+                            r.highConfig.decay = (r.highConfig.decay + delta * 0.5f).coerceIn(0.01f, 0.5f)
+                        }
+                    }
+                    17 -> {
+                        // Bass low frequency cutoff
+                        val r = audioReactor
+                        if (r != null) r.bassConfig.freqLow = (r.bassConfig.freqLow + delta * 500f).coerceIn(10f, 100f)
+                    }
+                    18 -> {
+                        // Bass high frequency cutoff
+                        val r = audioReactor
+                        if (r != null) r.bassConfig.freqHigh = (r.bassConfig.freqHigh + delta * 1000f).coerceIn(60f, 500f)
+                    }
+                    19 -> {
                         // Foveation level toggle (one-shot)
                         if (!foveationToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
                             foveationToggleLatch = true
@@ -1617,8 +1676,12 @@ class FilamentModelActivity : ComponentActivity() {
                         beatReactorEnabled = false
                         audioReactor?.enabled = false
                     }
-                    14 -> beatIntensity = 0.5f
-                    15 -> { foveationLevel = 0; nativeSetFoveationLevel(0) }
+                    14 -> { beatIntensity = 1f; audioReactor?.sensitivity = 1.5f }
+                    15 -> { audioReactor?.let { it.bassConfig.attack = 0.4f; it.midConfig.attack = 0.4f; it.highConfig.attack = 0.35f } }
+                    16 -> { audioReactor?.let { it.bassConfig.decay = 0.08f; it.midConfig.decay = 0.1f; it.highConfig.decay = 0.12f } }
+                    17 -> { audioReactor?.bassConfig?.freqLow = 20f }
+                    18 -> { audioReactor?.bassConfig?.freqHigh = 150f }
+                    19 -> { foveationLevel = 0; nativeSetFoveationLevel(0) }
                 }
                 uiNeedsRefresh = true
             }
@@ -2210,17 +2273,21 @@ class FilamentModelActivity : ComponentActivity() {
                 val r = audioReactor
                 if (r != null) "ON ${r.statusString()}" else "ON"
             } else "OFF",
-            "Beat Intensity" to "%.0f%%".format(beatIntensity * 100),
+            "Beat Gain" to "%.1fx / %.0f%%".format(audioReactor?.sensitivity ?: 1.5f, beatIntensity * 100),
+            "Attack" to "%.0f%%".format((audioReactor?.bassConfig?.attack ?: 0.4f) * 100),
+            "Decay" to "%.0f%%".format((audioReactor?.bassConfig?.decay ?: 0.08f) * 100),
+            "Bass Lo" to "%.0f Hz".format(audioReactor?.bassConfig?.freqLow ?: 20f),
+            "Bass Hi" to "%.0f Hz".format(audioReactor?.bassConfig?.freqHigh ?: 150f),
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
         )
 
-        val rowH = 36f  // 16 params must fit above buttons
-        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt() }
+        val rowH = 29f  // 20 params must fit above buttons
+        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFFF3F4F6.toInt() }
         val highlight = android.graphics.Paint().apply {
-            isAntiAlias = true; textSize = 32f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+            isAntiAlias = true; textSize = 28f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
         }
-        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF3A3A42.toInt() }
-        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFF9CA3AF.toInt() }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFF3A3A42.toInt() }
+        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFF9CA3AF.toInt() }
         val hoverBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
         val selectedBg = android.graphics.Paint().apply { color = 0x3030D8D0.toInt() }
         val selectedBar = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
