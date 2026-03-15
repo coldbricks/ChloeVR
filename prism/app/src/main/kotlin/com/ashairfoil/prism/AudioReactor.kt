@@ -43,7 +43,7 @@ class AudioReactor {
     @Volatile var boxTop = 0.85f
 
     // ── Roll-off mode ──
-    enum class Rolloff { INSTANT, HARD_KNEE, SOFT_KNEE }
+    enum class Rolloff { INSTANT, HARD_KNEE, SOFT_KNEE, THROB }
     @Volatile var rolloff = Rolloff.SOFT_KNEE
 
     // ── Dynamics ──
@@ -61,9 +61,10 @@ class AudioReactor {
     @Volatile var specViewCenter = 0.5f
     private var prevFillPct = 0f
 
-    // Hard knee state
+    // Hard knee / throb state
     private var hardKneeTimer = 0f
     private var hardKneeTriggered = false
+    private var throbLocked = false  // true = in decay cycle, cannot retrigger
 
     // Anti-dropout: track when FFT last fired
     @Volatile private var fftFrameStamp = 0
@@ -253,32 +254,51 @@ class AudioReactor {
         val atkAlpha = (1f - kotlin.math.exp(-dt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
         val relAlpha = (1f - kotlin.math.exp(-dt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
 
-        // Attack: snap up fast when signal exceeds current output
-        if (rawFill > smoothedOutput) {
-            smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
-            hardKneeTriggered = true
-            hardKneeTimer = 0f
+        if (rolloff == Rolloff.THROB) {
+            // THROB: one-shot burst. Trigger fires, runs FULL decay cycle,
+            // cannot retrigger until cycle is complete.
+            if (!throbLocked && rawFill > threshold) {
+                // Trigger! Start the burst
+                smoothedOutput = 1f
+                throbLocked = true
+                hardKneeTimer = 0f
+            }
+            if (throbLocked) {
+                // In decay cycle — count down, ignore all input
+                hardKneeTimer += dt
+                val releaseSec = releaseMs / 1000f
+                val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
+                smoothedOutput = 1f - progress  // linear ramp down
+                if (progress >= 1f) {
+                    smoothedOutput = 0f
+                    throbLocked = false  // cycle complete, can retrigger
+                }
+            }
         } else {
-            // Roll-off: how the output decays after the beat
-            when (rolloff) {
-                Rolloff.INSTANT -> {
-                    // Binary: above threshold = on, below = off, no decay
-                    smoothedOutput = if (rawFill > threshold) rawFill else 0f
-                }
-                Rolloff.HARD_KNEE -> {
-                    // Linear decay from peak over releaseMs
-                    // Straight line from current to 0 over the release time
-                    if (hardKneeTriggered) {
-                        hardKneeTimer += dt
-                        val releaseSec = releaseMs / 1000f
-                        val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
-                        smoothedOutput = smoothedOutput * (1f - progress)
-                        if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
+            throbLocked = false
+            // Attack: snap up fast when signal exceeds current output
+            if (rawFill > smoothedOutput) {
+                smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
+                hardKneeTriggered = true
+                hardKneeTimer = 0f
+            } else {
+                when (rolloff) {
+                    Rolloff.INSTANT -> {
+                        smoothedOutput = if (rawFill > threshold) rawFill else 0f
                     }
-                }
-                Rolloff.SOFT_KNEE -> {
-                    // Exponential decay (smooth, musical)
-                    smoothedOutput += (rawFill - smoothedOutput) * relAlpha
+                    Rolloff.HARD_KNEE -> {
+                        if (hardKneeTriggered) {
+                            hardKneeTimer += dt
+                            val releaseSec = releaseMs / 1000f
+                            val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
+                            smoothedOutput = smoothedOutput * (1f - progress)
+                            if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
+                        }
+                    }
+                    Rolloff.SOFT_KNEE -> {
+                        smoothedOutput += (rawFill - smoothedOutput) * relAlpha
+                    }
+                    else -> {}
                 }
             }
         }
@@ -323,7 +343,7 @@ class AudioReactor {
     /** Status string for the main menu HUD */
     fun statusString(): String {
         if (!enabled) return "OFF"
-        val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT" }
+        val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT"; Rolloff.THROB -> "THR" }
         return "$modeStr %.0f%%".format(boxFillPct * 100)
     }
 }

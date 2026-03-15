@@ -1116,10 +1116,11 @@ class FilamentModelActivity : ComponentActivity() {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
-                                    // Mode selector buttons
-                                    if (bx in 350f..500f) hoveredActionButton = 113 // SMOOTH
-                                    else if (bx in 510f..660f) hoveredActionButton = 114 // STROBE
-                                    else if (bx in 670f..820f) hoveredActionButton = 115 // PULSE
+                                    // Mode selector buttons (4 modes)
+                                    if (bx in 300f..420f) hoveredActionButton = 113
+                                    else if (bx in 430f..550f) hoveredActionButton = 114
+                                    else if (bx in 560f..680f) hoveredActionButton = 115
+                                    else if (bx in 690f..810f) hoveredActionButton = 116
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
                                     // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
@@ -1376,6 +1377,9 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 115) {
                 audioReactor?.rolloff = AudioReactor.Rolloff.SOFT_KNEE
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 116) {
+                audioReactor?.rolloff = AudioReactor.Rolloff.THROB
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 111) {
                 beatSettingsMode = false
@@ -2089,14 +2093,14 @@ class FilamentModelActivity : ComponentActivity() {
 
             // Roll-off mode buttons
             val curMode = reactor?.rolloff ?: AudioReactor.Rolloff.SOFT_KNEE
-            val modes = arrayOf("INSTANT" to AudioReactor.Rolloff.INSTANT, "HARD KNEE" to AudioReactor.Rolloff.HARD_KNEE, "SOFT KNEE" to AudioReactor.Rolloff.SOFT_KNEE)
-            val modeHoverIds = arrayOf(113, 114, 115)
-            var mx = 350f
+            val modes = arrayOf("INSTANT" to AudioReactor.Rolloff.INSTANT, "HARD" to AudioReactor.Rolloff.HARD_KNEE, "SOFT" to AudioReactor.Rolloff.SOFT_KNEE, "THROB" to AudioReactor.Rolloff.THROB)
+            val modeHoverIds = arrayOf(113, 114, 115, 116)
+            var mx = 300f
             for ((mi, pair) in modes.withIndex()) {
                 val (label, modeVal) = pair
                 val isActive = curMode == modeVal
                 val isHover = hoveredActionButton == modeHoverIds[mi]
-                val mw = 145f
+                val mw = 120f
                 p.color = when {
                     isActive -> 0xFFEC4899.toInt()
                     isHover -> 0x60EC4899.toInt()
