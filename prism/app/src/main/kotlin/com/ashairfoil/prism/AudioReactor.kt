@@ -285,12 +285,15 @@ class AudioReactor {
             }
         }
 
-        // Dynamic range EXPANDER: pow(value, ratio)
-        // ratio > 1 = expand (quiet quieter, loud louder — MORE dramatic)
-        // ratio < 1 = compress (less dramatic)
-        // ratio = 1 = linear (no change)
-        val scaled = if (smoothedOutput > 0f && dynRange > 0f) {
-            Math.pow(smoothedOutput.toDouble(), dynRange.toDouble()).toFloat() * trim
+        // Dynamic range EXPANDER
+        // Maps dynRange slider (0.3..4) to a gentler exponent:
+        // dynRange=1 → exponent=1.0 (linear, no change)
+        // dynRange=2 → exponent=1.3 (moderate expansion)
+        // dynRange=4 → exponent=1.9 (heavy expansion)
+        // dynRange=0.3 → exponent=0.79 (compression)
+        val exponent = 1.0 + (dynRange.toDouble() - 1.0) * 0.3
+        val scaled = if (smoothedOutput > 0f) {
+            Math.pow(smoothedOutput.toDouble(), exponent).toFloat() * trim
         } else { 0f }
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)

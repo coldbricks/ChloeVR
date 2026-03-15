@@ -600,7 +600,7 @@ class FilamentModelActivity : ComponentActivity() {
             { audioReactor?.dynRange ?: 2f }, { audioReactor?.dynRange = it }),
         BeatSlider("SMOOTH", "%", 0f, 100f,
             { (audioReactor?.smootherAmount ?: 0.3f) * 100f }, { audioReactor?.smootherAmount = it / 100f }),
-        BeatSlider("ZOOM", "x", 0.5f, 5f,
+        BeatSlider("H-ZOOM", "x", 1f, 8f,
             { audioReactor?.specZoom ?: 1f }, { audioReactor?.specZoom = it }),
         BeatSlider("COLOR", "\u00B0", 0f, 360f,
             { audioReactor?.beatHue ?: 330f }, { audioReactor?.beatHue = it }),
@@ -1122,7 +1122,14 @@ class FilamentModelActivity : ComponentActivity() {
                                     // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
                                     if (reactor != null) {
-                                        val normX = ((bx - specLeftHit) / (specRightHit - specLeftHit)).coerceIn(0f, 1f)
+                                        // Map screen position to spectrum coordinates (accounting for zoom)
+                                        val screenNormX = ((bx - specLeftHit) / (specRightHit - specLeftHit)).coerceIn(0f, 1f)
+                                        val hz = reactor.specZoom.coerceAtLeast(1f)
+                                        val boxCtr = (reactor.boxLeft + reactor.boxRight) / 2f
+                                        val hRange = 0.5f / hz
+                                        val vL = (boxCtr - hRange).coerceIn(0f, 1f - 1f / hz)
+                                        val vR = (vL + 1f / hz).coerceAtMost(1f)
+                                        val normX = vL + screenNormX * (vR - vL)  // map to actual spectrum position
                                         val normY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f) // flip: top=1, bot=0
 
                                         if (rightTrigger > 0.5f) {
@@ -2127,20 +2134,27 @@ class FilamentModelActivity : ComponentActivity() {
             canvas.drawText("50%", specLeft + 2f, specBot - 0.5f * specH - 2f, p)
             canvas.drawText("75%", specLeft + 2f, specBot - 0.75f * specH - 2f, p)
 
-            // Spectrum bars — FULL 64-bin display (20Hz-20kHz)
+            // Spectrum bars — horizontal zoom centered on box
             val bins = reactor?.spectrumBins ?: FloatArray(64)
             val specW = specRight - specLeft
-            val barCount = 64
-            val barW = specW / barCount - 1f
-            for (i in 0 until barCount) {
-                    val barX = specLeft + i * (barW + 1f)
-                    val zoom = reactor?.specZoom ?: 1f
-                    val level = (bins[i] * zoom).coerceIn(0f, 1f)
+            val hZoom = reactor?.specZoom ?: 1f
+            val boxCenter = ((reactor?.boxLeft ?: 0f) + (reactor?.boxRight ?: 0.35f)) / 2f
+            val halfRange = 0.5f / hZoom
+            val visLeft = (boxCenter - halfRange).coerceIn(0f, 1f - 1f / hZoom.coerceAtLeast(1f))
+            val visRight = (visLeft + 1f / hZoom.coerceAtLeast(1f)).coerceAtMost(1f)
+            val visLeftBin = (visLeft * 64).toInt().coerceIn(0, 63)
+            val visRightBin = (visRight * 64).toInt().coerceIn(visLeftBin + 1, 64)
+            val visBinCount = visRightBin - visLeftBin
+            val barW = specW / visBinCount - 1f
+            for (vi in 0 until visBinCount) {
+                    val i = visLeftBin + vi
+                    val barX = specLeft + vi * (barW + 1f)
+                    val level = bins[i].coerceIn(0f, 1f)
                     if (level < 0.005f) continue
                     val barH = level * specH
 
                     // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
-                    val frac = i.toFloat() / barCount
+                    val frac = i.toFloat() / 64f
                     val cr: Int; val cg: Int; val cb: Int
                     if (frac < 0.3f) {
                         // Bass: hot pink
@@ -2176,10 +2190,11 @@ class FilamentModelActivity : ComponentActivity() {
                     }
                 }
 
-            // Bounding box — full view with all 4 edges
+            // Bounding box — mapped to visible range
             if (reactor != null) {
-                val bxL = specLeft + reactor.boxLeft * specW
-                val bxR = specLeft + reactor.boxRight * specW
+                val visRange = visRight - visLeft
+                val bxL = specLeft + ((reactor.boxLeft - visLeft) / visRange).coerceIn(0f, 1f) * specW
+                val bxR = specLeft + ((reactor.boxRight - visLeft) / visRange).coerceIn(0f, 1f) * specW
                 val bxT = specBot - reactor.boxTop * specH
                 val bxB = specBot - reactor.boxBottom * specH
 
@@ -2246,13 +2261,19 @@ class FilamentModelActivity : ComponentActivity() {
                 p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
             }
 
-            // Frequency labels (fixed, full range)
+            // Frequency labels (mapped to visible range)
             p.color = 0xFF6B7280.toInt(); p.textSize = 16f
             p.textAlign = android.graphics.Paint.Align.LEFT
-            canvas.drawText("20", specLeft, specBot + 16f, p)
-            canvas.drawText("100", specLeft + specW * 0.25f, specBot + 16f, p)
-            canvas.drawText("1k", specLeft + specW * 0.55f, specBot + 16f, p)
-            canvas.drawText("10k", specLeft + specW * 0.85f, specBot + 16f, p)
+            fun binToHz(norm: Float): String {
+                val hz = 20f * Math.pow(1000.0, norm.toDouble()).toFloat()
+                return if (hz >= 1000f) "%.1fk".format(hz / 1000f) else "%.0f".format(hz)
+            }
+            canvas.drawText(binToHz(visLeft), specLeft, specBot + 16f, p)
+            canvas.drawText(binToHz(visLeft + (visRight - visLeft) * 0.33f), specLeft + specW * 0.33f, specBot + 16f, p)
+            canvas.drawText(binToHz(visLeft + (visRight - visLeft) * 0.66f), specLeft + specW * 0.66f, specBot + 16f, p)
+            p.textAlign = android.graphics.Paint.Align.RIGHT
+            canvas.drawText(binToHz(visRight), specRight, specBot + 16f, p)
+            p.textAlign = android.graphics.Paint.Align.LEFT
             p.textAlign = android.graphics.Paint.Align.LEFT
 
             // ── SLIDERS (below spectrum) ──
