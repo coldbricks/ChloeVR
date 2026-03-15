@@ -96,6 +96,10 @@ class GlesModelRenderer {
     private var gizmoEbo = 0
     private val gizmoIndicesPerAxis = 12
 
+    // Color wash (fullscreen tint overlay)
+    private var washProgramId = 0
+    private var washVao = 0
+
     // Shadow plane resources
     private var shadowPlaneProgramId = 0
     private var spVao = 0
@@ -192,6 +196,15 @@ class GlesModelRenderer {
         shadowDepthProgramId = createProgram(SHADOW_VERTEX_SHADER, SHADOW_FRAGMENT_SHADER)
         if (shadowDepthProgramId == 0) { Log.e(TAG, "Failed to create shadow shader"); return false }
         initShadowMap()
+
+        // Color wash overlay
+        washProgramId = createProgram(WASH_VERTEX_SHADER, WASH_FRAGMENT_SHADER)
+        if (washProgramId != 0) {
+            val vaoBuf = intArrayOf(0)
+            GLES30.glGenVertexArrays(1, vaoBuf, 0)
+            washVao = vaoBuf[0]
+            Log.i(TAG, "Color wash shader ready")
+        }
 
         // Laser
         laserProgramId = createProgram(LASER_VERTEX_SHADER, LASER_FRAGMENT_SHADER)
@@ -767,6 +780,23 @@ class GlesModelRenderer {
     }
 
     // ── Shadow Planes ──
+
+    /** Render a fullscreen color wash — tints EVERYTHING including passthrough */
+    fun renderColorWash(r: Float, g: Float, b: Float, a: Float) {
+        if (a < 0.005f || washProgramId == 0) return
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDepthMask(false)
+        GLES30.glUseProgram(washProgramId)
+        GLES30.glUniform4f(GLES30.glGetUniformLocation(washProgramId, "uColor"), r, g, b, a)
+        GLES30.glBindVertexArray(washVao)
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)  // fullscreen triangle
+        GLES30.glBindVertexArray(0)
+        GLES30.glDepthMask(true)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
 
     fun renderShadowPlanes(projection: FloatArray, viewMatrix: FloatArray) {
         if (!initialized || shadowPlaneProgramId == 0 || shadowPlanes.isEmpty() || !shadowEnabled) return
@@ -1493,5 +1523,26 @@ void main() {
 
     // Pure black shadow over passthrough - the most realistic approach for AR
     fragColor = vec4(0.0, 0.0, 0.0, a);
+}
+"""
+
+// Fullscreen color wash — tints everything including passthrough
+private const val WASH_VERTEX_SHADER = """#version 300 es
+void main() {
+    // Fullscreen triangle: 3 vertices cover the entire NDC quad
+    vec2 pos;
+    if (gl_VertexID == 0) pos = vec2(-1.0, -1.0);
+    else if (gl_VertexID == 1) pos = vec2(3.0, -1.0);
+    else pos = vec2(-1.0, 3.0);
+    gl_Position = vec4(pos, 0.0, 1.0);
+}
+"""
+
+private const val WASH_FRAGMENT_SHADER = """#version 300 es
+precision mediump float;
+uniform vec4 uColor;
+out vec4 fragColor;
+void main() {
+    fragColor = uColor;
 }
 """

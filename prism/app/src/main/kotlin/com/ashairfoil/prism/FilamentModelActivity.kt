@@ -891,8 +891,13 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 laserHandPos, laserAimRot, hitDistance)
+                            // Color wash: tints the ENTIRE view (passthrough + scene)
+                            if (beatReactorEnabled && reactor != null) {
+                                val wc = reactor.getBeatColor()
+                                val wa = reactor.boxFillPct * beatIntensity * 0.35f  // max ~35% tint
+                                gr.renderColorWash(wc[0], wc[1], wc[2], wa)
+                            }
                             gr.finishEyePass()
-                            // Menu rendered via compositor quad layer (stereo-correct)
 
                             // Right eye
                             gr.renderEye(rightTexId, width, height, rightProj, rightView)
@@ -903,6 +908,11 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
                                 laserHandPos, laserAimRot, hitDistance)
+                            if (beatReactorEnabled && reactor != null) {
+                                val wc = reactor.getBeatColor()
+                                val wa = reactor.boxFillPct * beatIntensity * 0.35f
+                                gr.renderColorWash(wc[0], wc[1], wc[2], wa)
+                            }
                             gr.finishEyePass()
                             // Menu rendered via compositor quad layer (stereo-correct)
 
