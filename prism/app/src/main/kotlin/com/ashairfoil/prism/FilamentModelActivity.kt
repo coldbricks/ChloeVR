@@ -287,12 +287,12 @@ class FilamentModelActivity : ComponentActivity() {
             }
             Log.i(TAG, "OpenXR renderer initialized")
 
-            // Enable foveated rendering if available
-            if (nativeHasFoveation()) {
-                nativeSetFoveationLevel(2) // medium by default
-                foveationLevel = 2
-                Log.i(TAG, "Foveated rendering enabled (medium)")
-            }
+            // Foveated rendering disabled for now (investigating crash)
+            // if (nativeHasFoveation()) {
+            //     nativeSetFoveationLevel(2)
+            //     foveationLevel = 2
+            //     Log.i(TAG, "Foveated rendering enabled (medium)")
+            // }
 
             val renderer = GlesModelRenderer()
             if (!renderer.init()) {
