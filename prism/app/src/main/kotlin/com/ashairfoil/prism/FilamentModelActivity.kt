@@ -160,7 +160,7 @@ class FilamentModelActivity : ComponentActivity() {
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Beat Intensity")
+        "BeatReactor", "Beat Intensity", "Foveation")
     private var lastXState = false
     private var lastRightStickClick = false
     private var uiNeedsRefresh = false
@@ -200,6 +200,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var audioReactor: AudioReactor? = null
     @Volatile private var beatReactorEnabled = false
     @Volatile private var beatIntensity = 0.5f  // how strongly beats affect lighting (0..1)
+    @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
 
     // Auto-floor: lock grid to detected XR floor plane
     @Volatile private var autoFloorEnabled = true
@@ -277,6 +278,13 @@ class FilamentModelActivity : ComponentActivity() {
                 return@Thread
             }
             Log.i(TAG, "OpenXR renderer initialized")
+
+            // Enable foveated rendering if available
+            if (nativeHasFoveation()) {
+                nativeSetFoveationLevel(2) // medium by default
+                foveationLevel = 2
+                Log.i(TAG, "Foveated rendering enabled (medium)")
+            }
 
             val renderer = GlesModelRenderer()
             if (!renderer.init()) {
@@ -1441,6 +1449,17 @@ class FilamentModelActivity : ComponentActivity() {
                         }
                     }
                     14 -> beatIntensity = (beatIntensity + delta * 2f).coerceIn(0f, 2f)
+                    15 -> {
+                        // Foveation level toggle (0=off, 1=low, 2=med, 3=high)
+                        if (kotlin.math.abs(rightThumbY) > 0.5f) {
+                            foveationLevel = if (rightThumbY > 0) {
+                                (foveationLevel + 1).coerceAtMost(3)
+                            } else {
+                                (foveationLevel - 1).coerceAtLeast(0)
+                            }
+                            nativeSetFoveationLevel(foveationLevel)
+                        }
+                    }
                 }
                 uiNeedsRefresh = true
             }
@@ -1467,6 +1486,7 @@ class FilamentModelActivity : ComponentActivity() {
                         audioReactor?.enabled = false
                     }
                     14 -> beatIntensity = 0.5f
+                    15 -> { foveationLevel = 0; nativeSetFoveationLevel(0) }
                 }
                 uiNeedsRefresh = true
             }
@@ -1945,6 +1965,7 @@ class FilamentModelActivity : ComponentActivity() {
                 if (r != null) "ON ${r.statusString()}" else "ON"
             } else "OFF",
             "Beat Intensity" to "%.0f%%".format(beatIntensity * 100),
+            "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
         )
 
         val rowH = 42f  // compact rows to fit 15 params
@@ -1995,14 +2016,14 @@ class FilamentModelActivity : ComponentActivity() {
         y += 16f
 
         // ── Controls hint ──
-        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFF58585F.toInt() }
+        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 18f; color = 0xFF58585F.toInt() }
         canvas.drawText("Trigger:Select  Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next", 40f, y, hint)
-        y += 28f
+        y += 22f
         canvas.drawText("Grip:Grab  R-Click:Grid  Menu:Sensors${if (sensorHudVisible) " [ON]" else ""}", 40f, y, hint)
 
         // ── Action buttons (2 rows) ──
         val btnGap = 8f
-        val btnH = 54f
+        val btnH = 48f
 
         fun drawButton(bx1: Float, bx2: Float, by: Float, label: String, hovered: Boolean, normalColor: Int) {
             if (hovered) {
@@ -2032,7 +2053,7 @@ class FilamentModelActivity : ComponentActivity() {
         }
 
         // Row 1: SAVE / LOAD
-        val row1Y = uiH - 190f
+        val row1Y = uiH - 180f
         val btn2W = (uiW - 60f - btnGap) / 2f
         drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
         drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
@@ -2572,4 +2593,7 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativePollPerfMetrics(outData: FloatArray): Boolean
     private external fun nativeGetSensorCapabilities(): Int
     private external fun nativeGetPassthroughState(): Int
+    private external fun nativeHasFoveation(): Boolean
+    private external fun nativeSetFoveationLevel(level: Int)
+    private external fun nativeGetFoveationLevel(): Int
 }

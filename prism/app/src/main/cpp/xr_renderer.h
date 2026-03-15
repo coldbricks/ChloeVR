@@ -144,6 +144,9 @@ public:
     bool hasRefreshRateControl() const { return refreshRateSupported_; }
     bool hasPerfMetrics() const { return perfMetricsSupported_; }
     bool hasPassthroughState() const { return passthroughStateSupported_; }
+    bool hasFoveation() const { return foveationSupported_; }
+    void setFoveationLevel(int level); // 0=off, 1=low, 2=medium, 3=high
+    int getFoveationLevel() const { return foveationLevel_; }
 
     // UI quad
     bool initUiQuad(uint32_t width, uint32_t height);
@@ -278,6 +281,15 @@ private:
     XrPath perfPathGpuTime_ = XR_NULL_PATH;
     XrPath perfPathCpuTime_ = XR_NULL_PATH;
     XrPath perfPathDropped_ = XR_NULL_PATH;
+
+    // ── Foveated rendering ──
+    bool foveationSupported_ = false;
+    bool eyeTrackedFoveation_ = false;
+    int foveationLevel_ = 0; // 0=off, 1=low, 2=med, 3=high
+    XrFoveationProfileFB foveationProfile_ = XR_NULL_HANDLE;
+    PFN_xrCreateFoveationProfileFB xrCreateFoveationProfileFB_ = nullptr;
+    PFN_xrDestroyFoveationProfileFB xrDestroyFoveationProfileFB_ = nullptr;
+    PFN_xrUpdateSwapchainFB xrUpdateSwapchainFB_ = nullptr;
 
     // ── Passthrough camera state ──
     bool passthroughStateSupported_ = false;

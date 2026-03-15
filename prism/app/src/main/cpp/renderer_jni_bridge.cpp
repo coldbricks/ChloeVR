@@ -359,4 +359,26 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetPassthroughState(
     return g_renderer->getPassthroughState();
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Foveated rendering JNI
+// ═══════════════════════════════════════════════════════════════════════
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeHasFoveation(
+        JNIEnv* env, jobject thiz) {
+    return (g_renderer && g_renderer->hasFoveation()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetFoveationLevel(
+        JNIEnv* env, jobject thiz, jint level) {
+    if (g_renderer) g_renderer->setFoveationLevel(level);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetFoveationLevel(
+        JNIEnv* env, jobject thiz) {
+    return g_renderer ? g_renderer->getFoveationLevel() : 0;
+}
+
 } // extern "C"

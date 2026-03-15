@@ -167,6 +167,20 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         XR_LOGI("  + Performance metrics");
     }
 
+    // Foveated rendering
+    if (hasExt("XR_FB_foveation") && hasExt("XR_FB_foveation_configuration") && hasExt("XR_FB_swapchain_update_state")) {
+        extensions.push_back("XR_FB_foveation");
+        extensions.push_back("XR_FB_foveation_configuration");
+        extensions.push_back("XR_FB_swapchain_update_state");
+        foveationSupported_ = true;
+        XR_LOGI("  + Foveated rendering (FB)");
+        if (hasExt("XR_META_foveation_eye_tracked")) {
+            extensions.push_back("XR_META_foveation_eye_tracked");
+            eyeTrackedFoveation_ = true;
+            XR_LOGI("  + Eye-tracked foveation (META)");
+        }
+    }
+
     // Passthrough camera state
     if (hasExt(XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME)) {
         passthroughStateSupported_ = true;
@@ -194,6 +208,13 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
     // Get time conversion function
     xrGetInstanceProcAddr(instance_, "xrConvertTimespecTimeToTimeKHR",
                           (PFN_xrVoidFunction*)&convertTimeToXr_);
+
+    // Get foveation function pointers
+    if (foveationSupported_) {
+        xrGetInstanceProcAddr(instance_, "xrCreateFoveationProfileFB", (PFN_xrVoidFunction*)&xrCreateFoveationProfileFB_);
+        xrGetInstanceProcAddr(instance_, "xrDestroyFoveationProfileFB", (PFN_xrVoidFunction*)&xrDestroyFoveationProfileFB_);
+        xrGetInstanceProcAddr(instance_, "xrUpdateSwapchainFB", (PFN_xrVoidFunction*)&xrUpdateSwapchainFB_);
+    }
 
     XR_LOGI("OpenXR rendering instance created");
     return true;
@@ -991,6 +1012,11 @@ void XrRenderer::shutdown() {
         xrDestroyTrackableTracker_(planeTracker_);
         planeTracker_ = XR_NULL_HANDLE;
     }
+    // Destroy foveation profile
+    if (foveationProfile_ != XR_NULL_HANDLE && xrDestroyFoveationProfileFB_) {
+        xrDestroyFoveationProfileFB_(foveationProfile_);
+        foveationProfile_ = XR_NULL_HANDLE;
+    }
     // Disable perf metrics
     if (perfMetricsSupported_ && xrSetPerfState_ && session_) {
         XrPerformanceMetricsStateANDROID state = {};
@@ -1669,4 +1695,82 @@ int XrRenderer::getPassthroughState() {
     // ALPHA_BLEND = passthrough enabled, OPAQUE = passthrough disabled
     if (blendMode_ == XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND) return 2; // enabled
     return 0; // disabled
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Foveated Rendering ──
+// ═══════════════════════════════════════════════════════════════════════
+
+void XrRenderer::setFoveationLevel(int level) {
+    if (!foveationSupported_ || !xrCreateFoveationProfileFB_ || !xrUpdateSwapchainFB_) {
+        XR_LOGE("Foveation not supported");
+        return;
+    }
+    foveationLevel_ = level;
+
+    // Destroy old profile if exists
+    if (foveationProfile_ != XR_NULL_HANDLE) {
+        xrDestroyFoveationProfileFB_(foveationProfile_);
+        foveationProfile_ = XR_NULL_HANDLE;
+    }
+
+    if (level == 0) {
+        XR_LOGI("Foveation disabled");
+        // Apply no-foveation to swapchains
+        for (int eye = 0; eye < 2; eye++) {
+            if (swapchains_[eye] == XR_NULL_HANDLE) continue;
+            XrSwapchainStateFoveationFB fovState{};
+            fovState.type = XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB;
+            fovState.profile = XR_NULL_HANDLE;
+            xrUpdateSwapchainFB_(swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
+        }
+        return;
+    }
+
+    // Map level to FB foveation level enum
+    XrFoveationLevelFB fbLevel;
+    switch (level) {
+        case 1: fbLevel = XR_FOVEATION_LEVEL_LOW_FB; break;
+        case 2: fbLevel = XR_FOVEATION_LEVEL_MEDIUM_FB; break;
+        case 3: default: fbLevel = XR_FOVEATION_LEVEL_HIGH_FB; break;
+    }
+
+    // Create foveation level profile
+    XrFoveationLevelProfileCreateInfoFB levelCI{};
+    levelCI.type = XR_TYPE_FOVEATION_LEVEL_PROFILE_CREATE_INFO_FB;
+    levelCI.level = fbLevel;
+    levelCI.verticalOffset = 0;
+    levelCI.dynamic = XR_FOVEATION_DYNAMIC_LEVEL_ENABLED_FB; // let runtime adjust based on perf
+
+    // If eye-tracked foveation is available, chain it
+    XrFoveationEyeTrackedProfileCreateInfoMETA eyeTrackedCI{};
+    if (eyeTrackedFoveation_) {
+        eyeTrackedCI.type = XR_TYPE_FOVEATION_EYE_TRACKED_PROFILE_CREATE_INFO_META;
+        eyeTrackedCI.next = nullptr;
+        levelCI.next = &eyeTrackedCI;
+    }
+
+    XrFoveationProfileCreateInfoFB profileCI{};
+    profileCI.type = XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB;
+    profileCI.next = &levelCI;
+
+    XrResult r = xrCreateFoveationProfileFB_(session_, &profileCI, &foveationProfile_);
+    if (XR_FAILED(r)) {
+        XR_LOGE("Failed to create foveation profile: %d", (int)r);
+        return;
+    }
+
+    // Apply to both eye swapchains
+    for (int eye = 0; eye < 2; eye++) {
+        if (swapchains_[eye] == XR_NULL_HANDLE) continue;
+        XrSwapchainStateFoveationFB fovState{};
+        fovState.type = XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB;
+        fovState.profile = foveationProfile_;
+        XrResult ur = xrUpdateSwapchainFB_(swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
+        if (XR_FAILED(ur)) {
+            XR_LOGE("Failed to apply foveation to eye %d: %d", eye, (int)ur);
+        }
+    }
+
+    XR_LOGI("Foveation set to level %d%s", level, eyeTrackedFoveation_ ? " (eye-tracked)" : "");
 }
