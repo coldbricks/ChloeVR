@@ -1098,6 +1098,7 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             if (beatSettingsMode) {
+                                val prevDragging = beatDraggingSlider
                                 beatDraggingSlider = -1
                                 beatSliderLaserX = 0f
                                 hoveredActionButton = -1
@@ -1107,11 +1108,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 } else if (by in 120f..880f) {
                                     val sliderIdx = ((by - 120f) / 95f).toInt().coerceIn(0, 7)
                                     beatDraggingSlider = sliderIdx
-                                    // Slider track is x: 300..950 in bitmap coords
                                     beatSliderLaserX = ((bx - 300f) / 650f).coerceIn(0f, 1f)
-                                    // Apply value immediately as laser moves over slider
-                                    applyBeatSlider(sliderIdx, beatSliderLaserX)
-                                    uiNeedsRefresh = true
+                                    // Only apply when trigger is HELD (click-drag)
+                                    if (rightTrigger > 0.5f) {
+                                        applyBeatSlider(sliderIdx, beatSliderLaserX)
+                                        uiNeedsRefresh = true
+                                    }
                                 }
                             } else if (saveNameMode) {
                                 hoveredSaveButton = -1
