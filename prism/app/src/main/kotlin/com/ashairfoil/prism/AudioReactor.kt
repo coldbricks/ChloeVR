@@ -112,21 +112,38 @@ class AudioReactor {
     fun start(): Boolean {
         if (started) return true
         try {
+            Log.i(TAG, "Attempting Visualizer(0) for system audio capture...")
             val vis = Visualizer(0) // session 0 = system output mix
+            Log.i(TAG, "Visualizer created, setting capture size=$CAPTURE_SIZE")
             vis.captureSize = CAPTURE_SIZE
+
+            val maxRate = Visualizer.getMaxCaptureRate()
+            Log.i(TAG, "Max capture rate: $maxRate, setting listener...")
+
+            var fftCallCount = 0
             vis.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
                 override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
                 override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
-                    if (fft != null) processFft(fft, samplingRate)
+                    if (fft != null) {
+                        fftCallCount++
+                        if (fftCallCount <= 3 || fftCallCount % 100 == 0) {
+                            Log.i(TAG, "FFT callback #$fftCallCount: ${fft.size} bytes, rate=$samplingRate")
+                        }
+                        processFft(fft, samplingRate)
+                    }
                 }
-            }, Visualizer.getMaxCaptureRate(), false, true)
+            }, maxRate, false, true)
+
+            Log.i(TAG, "Enabling Visualizer...")
             vis.enabled = true
+            Log.i(TAG, "Visualizer enabled=${vis.enabled}, samplingRate=${vis.samplingRate}")
+
             visualizer = vis
             started = true
-            Log.i(TAG, "Started: captureSize=$CAPTURE_SIZE, rate=${Visualizer.getMaxCaptureRate()}")
+            Log.i(TAG, "AudioReactor started OK")
             return true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start Visualizer: ${e.message}")
+            Log.e(TAG, "Failed to start Visualizer: ${e.message}", e)
             return false
         }
     }

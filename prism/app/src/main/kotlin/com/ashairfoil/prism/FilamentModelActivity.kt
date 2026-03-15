@@ -706,6 +706,10 @@ class FilamentModelActivity : ComponentActivity() {
                             val reactor = audioReactor
                             if (reactor != null && beatReactorEnabled) {
                                 reactor.update()
+                                // Refresh menu every ~10 frames to show live B/M/H values
+                                if (menuVisible && sensorPollFrame % 10 == 0) {
+                                    uiNeedsRefresh = true
+                                }
                                 val bi = beatIntensity
 
                                 // Bass: ambient pulse + shadow deepen + warm color push
@@ -2640,13 +2644,11 @@ class FilamentModelActivity : ComponentActivity() {
                         val label = planeBuffer[off + 9].toInt()
                         if (label == 1) { // 1 = floor
                             val floorY = planeBuffer[off + 1]
-                            // Smooth it to avoid jumps (plane detection can jitter)
+                            // Very slow smoothing + dead zone to prevent earthquake
                             detectedFloorY = if (detectedFloorY == Float.MIN_VALUE) floorY
-                                else detectedFloorY + (floorY - detectedFloorY) * 0.03f
+                                else detectedFloorY + (floorY - detectedFloorY) * 0.005f
                             val gr = glesRenderer
-                            if (gr != null) {
-                                // Only update grid height, don't re-snap models (causes jitter)
-                                // Models get snapped once on load or when user presses A
+                            if (gr != null && kotlin.math.abs(gr.gridHeight - detectedFloorY) > 0.01f) {
                                 gr.gridHeight = detectedFloorY
                             }
                             break
