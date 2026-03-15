@@ -42,12 +42,17 @@ class AudioReactor {
     @Volatile var boxBottom = 0.05f
     @Volatile var boxTop = 0.85f
 
+    // ── Mode ──
+    enum class Mode { SMOOTH, STROBE, PULSE }
+    @Volatile var mode = Mode.SMOOTH
+
     // ── Dynamics (applied to OUTPUT, not to spectrum) ──
-    @Volatile var attack = 0.7f       // how fast output RISES toward raw fill (1=instant)
-    @Volatile var release = 0.12f     // how fast output FALLS when raw drops (0.01=slow pump)
-    @Volatile var dynRange = 2.0f     // >1 = expand range, <1 = compress
+    @Volatile var attack = 0.7f
+    @Volatile var release = 0.12f
+    @Volatile var dynRange = 2.0f
     @Volatile var outputFloor = 0.0f
     @Volatile var outputCeiling = 1.0f
+    @Volatile var threshold = 0.25f   // for STROBE: trigger level
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -226,25 +231,34 @@ class AudioReactor {
 
         val rawFill = if (binsInBox > 0) fillSum / binsInBox else 0f
 
-        // ── Step 2: Attack/Release envelope on the OUTPUT ──
-        // This shapes how fast the output follows the raw fill.
-        // It does NOT cause accumulation — smoothedOutput always converges toward rawFill.
-        if (rawFill > smoothedOutput) {
-            // Rising: attack controls how fast we chase upward
-            smoothedOutput += (rawFill - smoothedOutput) * attack
-        } else {
-            // Falling: release controls how fast we drop
-            smoothedOutput += (rawFill - smoothedOutput) * release
+        // ── Step 2: Mode-specific processing ──
+        when (mode) {
+            Mode.STROBE -> {
+                // Binary: above threshold = ON, below = OFF. No smoothing. Hard cut.
+                smoothedOutput = if (rawFill > threshold) 1f else 0f
+            }
+            Mode.PULSE -> {
+                // Fast attack (instant snap up), slow release (pump down)
+                if (rawFill > smoothedOutput) {
+                    smoothedOutput = rawFill  // instant attack
+                } else {
+                    smoothedOutput += (rawFill - smoothedOutput) * release
+                }
+            }
+            Mode.SMOOTH -> {
+                // Envelope follower with configurable attack/release
+                if (rawFill > smoothedOutput) {
+                    smoothedOutput += (rawFill - smoothedOutput) * attack
+                } else {
+                    smoothedOutput += (rawFill - smoothedOutput) * release
+                }
+            }
         }
 
         // ── Step 3: Dynamic range scaling ──
-        // pow(value, 1/dynRange) expands the range when dynRange > 1
-        // (makes quiet parts relatively louder, expanding the usable range)
         val scaled = if (smoothedOutput > 0f && dynRange > 0f) {
             Math.pow(smoothedOutput.toDouble(), 1.0 / dynRange.toDouble()).toFloat()
-        } else {
-            0f
-        }
+        } else { 0f }
 
         // ── Step 4: Clamp to floor/ceiling ──
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)

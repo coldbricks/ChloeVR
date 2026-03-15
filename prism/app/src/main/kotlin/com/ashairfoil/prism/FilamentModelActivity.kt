@@ -577,20 +577,16 @@ class FilamentModelActivity : ComponentActivity() {
     private data class BeatSlider(val name: String, val unit: String, val min: Float, val max: Float,
                                    val get: () -> Float, val set: (Float) -> Unit)
     private val beatSliders by lazy { arrayOf(
-        BeatSlider("INPUT GAIN", "x", 0.5f, 8f,
+        BeatSlider("GAIN", "x", 0.5f, 10f,
             { audioReactor?.sensitivity ?: 3f }, { audioReactor?.sensitivity = it }),
-        BeatSlider("BOX BOTTOM", "%", 0f, 100f,
-            { (audioReactor?.boxBottom ?: 5f) * 100f }, { audioReactor?.boxBottom = it / 100f }),
-        BeatSlider("BOX TOP", "%", 0f, 100f,
-            { (audioReactor?.boxTop ?: 85f) * 100f }, { audioReactor?.boxTop = it / 100f }),
+        BeatSlider("THRESHOLD", "%", 0f, 80f,
+            { (audioReactor?.threshold ?: 25f) * 100f }, { audioReactor?.threshold = it / 100f }),
         BeatSlider("ATTACK", "%", 1f, 100f,
             { (audioReactor?.attack ?: 70f) * 100f }, { audioReactor?.attack = it / 100f }),
         BeatSlider("RELEASE", "%", 1f, 100f,
             { (audioReactor?.release ?: 12f) * 100f }, { audioReactor?.release = it / 100f }),
-        BeatSlider("DYN RANGE", "x", 0.2f, 5f,
+        BeatSlider("RANGE", "x", 0.2f, 5f,
             { audioReactor?.dynRange ?: 2f }, { audioReactor?.dynRange = it }),
-        BeatSlider("FLOOR", "%", 0f, 100f,
-            { (audioReactor?.outputFloor ?: 0f) * 100f }, { audioReactor?.outputFloor = it / 100f }),
         BeatSlider("MIX", "%", 0f, 100f,
             { beatIntensity * 50f }, { beatIntensity = it / 50f }),
     ) }
@@ -756,21 +752,20 @@ class FilamentModelActivity : ComponentActivity() {
                                     beatBaseStored = true
                                 }
 
-                                // THE output: box fill percentage (0..1)
                                 val pct = reactor.boxFillPct
                                 val bi = beatIntensity
 
-                                // Light intensity = base + pct * range
-                                gr.lightIntensity = beatBaseLight + pct * bi * 2f
-                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 0.6f
-                                gr.fillLightIntensity = beatBaseFill + pct * bi * 0.4f
-                                gr.shadowDarkness = (beatBaseShadow + pct * bi * 0.1f).coerceAtMost(1f)
+                                // Dramatic lighting swings — the whole point
+                                gr.lightIntensity = beatBaseLight * (1f - pct * bi * 0.5f) + pct * bi * 4f
+                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 1.5f
+                                gr.fillLightIntensity = beatBaseFill + pct * bi * 1f
 
-                                // Per-model exposure pulse
+                                // In STROBE mode, also flash the exposure hard
+                                val isStrobe = reactor.mode == AudioReactor.Mode.STROBE
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
-                                        gpuModel.exposure = placed.exposure + pct * bi * 0.4f
+                                        gpuModel.exposure = placed.exposure + pct * bi * (if (isStrobe) 1.5f else 0.5f)
                                     }
                                 }
                             } else if (beatBaseStored) {
@@ -1086,6 +1081,11 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (by > 920f) {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
+                                } else if (by in 108f..135f) {
+                                    // Mode selector buttons
+                                    if (bx in 350f..500f) hoveredActionButton = 113 // SMOOTH
+                                    else if (bx in 510f..660f) hoveredActionButton = 114 // STROBE
+                                    else if (bx in 670f..820f) hoveredActionButton = 115 // PULSE
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
                                     // Laser is on the spectrum area — box dragging
                                     val reactor = audioReactor
@@ -1122,9 +1122,9 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
                                         uiNeedsRefresh = true
                                     }
-                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 8f) {
-                                    // Slider area
-                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 7)
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 6f) {
+                                    // Slider area (6 sliders)
+                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 5)
                                     beatDraggingSlider = sliderIdx
                                     beatSliderLaserX = ((bx - 260f) / (984f - 260f)).coerceIn(0f, 1f)
                                     if (rightTrigger > 0.5f) {
@@ -1312,7 +1312,16 @@ class FilamentModelActivity : ComponentActivity() {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
-            if (menuVisible && beatSettingsMode && hoveredActionButton == 111) {
+            if (menuVisible && beatSettingsMode && hoveredActionButton == 113) {
+                audioReactor?.mode = AudioReactor.Mode.SMOOTH
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 114) {
+                audioReactor?.mode = AudioReactor.Mode.STROBE
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 115) {
+                audioReactor?.mode = AudioReactor.Mode.PULSE
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 111) {
                 beatSettingsMode = false
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 112) {
@@ -2022,12 +2031,29 @@ class FilamentModelActivity : ComponentActivity() {
             canvas.drawText("FILL: %.0f%%".format(fillPct * 100), 580f, 105f, p)
             p.isFakeBoldText = false
 
-            // Band meters (smaller, below header)
-            p.textSize = 20f
-            val b = reactor?.bass ?: 0f; val m = reactor?.mid ?: 0f; val h = reactor?.high ?: 0f
-            p.color = 0xFFEC4899.toInt(); canvas.drawText("B:%.0f%%".format(b * 100), 50f, 125f, p)
-            p.color = 0xFF10B981.toInt(); canvas.drawText("M:%.0f%%".format(m * 100), 150f, 125f, p)
-            p.color = 0xFF3B82F6.toInt(); canvas.drawText("H:%.0f%%".format(h * 100), 250f, 125f, p)
+            // Mode selector buttons
+            val curMode = reactor?.mode ?: AudioReactor.Mode.SMOOTH
+            val modes = arrayOf("SMOOTH" to AudioReactor.Mode.SMOOTH, "STROBE" to AudioReactor.Mode.STROBE, "PULSE" to AudioReactor.Mode.PULSE)
+            val modeHoverIds = arrayOf(113, 114, 115)
+            var mx = 350f
+            for ((mi, pair) in modes.withIndex()) {
+                val (label, modeVal) = pair
+                val isActive = curMode == modeVal
+                val isHover = hoveredActionButton == modeHoverIds[mi]
+                val mw = 145f
+                p.color = when {
+                    isActive -> 0xFFEC4899.toInt()
+                    isHover -> 0x60EC4899.toInt()
+                    else -> 0x20EC4899.toInt()
+                }
+                canvas.drawRoundRect(mx, 108f, mx + mw, 133f, 6f, 6f, p)
+                p.textSize = 20f; p.isFakeBoldText = isActive
+                p.color = if (isActive || isHover) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt()
+                p.textAlign = android.graphics.Paint.Align.CENTER
+                canvas.drawText(label, mx + mw / 2f, 126f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+                mx += mw + 10f
+            }
 
             // ── SPECTRUM ANALYZER ──
             val specLeft = 40f; val specRight = uiW - 80f; val specTop = 140f; val specH = 250f
@@ -2113,13 +2139,21 @@ class FilamentModelActivity : ComponentActivity() {
                 canvas.drawRect(bxL, bxT, bxR, bxB, p)
                 p.style = android.graphics.Paint.Style.FILL
 
-                // Corner markers for clarity
+                // Corner markers
                 val cm = 8f
                 p.color = 0xFFFFFF00.toInt()
                 canvas.drawRect(bxL - 1f, bxT - 1f, bxL + cm, bxT + cm, p)
                 canvas.drawRect(bxR - cm, bxT - 1f, bxR + 1f, bxT + cm, p)
                 canvas.drawRect(bxL - 1f, bxB - cm, bxL + cm, bxB + 1f, p)
                 canvas.drawRect(bxR - cm, bxB - cm, bxR + 1f, bxB + 1f, p)
+
+                // Threshold line (STROBE mode — shows where the trigger level is)
+                if (curMode == AudioReactor.Mode.STROBE) {
+                    val threshY = specBot - reactor.threshold * specH
+                    p.color = 0xFFFF0000.toInt(); p.strokeWidth = 2f
+                    canvas.drawLine(specLeft, threshY, specRight, threshY, p)
+                    p.textSize = 16f; canvas.drawText("TRIGGER", specRight - 80f, threshY - 4f, p)
+                }
 
                 // ── Output meter (right side, wider and more prominent) ──
                 val meterX = specRight + 12f; val meterW = 28f
@@ -2167,9 +2201,9 @@ class FilamentModelActivity : ComponentActivity() {
 
             // ── SLIDERS (below spectrum) ──
             val sliderAreaTop = specBot + 28f
-            val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 16f
-            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD1D5DB.toInt() }
-            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 20f; color = 0xFF9CA3AF.toInt() }
+            val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 24f
+            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFFD1D5DB.toInt() }
+            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFF9CA3AF.toInt() }
             var sy = sliderAreaTop
 
             for ((i, slider) in beatSliders.withIndex()) {
@@ -2196,9 +2230,9 @@ class FilamentModelActivity : ComponentActivity() {
                 canvas.drawRoundRect(trackLeft, sy, fillEnd, sy + trackH, 4f, 4f, p)
                 // Knob
                 p.color = 0xFFFFFFFF.toInt()
-                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 11f else 7f, p)
+                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
 
-                sy += 46f
+                sy += 54f
             }
 
             // ── Buttons ──
