@@ -205,6 +205,17 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var autoFloorEnabled = true
     @Volatile private var detectedFloorY = Float.MIN_VALUE
 
+    // Yeet animation (model delete with fly-off)
+    data class YeetingModel(
+        val gpuModelId: Int,
+        var posX: Float, var posY: Float, var posZ: Float,
+        var velX: Float, var velY: Float, var velZ: Float,
+        var scale: Float,
+        var spin: Float = 0f,
+        var timer: Float = 0f
+    )
+    private val yeetingModels = mutableListOf<YeetingModel>()
+
     // Head/camera position (extracted from view matrix each frame)
     private var camPosX = 0f; private var camPosY = 1.6f; private var camPosZ = 0f
     private var camFwdX = 0f; private var camFwdY = 0f; private var camFwdZ = -1f
@@ -724,6 +735,39 @@ class FilamentModelActivity : ComponentActivity() {
                                 bmp.recycle()
                             }
 
+                            // ── Yeet animation: flying deleted models ──
+                            val yeetDt = 1f / 72f
+                            val yeetIter = yeetingModels.iterator()
+                            while (yeetIter.hasNext()) {
+                                val ym = yeetIter.next()
+                                ym.timer += yeetDt
+                                ym.velY -= 9.8f * yeetDt  // gravity
+                                ym.posX += ym.velX * yeetDt
+                                ym.posY += ym.velY * yeetDt
+                                ym.posZ += ym.velZ * yeetDt
+                                ym.spin += 720f * yeetDt  // spin wildly
+                                ym.scale *= 0.92f  // shrink each frame
+
+                                val gpuModel = gr.getModel(ym.gpuModelId)
+                                if (gpuModel != null) {
+                                    val s = ym.scale
+                                    val angle = Math.toRadians(ym.spin.toDouble())
+                                    val cy = kotlin.math.cos(angle).toFloat()
+                                    val sy = kotlin.math.sin(angle).toFloat()
+                                    gpuModel.modelMatrix = floatArrayOf(
+                                        cy * s, 0f, -sy * s, 0f,
+                                        0f, s, 0f, 0f,
+                                        sy * s, 0f, cy * s, 0f,
+                                        ym.posX, ym.posY, ym.posZ, 1f
+                                    )
+                                }
+
+                                if (ym.timer > 1.5f || ym.scale < 0.01f) {
+                                    gr.removeModel(ym.gpuModelId)
+                                    yeetIter.remove()
+                                }
+                            }
+
                             // Shadow map (once, before both eyes)
                             gr.renderShadowMap()
 
@@ -985,15 +1029,20 @@ class FilamentModelActivity : ComponentActivity() {
                                     }
                                 }
                             } else {
-                                // Action buttons: 2 rows at bottom
-                                // Row 1 (~870-924): SAVE / LOAD / ADD MODEL
-                                if (by in 860f..930f) {
-                                    if (bx < 360f) hoveredActionButton = 104      // SAVE SCENE
-                                    else if (bx < 690f) hoveredActionButton = 105 // LOAD SCENE
-                                    else hoveredActionButton = 101                 // ADD MODEL
+                                // Action buttons: 3 rows at bottom
+                                // Row 1 (~810-860): SAVE / LOAD
+                                if (by in 800f..860f) {
+                                    if (bx < 520f) hoveredActionButton = 104      // SAVE SCENE
+                                    else hoveredActionButton = 105                 // LOAD SCENE
                                 }
-                                // Row 2 (~932-986): FILE MENU / EXIT
-                                if (by > 930f) {
+                                // Row 2 (~865-920): ADD / DELETE / RESET
+                                if (by in 860f..925f) {
+                                    if (bx < 360f) hoveredActionButton = 101      // ADD MODEL
+                                    else if (bx < 690f) hoveredActionButton = 107 // DELETE
+                                    else hoveredActionButton = 108                 // RESET
+                                }
+                                // Row 3 (~925-990): FILE MENU / EXIT
+                                if (by > 925f) {
                                     if (bx < 520f) hoveredActionButton = 100      // FILE MENU
                                     else hoveredActionButton = 102                 // EXIT
                                 }
@@ -1148,6 +1197,41 @@ class FilamentModelActivity : ComponentActivity() {
                 Log.i(TAG, "Action: Save scene as $name")
                 saveScene(name)
                 uiNeedsRefresh = true
+            } else if (menuVisible && hoveredActionButton == 107) {
+                // DELETE selected model — yeet it off screen
+                val model = models.getOrNull(selectedModelIndex)
+                if (model != null) {
+                    Log.i(TAG, "Action: Yeet model ${model.file.name}")
+                    // Launch it away from camera with random spin
+                    val dx = model.posX - camPosX
+                    val dz = model.posZ - camPosZ
+                    val dist = kotlin.math.sqrt(dx * dx + dz * dz).coerceAtLeast(0.1f)
+                    val speed = 8f
+                    yeetingModels.add(YeetingModel(
+                        gpuModelId = model.gpuModelId,
+                        posX = model.posX, posY = model.posY, posZ = model.posZ,
+                        velX = (dx / dist) * speed + (Math.random().toFloat() - 0.5f) * 2f,
+                        velY = 3f + Math.random().toFloat() * 2f,
+                        velZ = (dz / dist) * speed + (Math.random().toFloat() - 0.5f) * 2f,
+                        scale = model.scale
+                    ))
+                    models.removeAt(selectedModelIndex)
+                    selectedModelIndex = if (models.isNotEmpty()) 0 else -1
+                    uiNeedsRefresh = true
+                }
+            } else if (menuVisible && hoveredActionButton == 108) {
+                // RESET all per-model material params to defaults
+                val model = models.getOrNull(selectedModelIndex)
+                val gr = glesRenderer
+                if (model != null && gr != null) {
+                    val gpuModel = gr.getModel(model.gpuModelId)
+                    model.metallic = 0f; model.roughness = 0.9f; model.exposure = 0f
+                    model.contrast = 1f; model.saturation = 1f
+                    gpuModel?.metallic = 0f; gpuModel?.roughness = 0.9f; gpuModel?.exposure = 0f
+                    gpuModel?.contrast = 1f; gpuModel?.saturation = 1f
+                    Log.i(TAG, "Action: Reset material for ${model.file.name}")
+                    uiNeedsRefresh = true
+                }
             } else if (menuVisible && hoveredActionButton == 105) {
                 // Open scene load picker
                 Log.i(TAG, "Action: Load scene — opening scene picker")
@@ -1302,7 +1386,7 @@ class FilamentModelActivity : ComponentActivity() {
                         gpuModel?.exposure = model.exposure
                     }
                     3 -> if (model != null) {
-                        model.contrast = (model.contrast + delta * 2f).coerceIn(0.2f, 3f)
+                        model.contrast = (model.contrast + delta).coerceIn(0.6f, 1.6f)
                         gpuModel?.contrast = model.contrast
                     }
                     4 -> if (model != null) {
@@ -1932,20 +2016,24 @@ class FilamentModelActivity : ComponentActivity() {
             canvas.drawText(label, (bx1 + bx2) / 2f, by + 35f, text)
         }
 
-        // Row 1: SAVE / LOAD / + ADD MODEL
-        val row1Y = uiH - 130f
-        val btn3W = (uiW - 60f - btnGap * 2f) / 3f
-        val r1b1 = 30f; val r1b2 = r1b1 + btn3W + btnGap; val r1b3 = r1b2 + btn3W + btnGap
-        drawButton(r1b1, r1b1 + btn3W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
-        drawButton(r1b2, r1b2 + btn3W, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
-        drawButton(r1b3, r1b3 + btn3W, row1Y, "+ ADD MODEL", hoveredActionButton == 101, 0xFF10B981.toInt())
-
-        // Row 2: FILE MENU / EXIT
-        val row2Y = row1Y + btnH + btnGap
+        // Row 1: SAVE / LOAD
+        val row1Y = uiH - 190f
         val btn2W = (uiW - 60f - btnGap) / 2f
-        val r2b1 = 30f; val r2b2 = r2b1 + btn2W + btnGap
-        drawButton(r2b1, r2b1 + btn2W, row2Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
-        drawButton(r2b2, r2b2 + btn2W, row2Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
+        drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
+        drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
+
+        // Row 2: ADD / DELETE / RESET
+        val row2Y = row1Y + btnH + btnGap
+        val btn3W = (uiW - 60f - btnGap * 2f) / 3f
+        val r2b1 = 30f; val r2b2 = r2b1 + btn3W + btnGap; val r2b3 = r2b2 + btn3W + btnGap
+        drawButton(r2b1, r2b1 + btn3W, row2Y, "+ ADD", hoveredActionButton == 101, 0xFF10B981.toInt())
+        drawButton(r2b2, r2b2 + btn3W, row2Y, "DELETE", hoveredActionButton == 107, 0xFFF04858.toInt())
+        drawButton(r2b3, r2b3 + btn3W, row2Y, "RESET", hoveredActionButton == 108, 0xFFFF9500.toInt())
+
+        // Row 3: FILE MENU / EXIT
+        val row3Y = row2Y + btnH + btnGap
+        drawButton(30f, 30f + btn2W, row3Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
+        drawButton(30f + btn2W + btnGap, uiW - 30f, row3Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
