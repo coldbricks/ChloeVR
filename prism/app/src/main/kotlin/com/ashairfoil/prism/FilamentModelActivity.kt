@@ -228,6 +228,11 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var beatCursorX = -1f  // laser position on panel (bitmap coords)
     @Volatile private var beatCursorY = -1f
 
+    // Haptic device (Lovense via BLE)
+    private var hapticManager: com.ashairfoil.prism.haptics.BleDeviceManager? = null
+    @Volatile private var hapticConnected = false
+    @Volatile private var hapticEnabled = false
+
     // Auto-floor: lock grid to detected XR floor plane
     @Volatile private var autoFloorEnabled = false  // disabled — causes jitter, user snaps manually with A
     @Volatile private var detectedFloorY = Float.MIN_VALUE
@@ -809,6 +814,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                                 // Room wash alpha stored for render pass (applied per-eye later)
                                 beatWashAlpha = if (affectsRoom) pct * bi * 0.35f else 0f
+
+                                // Haptic output: drive vibrator in sync with lights
+                                if (hapticEnabled && hapticConnected) {
+                                    val intensity = (pct * 20f).toInt().coerceIn(0, 20)
+                                    hapticManager?.setIntensity(intensity)
+                                }
                             } else if (beatBaseStored) {
                                 // Reactor turned off — restore base values
                                 gr.ambientIntensity = beatBaseAmbient
@@ -1131,9 +1142,10 @@ class FilamentModelActivity : ComponentActivity() {
                                 val sliderRowH = 32f  // tighter to fit
 
                                 if (by > 920f) {
-                                    val third = (1024f - 80f) / 3f
-                                    if (bx < 30f + third) hoveredActionButton = 127 // BOOM
-                                    else if (bx < 40f + third * 2f) hoveredActionButton = 112 // OFF
+                                    val quarter = (1024f - 100f) / 4f
+                                    if (bx < 30f + quarter) hoveredActionButton = 127 // BOOM
+                                    else if (bx < 40f + quarter * 2f) hoveredActionButton = 128 // VIBES
+                                    else if (bx < 50f + quarter * 3f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
                                     // Rolloff mode buttons
@@ -1444,6 +1456,36 @@ class FilamentModelActivity : ComponentActivity() {
                 audioReactor?.enabled = false
                 beatSettingsMode = false
                 beatBaseStored = false
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 128) {
+                // VIBES: toggle haptic device
+                if (hapticConnected) {
+                    hapticManager?.disconnect()
+                    hapticConnected = false
+                    hapticEnabled = false
+                } else {
+                    if (hapticManager == null) {
+                        hapticManager = com.ashairfoil.prism.haptics.BleDeviceManager(this)
+                        hapticManager?.onConnectionStateChanged = { state ->
+                            when (state) {
+                                com.ashairfoil.prism.haptics.ConnectionState.Ready -> {
+                                    hapticConnected = true
+                                    Log.i(TAG, "Haptic device connected: ${hapticManager?.connectedDeviceName}")
+                                    uiNeedsRefresh = true
+                                }
+                                com.ashairfoil.prism.haptics.ConnectionState.Disconnected -> {
+                                    hapticConnected = false
+                                    hapticEnabled = false
+                                    Log.i(TAG, "Haptic device disconnected")
+                                    uiNeedsRefresh = true
+                                }
+                                else -> {}
+                            }
+                        }
+                    }
+                    hapticManager?.startScan()
+                    hapticEnabled = true
+                }
                 uiNeedsRefresh = true
             } else if (menuVisible && saveNameMode && hoveredSaveButton == 0) {
                 // SAVE with the edited name
@@ -2472,30 +2514,41 @@ class FilamentModelActivity : ComponentActivity() {
                 sy += 32f
             }
 
-            // ── Buttons: BOOM / OFF / BACK ──
+            // ── Buttons: BOOM / VIBES / OFF / BACK ──
             val btnY = uiH - 75f; val btnH = 50f
-            val thirdW = (uiW - 80f) / 3f
+            val quarterW = (uiW - 100f) / 4f
             p.textSize = 22f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
 
             // BOOM button
             val boomReady = reactor?.boomReady ?: false
             p.color = if (hoveredActionButton == 127) 0x80FF9500.toInt()
                 else if (boomReady) 0x40FF9500.toInt() else 0x15FF9500.toInt()
-            canvas.drawRoundRect(30f, btnY, 30f + thirdW, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(30f, btnY, 30f + quarterW, btnY + btnH, 10f, 10f, p)
             p.color = if (boomReady) 0xFFFF9500.toInt() else 0xFF555555.toInt()
-            canvas.drawText("\uD83D\uDCA5 BOOM", 30f + thirdW / 2f, btnY + 33f, p)
+            canvas.drawText("\uD83D\uDCA5 BOOM", 30f + quarterW / 2f, btnY + 33f, p)
+
+            // VIBES button
+            val vibesColor = if (hapticConnected) 0xFF8B5CF6.toInt() else 0xFFEC4899.toInt()
+            val vibesLabel = if (hapticConnected) "VIBES: ON"
+                else if (hapticEnabled) "Scanning..."
+                else "VIBES"
+            p.color = if (hoveredActionButton == 128) 0x80EC4899.toInt()
+                else if (hapticConnected) 0x408B5CF6.toInt() else 0x20EC4899.toInt()
+            canvas.drawRoundRect(40f + quarterW, btnY, 40f + quarterW * 2f, btnY + btnH, 10f, 10f, p)
+            p.color = if (hoveredActionButton == 128) 0xFFFFFFFF.toInt() else vibesColor
+            canvas.drawText(vibesLabel, 40f + quarterW * 1.5f, btnY + 33f, p)
 
             // OFF button
             p.color = if (hoveredActionButton == 112) 0x80F04858.toInt() else 0x20F04858.toInt()
-            canvas.drawRoundRect(40f + thirdW, btnY, 40f + thirdW * 2f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(50f + quarterW * 2f, btnY, 50f + quarterW * 3f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 112) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt()
-            canvas.drawText("OFF", 40f + thirdW * 1.5f, btnY + 33f, p)
+            canvas.drawText("OFF", 50f + quarterW * 2.5f, btnY + 33f, p)
 
             // BACK button
             p.color = if (hoveredActionButton == 111) 0x80EC4899.toInt() else 0x20EC4899.toInt()
-            canvas.drawRoundRect(50f + thirdW * 2f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(60f + quarterW * 3f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
-            canvas.drawText("\u25C0 BACK", 50f + thirdW * 2f + (uiW - 80f - thirdW * 2f) / 2f, btnY + 33f, p)
+            canvas.drawText("\u25C0 BACK", 60f + quarterW * 3f + (uiW - 90f - quarterW * 3f) / 2f, btnY + 33f, p)
             p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
 
             // ── Laser cursor (bright, visible crosshair) ──
@@ -3424,6 +3477,7 @@ class FilamentModelActivity : ComponentActivity() {
             Log.i(TAG, "Saved grid height: ${gr.gridHeight}")
         }
 
+        hapticManager?.disconnect()
         audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()

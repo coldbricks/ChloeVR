@@ -25,6 +25,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
+    <!-- Bluetooth for Lovense haptic device control -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
     <uses-feature android:name="android.software.xr.api.openxr" android:required="false" />
