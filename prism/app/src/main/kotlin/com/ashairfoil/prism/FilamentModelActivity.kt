@@ -189,12 +189,21 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var pendingModelLoad: File? = null  // queued for render thread (needs GL context)
 
     // Scene save/load
-    @Volatile private var scenePickerMode = false  // true = showing save/load scene list
-    private var scenePickerIsSave = false  // true = saving, false = loading
+    @Volatile private var scenePickerMode = false  // true = showing load scene list
+    private var scenePickerIsSave = false
     private var savedSceneFiles: List<File> = emptyList()
     private var hoveredSceneIndex = -1
     private var lastHoveredSceneIndex = -1
     @Volatile private var pendingSceneLoad: File? = null  // queued for render thread
+
+    // Save name editor
+    @Volatile private var saveNameMode = false
+    private val SAVE_NAME_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_- "
+    private var saveNameChars = CharArray(20) { if (it < 5) "Scene"[it] else ' ' }
+    private var saveNameLen = 5
+    private var saveNameCursor = 0
+    private var hoveredSaveButton = -1  // 0=SAVE, 1=BACK
+    private var saveNameStickCooldown = 0
 
     // Audio-reactive lighting (BeatReactor)
     private var audioReactor: AudioReactor? = null
@@ -1023,7 +1032,21 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            if (glbPickerMode) {
+                            if (saveNameMode) {
+                                hoveredSaveButton = -1
+                                hoveredSceneIndex = -1
+                                // SAVE button: ~200..260
+                                if (by in 190f..270f) hoveredSaveButton = 0
+                                // Existing scenes: ~280..880
+                                if (by in 280f..880f) {
+                                    val maxVisible = 10
+                                    val frac = (by - 280f) / (880f - 280f)
+                                    val idx = (frac * maxVisible).toInt()
+                                    if (idx < savedSceneFiles.size) hoveredSceneIndex = idx
+                                }
+                                // BACK button at bottom
+                                if (by > 920f) hoveredSaveButton = 1
+                            } else if (glbPickerMode) {
                                 // GLB picker: back button at bottom
                                 if (by > 920f) {
                                     hoveredActionButton = 103 // BACK from GLB picker
@@ -1189,7 +1212,28 @@ class FilamentModelActivity : ComponentActivity() {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
-            if (menuVisible && glbPickerMode && hoveredActionButton == 103) {
+            if (menuVisible && saveNameMode && hoveredSaveButton == 0) {
+                // SAVE with the edited name
+                val name = String(saveNameChars, 0, saveNameLen).trim()
+                if (name.isNotEmpty()) {
+                    Log.i(TAG, "Saving scene as: '$name'")
+                    saveScene(name)
+                    saveNameMode = false
+                }
+                uiNeedsRefresh = true
+            } else if (menuVisible && saveNameMode && hoveredSaveButton == 1) {
+                // BACK from save name editor
+                saveNameMode = false
+                uiNeedsRefresh = true
+            } else if (menuVisible && saveNameMode && hoveredSceneIndex >= 0 && hoveredSceneIndex < savedSceneFiles.size) {
+                // Overwrite existing scene
+                val existingFile = savedSceneFiles[hoveredSceneIndex]
+                val name = existingFile.nameWithoutExtension
+                Log.i(TAG, "Overwriting scene: '$name'")
+                saveScene(name)
+                saveNameMode = false
+                uiNeedsRefresh = true
+            } else if (menuVisible && glbPickerMode && hoveredActionButton == 103) {
                 // BACK from GLB picker → return to main menu
                 glbPickerMode = false
                 hoveredGlbIndex = -1
@@ -1214,11 +1258,17 @@ class FilamentModelActivity : ComponentActivity() {
                 runOnUiThread { finishAffinity() }
                 return
             } else if (menuVisible && hoveredActionButton == 104) {
-                // Save scene with timestamp name
-                val ts = java.text.SimpleDateFormat("MMdd_HHmm", java.util.Locale.US).format(java.util.Date())
-                val name = "scene_${ts}_${models.size}m"
-                Log.i(TAG, "Action: Save scene as $name")
-                saveScene(name)
+                // Open save name editor
+                Log.i(TAG, "Action: Save scene — opening name editor")
+                saveNameMode = true
+                hoveredSaveButton = -1
+                // Default name from first model or "Scene"
+                val defaultName = models.firstOrNull()?.file?.nameWithoutExtension?.take(15) ?: "Scene"
+                saveNameChars = CharArray(20) { ' ' }
+                for (i in defaultName.indices) saveNameChars[i] = defaultName[i]
+                saveNameLen = defaultName.length
+                saveNameCursor = saveNameLen.coerceAtMost(19)
+                saveNameStickCooldown = 0
                 uiNeedsRefresh = true
             } else if (menuVisible && hoveredActionButton == 107) {
                 // DELETE selected model — yeet it off screen
@@ -1333,6 +1383,12 @@ class FilamentModelActivity : ComponentActivity() {
                 lastBState = bButton
                 return
             }
+            if (saveNameMode) {
+                saveNameMode = false
+                uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
             if (scenePickerMode) {
                 scenePickerMode = false
                 hoveredSceneIndex = -1
@@ -1361,6 +1417,55 @@ class FilamentModelActivity : ComponentActivity() {
 
         // When menu is visible: param controls (works with or without model selected)
         if (menuVisible) {
+            // Save name editor: stick edits the name
+            if (saveNameMode) {
+                if (saveNameStickCooldown > 0) saveNameStickCooldown--
+                if (saveNameStickCooldown == 0) {
+                    // Right stick Y = cycle character at cursor
+                    if (rightThumbY > 0.4f) {
+                        val curChar = saveNameChars[saveNameCursor]
+                        val idx = SAVE_NAME_CHARS.indexOf(curChar)
+                        saveNameChars[saveNameCursor] = if (idx < 0) 'A' else SAVE_NAME_CHARS[(idx + 1) % SAVE_NAME_CHARS.length]
+                        if (saveNameCursor >= saveNameLen) saveNameLen = saveNameCursor + 1
+                        saveNameStickCooldown = 6  // ~80ms debounce at 72fps
+                        uiNeedsRefresh = true
+                    } else if (rightThumbY < -0.4f) {
+                        val curChar = saveNameChars[saveNameCursor]
+                        val idx = SAVE_NAME_CHARS.indexOf(curChar)
+                        saveNameChars[saveNameCursor] = if (idx < 0) 'Z' else SAVE_NAME_CHARS[(idx - 1 + SAVE_NAME_CHARS.length) % SAVE_NAME_CHARS.length]
+                        if (saveNameCursor >= saveNameLen) saveNameLen = saveNameCursor + 1
+                        saveNameStickCooldown = 6
+                        uiNeedsRefresh = true
+                    }
+                    // Right stick X = move cursor
+                    if (rightThumbX > 0.5f) {
+                        saveNameCursor = (saveNameCursor + 1).coerceAtMost(19)
+                        saveNameStickCooldown = 8
+                        uiNeedsRefresh = true
+                    } else if (rightThumbX < -0.5f) {
+                        saveNameCursor = (saveNameCursor - 1).coerceAtLeast(0)
+                        saveNameStickCooldown = 8
+                        uiNeedsRefresh = true
+                    }
+                    // A button = delete character at cursor (backspace)
+                    if (aButton && !lastAState && saveNameLen > 0) {
+                        if (saveNameCursor < saveNameLen) {
+                            for (i in saveNameCursor until 19) saveNameChars[i] = saveNameChars[i + 1]
+                            saveNameChars[19] = ' '
+                            saveNameLen = (saveNameLen - 1).coerceAtLeast(0)
+                        }
+                        uiNeedsRefresh = true
+                    }
+                    lastAState = aButton
+                }
+                lastRightStickClick = rightStickClick
+                if (uiNeedsRefresh) {
+                    uiNeedsRefresh = false
+                    runOnUiThread { renderUiToBitmap() }
+                }
+                return
+            }
+
             // GLB picker mode: stick scrolls the file list
             if (glbPickerMode) {
                 if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
@@ -1754,6 +1859,120 @@ class FilamentModelActivity : ComponentActivity() {
             color = if (titleHovered) 0xFFEC4899.toInt() else 0x60FFFFFF.toInt()
         }
         canvas.drawText(if (draggingPanel) "dragging..." else "grip to drag", uiW - 280f, 56f, dragHint)
+
+        // ═══ Save Name Editor ═══
+        if (saveNameMode) {
+            val headerPaint = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 36f; color = 0xFF8B5CF6.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("Save Scene", 50f, 110f, headerPaint)
+
+            // Name display with cursor
+            val nameY = 155f
+            val charW = 38f
+            val nameStartX = 50f
+            for (i in 0 until 20) {
+                val ch = if (i < saveNameLen) saveNameChars[i] else ' '
+                val isCursor = i == saveNameCursor
+                // Cursor highlight
+                if (isCursor) {
+                    val cursorBg = android.graphics.Paint().apply { color = 0xFF8B5CF6.toInt() }
+                    canvas.drawRoundRect(nameStartX + i * charW - 2f, nameY - 32f,
+                        nameStartX + i * charW + charW - 4f, nameY + 6f, 4f, 4f, cursorBg)
+                }
+                val charPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 36f
+                    color = if (isCursor) 0xFFFFFFFF.toInt() else if (i < saveNameLen) 0xFFF3F4F6.toInt() else 0xFF3A3A42.toInt()
+                    isFakeBoldText = isCursor
+                }
+                canvas.drawText(ch.toString(), nameStartX + i * charW, nameY, charPaint)
+            }
+
+            // Underline
+            val underPaint = android.graphics.Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f }
+            canvas.drawLine(nameStartX, nameY + 8f, nameStartX + 20 * charW, nameY + 8f, underPaint)
+
+            // Hint
+            val hintPaint = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 20f; color = 0xFF58585F.toInt()
+            }
+            canvas.drawText("Stick \u2195:letter  \u2194:cursor  A:backspace", 50f, nameY + 30f, hintPaint)
+
+            // SAVE button
+            val saveBtnY = 200f
+            val isSaveHovered = hoveredSaveButton == 0
+            val saveBg = android.graphics.Paint().apply {
+                color = if (isSaveHovered) 0x808B5CF6.toInt() else 0x308B5CF6.toInt()
+            }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBg)
+            val saveBorder = android.graphics.Paint().apply {
+                style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 3f else 1.5f
+                color = 0xFF8B5CF6.toInt(); isAntiAlias = true
+            }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBorder)
+            val saveTxt = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 28f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (isSaveHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); isFakeBoldText = true
+            }
+            val displayName = String(saveNameChars, 0, saveNameLen).trim().ifEmpty { "untitled" }
+            canvas.drawText("SAVE \"$displayName\"", uiW / 2f, saveBtnY + 34f, saveTxt)
+
+            // Existing scenes (overwrite targets)
+            refreshSceneList()
+            val scenes = savedSceneFiles
+            if (scenes.isNotEmpty()) {
+                val secHeader = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
+                }
+                canvas.drawText("Or overwrite existing:", 50f, 290f, secHeader)
+
+                val rowH = 55f
+                val startY = 310f
+                val normalPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt()
+                }
+                val hoverPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 32f; color = 0xFF8B5CF6.toInt(); isFakeBoldText = true
+                }
+                val datePaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 22f; color = 0xFF6B7280.toInt()
+                }
+                val hoverBg = android.graphics.Paint().apply { color = 0x208B5CF6.toInt() }
+
+                for (vi in 0 until minOf(10, scenes.size)) {
+                    val scene = scenes[vi]
+                    val ry = startY + vi * rowH
+                    val isHovered = vi == hoveredSceneIndex
+
+                    if (isHovered) {
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                    }
+                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 30f, if (isHovered) hoverPaint else normalPaint)
+
+                    val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+                        .format(java.util.Date(scene.lastModified()))
+                    val dw = datePaint.measureText(dateStr)
+                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 30f, datePaint)
+                }
+            }
+
+            // BACK button
+            val btnY = uiH - 80f
+            val btnH = 60f
+            val isBackHovered = hoveredSaveButton == 1
+            val backBg = android.graphics.Paint().apply {
+                color = if (isBackHovered) 0x708B5CF6.toInt() else 0x208B5CF6.toInt()
+            }
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBg)
+            val backText = android.graphics.Paint().apply {
+                isAntiAlias = true; textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER
+                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("\u25C0 BACK", uiW / 2f, btnY + 40f, backText)
+
+            pendingUiBitmap = bitmap
+            return
+        }
 
         // ═══ GLB Picker Sub-Menu ═══
         if (glbPickerMode) {
