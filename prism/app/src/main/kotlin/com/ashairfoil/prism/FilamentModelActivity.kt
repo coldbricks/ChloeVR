@@ -2036,7 +2036,7 @@ class FilamentModelActivity : ComponentActivity() {
                     slider.unit == "x" -> "%.1f${slider.unit}".format(value)
                     slider.unit == "Hz" -> "%.0f ${slider.unit}".format(value)
                     slider.unit == "ms" -> "%.0f ${slider.unit}".format(value)
-                    else -> "%.0f${slider.unit}".format(value)
+                    else -> "%.0f%%".format(value)
                 }
                 canvas.drawText(valStr, 160f, sy + 16f, valueP)
 
