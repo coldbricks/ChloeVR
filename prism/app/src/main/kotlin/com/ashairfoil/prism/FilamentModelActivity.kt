@@ -1131,7 +1131,9 @@ class FilamentModelActivity : ComponentActivity() {
                                 val sliderRowH = 32f  // tighter to fit
 
                                 if (by > 920f) {
-                                    if (bx < 520f) hoveredActionButton = 112 // OFF
+                                    val third = (1024f - 80f) / 3f
+                                    if (bx < 30f + third) hoveredActionButton = 127 // BOOM
+                                    else if (bx < 40f + third * 2f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
                                     // Rolloff mode buttons
@@ -1421,6 +1423,11 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 119) {
                 audioReactor?.colorMode = AudioReactor.ColorMode.FLASH
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 127) {
+                // BOOM: snap box to detected high-variance zone
+                audioReactor?.lockBoom()
+                Log.i(TAG, "BOOM: locked box to ${audioReactor?.boomLeft}-${audioReactor?.boomRight}")
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton in 120..122) {
                 audioReactor?.washScope = AudioReactor.WashScope.entries[hoveredActionButton - 120]
@@ -2280,10 +2287,11 @@ class FilamentModelActivity : ComponentActivity() {
                 // Bar position: center of bin mapped to screen
                 val screenX = specLeft + ((binLeft - visLeft) / visRange) * specW
 
-                // EXPAND amplifies the bars visually AND for box fill
+                // EXPAND amplifies bar swings, limiter prevents clipping
                 val rawLevel = bins[i] * vZoom * expand
                 if (rawLevel < 0.003f) continue
-                val barH = (rawLevel * specH).coerceAtMost(specH)
+                val displayLevel = reactor?.limitDisplay(rawLevel) ?: rawLevel
+                val barH = (displayLevel * specH).coerceAtMost(specH)
 
                 // Color: bass(pink) → mid(cyan) → high(blue)
                 val frac = i / 64f
@@ -2464,20 +2472,30 @@ class FilamentModelActivity : ComponentActivity() {
                 sy += 32f
             }
 
-            // ── Buttons ──
+            // ── Buttons: BOOM / OFF / BACK ──
             val btnY = uiH - 75f; val btnH = 50f
-            val halfW = (uiW - 70f) / 2f
+            val thirdW = (uiW - 80f) / 3f
+            p.textSize = 22f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
 
+            // BOOM button
+            val boomReady = reactor?.boomReady ?: false
+            p.color = if (hoveredActionButton == 127) 0x80FF9500.toInt()
+                else if (boomReady) 0x40FF9500.toInt() else 0x15FF9500.toInt()
+            canvas.drawRoundRect(30f, btnY, 30f + thirdW, btnY + btnH, 10f, 10f, p)
+            p.color = if (boomReady) 0xFFFF9500.toInt() else 0xFF555555.toInt()
+            canvas.drawText("\uD83D\uDCA5 BOOM", 30f + thirdW / 2f, btnY + 33f, p)
+
+            // OFF button
             p.color = if (hoveredActionButton == 112) 0x80F04858.toInt() else 0x20F04858.toInt()
-            canvas.drawRoundRect(30f, btnY, 30f + halfW, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(40f + thirdW, btnY, 40f + thirdW * 2f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 112) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt()
-            p.textSize = 24f; p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = true
-            canvas.drawText("TURN OFF", 30f + halfW / 2f, btnY + 33f, p)
+            canvas.drawText("OFF", 40f + thirdW * 1.5f, btnY + 33f, p)
 
+            // BACK button
             p.color = if (hoveredActionButton == 111) 0x80EC4899.toInt() else 0x20EC4899.toInt()
-            canvas.drawRoundRect(40f + halfW, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(50f + thirdW * 2f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
-            canvas.drawText("\u25C0 BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, btnY + 33f, p)
+            canvas.drawText("\u25C0 BACK", 50f + thirdW * 2f + (uiW - 80f - thirdW * 2f) / 2f, btnY + 33f, p)
             p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
 
             // ── Laser cursor (bright, visible crosshair) ──

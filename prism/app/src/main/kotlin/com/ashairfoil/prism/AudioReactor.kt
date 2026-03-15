@@ -75,9 +75,19 @@ class AudioReactor {
     private var hardKneeTriggered = false
     private var throbLocked = false  // true = in decay cycle, cannot retrigger
 
-    // Anti-dropout: track when FFT last fired
+    // Anti-dropout
     @Volatile private var fftFrameStamp = 0
     private var updateFrameCount = 0
+
+    // BOOM detector: tracks per-bin variance to find biggest swings
+    private val binMean = FloatArray(DISPLAY_BINS)
+    private val binVariance = FloatArray(DISPLAY_BINS)
+    @Volatile var boomLeft = 0f; private set   // detected boom range
+    @Volatile var boomRight = 0.35f; private set
+    @Volatile var boomReady = false; private set
+
+    // Graphic limiter
+    @Volatile var graphicLimiter = true  // soft-clip display so pinned bars still show detail
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -327,6 +337,30 @@ class AudioReactor {
             boxFillPct = prevFillPct
         }
 
+        // BOOM detector: track variance per bin, find biggest consistent swings
+        val boomBins = spectrumBins
+        val decay = 0.97f; val rise = 0.03f
+        var maxVar = 0f; var maxVarBin = 0
+        for (j in 0 until DISPLAY_BINS) {
+            binMean[j] = binMean[j] * decay + boomBins[j] * rise
+            val diff = boomBins[j] - binMean[j]
+            binVariance[j] = binVariance[j] * decay + diff * diff * rise
+            if (binVariance[j] > maxVar) { maxVar = binVariance[j]; maxVarBin = j }
+        }
+        // Expand from peak variance bin outward (bins with >40% of max variance)
+        if (maxVar > 0.001f && updateFrameCount > 72) {
+            val threshold40 = maxVar * 0.4f
+            var lo = maxVarBin; var hi = maxVarBin
+            while (lo > 0 && binVariance[lo - 1] > threshold40) lo--
+            while (hi < DISPLAY_BINS - 1 && binVariance[hi + 1] > threshold40) hi++
+            // Add 1-bin padding
+            lo = (lo - 1).coerceAtLeast(0)
+            hi = (hi + 1).coerceAtMost(DISPLAY_BINS - 1)
+            boomLeft = lo.toFloat() / DISPLAY_BINS
+            boomRight = (hi + 1).toFloat() / DISPLAY_BINS
+            boomReady = true
+        }
+
         // Color cycling
         val dt2 = 1f / 72f
         when (colorMode) {
@@ -341,6 +375,21 @@ class AudioReactor {
             }
             ColorMode.FIXED -> {} // use beatHue directly
         }
+    }
+
+    /** Snap the box to the detected BOOM zone */
+    fun lockBoom() {
+        if (boomReady) {
+            boxLeft = boomLeft
+            boxRight = boomRight
+        }
+    }
+
+    /** Apply graphic limiter: soft-clip so pinned bars still show detail */
+    fun limitDisplay(rawLevel: Float): Float {
+        if (!graphicLimiter) return rawLevel
+        // Soft-clip curve: 1 - exp(-x * 2.5) — always below 1.0, preserves detail in hot signals
+        return (1f - kotlin.math.exp(-rawLevel * 2.5f))
     }
 
     val isActive: Boolean get() = started && enabled
