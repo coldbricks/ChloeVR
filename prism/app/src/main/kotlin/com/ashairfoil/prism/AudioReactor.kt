@@ -218,26 +218,16 @@ class AudioReactor {
             return
         }
 
-        // Write raw values into delay ring buffer
-        bassDelayBuf[delayWriteIdx] = rawBass
-        midDelayBuf[delayWriteIdx] = rawMid
-        highDelayBuf[delayWriteIdx] = rawHigh
-        delayWriteIdx = (delayWriteIdx + 1) % delayBufferSize
+        // Simple envelope: fast attack, slow decay on raw FFT values
+        val rb = rawBass.coerceAtMost(1f)
+        val rm = rawMid.coerceAtMost(1f)
+        val rh = rawHigh.coerceAtMost(1f)
 
-        // Read delayed values (delay in frames = delay_seconds * 72fps)
-        val delayFrames = (delaySeconds * 72f).toInt().coerceIn(0, delayBufferSize - 1)
-        val readIdx = (delayWriteIdx - delayFrames - 1 + delayBufferSize) % delayBufferSize
-        val dBass = bassDelayBuf[readIdx]
-        val dMid = midDelayBuf[readIdx]
-        val dHigh = highDelayBuf[readIdx]
-
-        val dt = 1f / 72f // frame time in seconds
-        bass = processBand(bass, dBass, bassConfig, ::bassGateOpen, ::bassRamp, ::bassPeakVal, ::bassFalloffT, dt)
-        mid = processBand(mid, dMid, midConfig, ::midGateOpen, ::midRamp, ::midPeakVal, ::midFalloffT, dt)
-        high = processBand(high, dHigh, highConfig, ::highGateOpen, ::highRamp, ::highPeakVal, ::highFalloffT, dt)
-
-        val totalWeight = (bassConfig.weight + midConfig.weight + highConfig.weight).coerceAtLeast(0.01f)
-        overall = (bass * bassConfig.weight + mid * midConfig.weight + high * highConfig.weight) / totalWeight
+        // Fast attack (0.4), slow decay (0.08) — simple and reliable
+        bass = if (rb > bass) bass + (rb - bass) * 0.4f else bass + (rb - bass) * 0.08f
+        mid = if (rm > mid) mid + (rm - mid) * 0.4f else mid + (rm - mid) * 0.08f
+        high = if (rh > high) high + (rh - high) * 0.35f else high + (rh - high) * 0.1f
+        overall = bass * 0.5f + mid * 0.3f + high * 0.2f
     }
 
     private inline fun processBand(

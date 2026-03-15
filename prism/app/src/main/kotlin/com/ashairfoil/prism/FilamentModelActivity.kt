@@ -214,7 +214,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var foveationToggleLatch = false
 
     // Auto-floor: lock grid to detected XR floor plane
-    @Volatile private var autoFloorEnabled = true
+    @Volatile private var autoFloorEnabled = false  // disabled — causes jitter, user snaps manually with A
     @Volatile private var detectedFloorY = Float.MIN_VALUE
 
     // Yeet animation (model delete with fly-off)
