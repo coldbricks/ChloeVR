@@ -54,13 +54,23 @@ class AudioReactor {
     @Volatile var outputCeiling = 1.0f
     @Volatile var threshold = 0.15f
     @Volatile var trim = 1.0f
-    @Volatile var beatHue = 330f      // 0-360 degrees, default hot pink
-    @Volatile var smootherAmount = 0.3f  // 0=raw/jittery, 1=very smooth
+    @Volatile var beatHue = 330f
+    @Volatile var smootherAmount = 0.3f
+    @Volatile var specZoom = 1.0f     // visual zoom on spectrum display (1=normal, 3=3x amplified)
     private var prevFillPct = 0f
 
-    // Hard knee state: tracks time since last trigger for linear decay
+    // Hard knee state
     private var hardKneeTimer = 0f
     private var hardKneeTriggered = false
+
+    // BPM detection
+    @Volatile var detectedBpm = 0f; private set
+    private val bpmBufferSize = 216   // ~3 seconds at 72fps
+    private val bpmBuffer = FloatArray(bpmBufferSize)
+    private var bpmWriteIdx = 0
+    private var bpmFrameCount = 0
+    private var lastBeatFrame = -1
+    private val beatIntervals = mutableListOf<Int>()  // frames between beats
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -275,17 +285,47 @@ class AudioReactor {
             }
         }
 
-        // Dynamic range + trim
+        // Dynamic range EXPANDER: pow(value, ratio)
+        // ratio > 1 = expand (quiet quieter, loud louder — MORE dramatic)
+        // ratio < 1 = compress (less dramatic)
+        // ratio = 1 = linear (no change)
         val scaled = if (smoothedOutput > 0f && dynRange > 0f) {
-            Math.pow(smoothedOutput.toDouble(), 1.0 / dynRange.toDouble()).toFloat() * trim
+            Math.pow(smoothedOutput.toDouble(), dynRange.toDouble()).toFloat() * trim
         } else { 0f }
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
 
-        // Smoother: IIR low-pass filter to reduce jitter
-        val smoothAlpha = 1f - smootherAmount * 0.9f  // 1.0=no smooth, 0.1=heavy smooth
+        // Smoother
+        val smoothAlpha = 1f - smootherAmount * 0.9f
         boxFillPct = prevFillPct + (boxFillPct - prevFillPct) * smoothAlpha
         prevFillPct = boxFillPct
+
+        // BPM detection: track bass peaks and measure intervals
+        bpmFrameCount++
+        bpmBuffer[bpmWriteIdx] = bass
+        bpmWriteIdx = (bpmWriteIdx + 1) % bpmBufferSize
+
+        // Detect beat: bass crosses above threshold and is a local peak
+        val prev2 = bpmBuffer[(bpmWriteIdx - 3 + bpmBufferSize) % bpmBufferSize]
+        val prev1 = bpmBuffer[(bpmWriteIdx - 2 + bpmBufferSize) % bpmBufferSize]
+        val curr = bass
+        if (prev1 > threshold && prev1 > prev2 && prev1 >= curr && bpmFrameCount - lastBeatFrame > 10) {
+            // Found a beat peak
+            if (lastBeatFrame > 0) {
+                val interval = bpmFrameCount - lastBeatFrame
+                beatIntervals.add(interval)
+                if (beatIntervals.size > 16) beatIntervals.removeAt(0)
+
+                // Average interval → BPM
+                if (beatIntervals.size >= 4) {
+                    val avgFrames = beatIntervals.average()
+                    detectedBpm = (72f * 60f / avgFrames.toFloat())  // 72fps
+                    // Sanity: typical music is 60-200 BPM
+                    if (detectedBpm < 40f || detectedBpm > 220f) detectedBpm = 0f
+                }
+            }
+            lastBeatFrame = bpmFrameCount
+        }
     }
 
     val isActive: Boolean get() = started && enabled
@@ -309,8 +349,7 @@ class AudioReactor {
     fun statusString(): String {
         if (!enabled) return "OFF"
         val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT" }
-        return "$modeStr %.0f%% A:%.0fms R:%.0fms".format(
-            boxFillPct * 100, attackMs, releaseMs
-        )
+        val bpmStr = if (detectedBpm > 0f) " %.0fBPM".format(detectedBpm) else ""
+        return "$modeStr %.0f%%$bpmStr".format(boxFillPct * 100)
     }
 }
