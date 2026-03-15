@@ -608,7 +608,7 @@ class FilamentModelActivity : ComponentActivity() {
             { (audioReactor?.smootherAmount ?: 0.3f) * 100f }, { audioReactor?.smootherAmount = it / 100f }),
         BeatSlider("ZOOM-H", "x", 1f, 8f,
             { audioReactor?.specZoom ?: 1f }, { audioReactor?.specZoom = it }),
-        BeatSlider("ZOOM-V", "x", 0.5f, 5f,
+        BeatSlider("ZOOM-V", "x", 0.5f, 20f,
             { audioReactor?.specVZoom ?: 1f }, { audioReactor?.specVZoom = it }),
         BeatSlider("COLOR", "\u00B0", 0f, 360f,
             { audioReactor?.beatHue ?: 330f }, { audioReactor?.beatHue = it }),
@@ -2330,11 +2330,10 @@ class FilamentModelActivity : ComponentActivity() {
                 // Bar position: center of bin mapped to screen
                 val screenX = specLeft + ((binLeft - visLeft) / visRange) * specW
 
-                // EXPAND amplifies bar swings, limiter prevents clipping
+                // Bars: vZoom amplifies, expand amplifies, clamp at top
                 val rawLevel = bins[i] * vZoom * expand
                 if (rawLevel < 0.003f) continue
-                val displayLevel = reactor?.limitDisplay(rawLevel) ?: rawLevel
-                val barH = (displayLevel * specH).coerceAtMost(specH)
+                val barH = (rawLevel * specH).coerceAtMost(specH)
 
                 // Color: bass(pink) → mid(cyan) → high(blue)
                 val frac = i / 64f
@@ -2372,8 +2371,11 @@ class FilamentModelActivity : ComponentActivity() {
                 val visRange = visRight - visLeft
                 val bxL = specLeft + ((reactor.boxLeft - visLeft) / visRange).coerceIn(0f, 1f) * specW
                 val bxR = specLeft + ((reactor.boxRight - visLeft) / visRange).coerceIn(0f, 1f) * specW
-                val bxT = specBot - reactor.boxTop * specH
-                val bxB = specBot - reactor.boxBottom * specH
+                // Box edges in same space as bars (vZoom + expand applied)
+                val vz = reactor.specVZoom
+                val ex = reactor.dynRange
+                val bxT = specBot - (reactor.boxTop * vz * ex).coerceAtMost(1f) * specH
+                val bxB = specBot - (reactor.boxBottom * vz * ex).coerceAtMost(1f) * specH
 
                 // Fill
                 p.color = 0x18FFFF00.toInt()
