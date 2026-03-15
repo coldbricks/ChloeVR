@@ -1178,34 +1178,41 @@ class FilamentModelActivity : ComponentActivity() {
                                         val vc = reactor.specViewCenter.coerceIn(vw / 2f, 1f - vw / 2f)
                                         val vL = vc - vw / 2f
                                         val normX = vL + screenNormX * vw  // map to actual spectrum position
-                                        val normY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f) // flip: top=1, bot=0
+                                        val screenY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f)
+                                        // Convert screen Y to raw box coordinates (undo vZoom * expand)
+                                        val vzex = (reactor.specVZoom * reactor.dynRange).coerceAtLeast(0.01f)
+                                        val normY = (screenY / vzex).coerceIn(0f, 1f)
+
+                                        // Display-space box positions (for hit testing)
+                                        val dispBoxTop = (reactor.boxTop * vzex).coerceAtMost(1f)
+                                        val dispBoxBot = (reactor.boxBottom * vzex).coerceAtMost(1f)
 
                                         if (rightTrigger > 0.5f) {
                                             if (beatDragCorner < 0) {
-                                                // First frame of trigger — decide what to grab
+                                                // Compare in display space
                                                 val corners = arrayOf(
-                                                    floatArrayOf(reactor.boxLeft, reactor.boxTop),
-                                                    floatArrayOf(reactor.boxRight, reactor.boxTop),
-                                                    floatArrayOf(reactor.boxLeft, reactor.boxBottom),
-                                                    floatArrayOf(reactor.boxRight, reactor.boxBottom)
+                                                    floatArrayOf(reactor.boxLeft, dispBoxTop),
+                                                    floatArrayOf(reactor.boxRight, dispBoxTop),
+                                                    floatArrayOf(reactor.boxLeft, dispBoxBot),
+                                                    floatArrayOf(reactor.boxRight, dispBoxBot)
                                                 )
                                                 var minDist = Float.MAX_VALUE
                                                 var nearestCorner = -1
                                                 for (ci in corners.indices) {
                                                     val d = (normX - corners[ci][0]) * (normX - corners[ci][0]) +
-                                                            (normY - corners[ci][1]) * (normY - corners[ci][1])
+                                                            (screenY - corners[ci][1]) * (screenY - corners[ci][1])
                                                     if (d < minDist) { minDist = d; nearestCorner = ci }
                                                 }
-                                                beatDragCorner = if (minDist < 0.008f) nearestCorner  // close to corner
-                                                    else if (normX in reactor.boxLeft..reactor.boxRight && normY in reactor.boxBottom..reactor.boxTop) 4  // inside box = move
-                                                    else -1  // outside everything
+                                                beatDragCorner = if (minDist < 0.015f) nearestCorner
+                                                    else if (normX in reactor.boxLeft..reactor.boxRight && screenY in dispBoxBot..dispBoxTop) 4
+                                                    else -1
                                             }
-                                            // Apply drag
+                                            // Apply drag (normY is in raw box space)
                                             when (beatDragCorner) {
-                                                0 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.02f, 1f) }
-                                                1 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.02f, 1f) }
-                                                2 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.02f) }
-                                                3 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.02f) }
+                                                0 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.01f, 1f) }
+                                                1 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.01f, 1f) }
+                                                2 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.01f) }
+                                                3 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.01f) }
                                                 4 -> {
                                                     val bw = reactor.boxRight - reactor.boxLeft
                                                     val bh = reactor.boxTop - reactor.boxBottom
