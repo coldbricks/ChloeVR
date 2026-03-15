@@ -1122,14 +1122,13 @@ class FilamentModelActivity : ComponentActivity() {
                                     // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
                                     if (reactor != null) {
-                                        // Map screen position to spectrum coordinates (accounting for zoom)
+                                        // Map screen position to spectrum coordinates (through zoom)
                                         val screenNormX = ((bx - specLeftHit) / (specRightHit - specLeftHit)).coerceIn(0f, 1f)
                                         val hz = reactor.specZoom.coerceAtLeast(1f)
-                                        val boxCtr = (reactor.boxLeft + reactor.boxRight) / 2f
-                                        val hRange = 0.5f / hz
-                                        val vL = (boxCtr - hRange).coerceIn(0f, 1f - 1f / hz)
-                                        val vR = (vL + 1f / hz).coerceAtMost(1f)
-                                        val normX = vL + screenNormX * (vR - vL)  // map to actual spectrum position
+                                        val vw = 1f / hz
+                                        val vc = reactor.specViewCenter.coerceIn(vw / 2f, 1f - vw / 2f)
+                                        val vL = vc - vw / 2f
+                                        val normX = vL + screenNormX * vw  // map to actual spectrum position
                                         val normY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f) // flip: top=1, bot=0
 
                                         if (rightTrigger > 0.5f) {
@@ -2137,11 +2136,21 @@ class FilamentModelActivity : ComponentActivity() {
             // Spectrum bars — horizontal zoom centered on box
             val bins = reactor?.spectrumBins ?: FloatArray(64)
             val specW = specRight - specLeft
-            val hZoom = reactor?.specZoom ?: 1f
-            val boxCenter = ((reactor?.boxLeft ?: 0f) + (reactor?.boxRight ?: 0.35f)) / 2f
-            val halfRange = 0.5f / hZoom
-            val visLeft = (boxCenter - halfRange).coerceIn(0f, 1f - 1f / hZoom.coerceAtLeast(1f))
-            val visRight = (visLeft + 1f / hZoom.coerceAtLeast(1f)).coerceAtMost(1f)
+            val hZoom = reactor?.specZoom?.coerceAtLeast(1f) ?: 1f
+            val viewWidth = 1f / hZoom
+            // Lazy scroll: only move view when box edge is within 15% of display edge
+            val r = reactor
+            if (r != null && hZoom > 1f) {
+                val margin = 0.15f * viewWidth
+                if (r.boxLeft < r.specViewCenter - viewWidth / 2f + margin)
+                    r.specViewCenter = r.boxLeft + viewWidth / 2f - margin
+                if (r.boxRight > r.specViewCenter + viewWidth / 2f - margin)
+                    r.specViewCenter = r.boxRight - viewWidth / 2f + margin
+                r.specViewCenter = r.specViewCenter.coerceIn(viewWidth / 2f, 1f - viewWidth / 2f)
+            }
+            val center = reactor?.specViewCenter ?: 0.5f
+            val visLeft = (center - viewWidth / 2f).coerceIn(0f, 1f - viewWidth)
+            val visRight = (visLeft + viewWidth).coerceAtMost(1f)
             val visLeftBin = (visLeft * 64).toInt().coerceIn(0, 63)
             val visRightBin = (visRight * 64).toInt().coerceIn(visLeftBin + 1, 64)
             val visBinCount = visRightBin - visLeftBin

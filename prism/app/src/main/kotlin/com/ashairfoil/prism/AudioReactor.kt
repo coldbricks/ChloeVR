@@ -56,7 +56,8 @@ class AudioReactor {
     @Volatile var trim = 1.0f
     @Volatile var beatHue = 330f
     @Volatile var smootherAmount = 0.3f
-    @Volatile var specZoom = 1.0f     // visual zoom on spectrum display (1=normal, 3=3x amplified)
+    @Volatile var specZoom = 1.0f     // horizontal zoom (1=full, 8=8x)
+    @Volatile var specViewCenter = 0.5f  // persisted view center for smooth scrolling
     private var prevFillPct = 0f
 
     // Hard knee state
@@ -285,16 +286,10 @@ class AudioReactor {
             }
         }
 
-        // Dynamic range EXPANDER
-        // Maps dynRange slider (0.3..4) to a gentler exponent:
-        // dynRange=1 → exponent=1.0 (linear, no change)
-        // dynRange=2 → exponent=1.3 (moderate expansion)
-        // dynRange=4 → exponent=1.9 (heavy expansion)
-        // dynRange=0.3 → exponent=0.79 (compression)
-        val exponent = 1.0 + (dynRange.toDouble() - 1.0) * 0.3
-        val scaled = if (smoothedOutput > 0f) {
-            Math.pow(smoothedOutput.toDouble(), exponent).toFloat() * trim
-        } else { 0f }
+        // EXPAND: higher = more dramatic swing
+        // Simple gain with clamp — peaks hit ceiling, valleys stay low
+        // dynRange=1: identity, dynRange=2: 2x gain (more swing), dynRange=0.5: half (less swing)
+        val scaled = (smoothedOutput * dynRange * trim).coerceAtMost(1f)
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
 
