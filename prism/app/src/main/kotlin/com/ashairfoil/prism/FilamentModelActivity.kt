@@ -1483,7 +1483,8 @@ class FilamentModelActivity : ComponentActivity() {
                             }
                         }
                     }
-                    hapticManager?.startScan()
+                    Log.i(TAG, "Starting haptic BLE scan...")
+                    runOnUiThread { hapticManager?.startScan() }
                     hapticEnabled = true
                 }
                 uiNeedsRefresh = true

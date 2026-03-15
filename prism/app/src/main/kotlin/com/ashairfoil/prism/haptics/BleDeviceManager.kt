@@ -126,17 +126,20 @@ class BleDeviceManager(private val context: Context) {
      *  When autoConnect is true, automatically connects to first Lovense device.
      */
     fun startScan(context: Context? = null): Boolean {
-        if (scanner == null || isScanning) return false
+        android.util.Log.i(TAG, "startScan: scanner=$scanner isScanning=$isScanning adapter=${bluetoothAdapter?.isEnabled}")
+        if (scanner == null) { android.util.Log.e(TAG, "No BLE scanner available!"); return false }
+        if (isScanning) return false
         discoveredDevices.clear()
         autoConnect = true
 
         try {
             scanner.startScan(scanCallback)
             isScanning = true
+            android.util.Log.i(TAG, "BLE scan STARTED — looking for Lovense devices...")
             handler.postDelayed({ stopScan() }, SCAN_TIMEOUT_MS)
             return true
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "BLE scan start failed: ${e.message}")
+            android.util.Log.e(TAG, "BLE scan start failed: ${e.message}", e)
             return false
         }
     }
