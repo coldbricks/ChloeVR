@@ -295,30 +295,40 @@ class AudioReactor {
             }
         } else {
             throbLocked = false
-            // Attack: snap up fast when signal exceeds current output
-            if (rawFill > smoothedOutput) {
-                smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
-                hardKneeTriggered = true
-                hardKneeTimer = 0f
-            } else {
-                when (rolloff) {
-                    Rolloff.INSTANT -> {
-                        smoothedOutput = if (rawFill > threshold) rawFill else 0f
-                    }
-                    Rolloff.HARD_KNEE -> {
-                        if (hardKneeTriggered) {
-                            hardKneeTimer += dt
-                            val releaseSec = releaseMs / 1000f
-                            val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
-                            smoothedOutput = smoothedOutput * (1f - progress)
-                            if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
-                        }
-                    }
-                    Rolloff.SOFT_KNEE -> {
-                        smoothedOutput += (rawFill - smoothedOutput) * relAlpha
-                    }
-                    else -> {}
+
+            // All modes: when box fill crosses threshold → snap to 100%
+            // The OUTPUT is always 0% or 100% on trigger, then decays.
+            // The box fill PERCENTAGE determines IF it triggers, not HOW MUCH.
+            val triggered = rawFill > threshold
+
+            when (rolloff) {
+                Rolloff.INSTANT -> {
+                    // Binary: above threshold = 100%, below = 0%
+                    smoothedOutput = if (triggered) 1f else 0f
                 }
+                Rolloff.HARD_KNEE -> {
+                    // Trigger → snap to 100%, linear decay over releaseMs
+                    if (triggered && !hardKneeTriggered) {
+                        smoothedOutput = 1f
+                        hardKneeTriggered = true
+                        hardKneeTimer = 0f
+                    }
+                    if (hardKneeTriggered && !triggered) {
+                        hardKneeTimer += dt
+                        val progress = (hardKneeTimer / (releaseMs / 1000f)).coerceIn(0f, 1f)
+                        smoothedOutput = 1f - progress  // linear ramp from 1 to 0
+                        if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
+                    }
+                }
+                Rolloff.SOFT_KNEE -> {
+                    // Trigger → snap to 100%, exponential decay
+                    if (triggered) {
+                        smoothedOutput = 1f
+                    } else {
+                        smoothedOutput += (0f - smoothedOutput) * relAlpha
+                    }
+                }
+                else -> {}
             }
         }
 
