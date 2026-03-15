@@ -1125,10 +1125,10 @@ class FilamentModelActivity : ComponentActivity() {
                                 beatCursorX = bx; beatCursorY = by  // track for visible cursor
 
                                 // Layout: spectrum 140..390, sliders 418..786, buttons 920+
-                                val specTopHit = 155f; val specBotHit = 385f
+                                val specTopHit = 155f; val specBotHit = 435f  // specTop + specH
                                 val specLeftHit = 40f; val specRightHit = 984f  // uiW(1024) - 40
-                                val sliderAreaTopHit = 418f
-                                val sliderRowH = 35f
+                                val sliderAreaTopHit = 465f  // after bigger spectrum
+                                val sliderRowH = 32f  // tighter to fit
 
                                 if (by > 920f) {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
@@ -2228,7 +2228,7 @@ class FilamentModelActivity : ComponentActivity() {
             }
 
             // ── SPECTRUM ANALYZER ──
-            val specLeft = 40f; val specRight = uiW - 80f; val specTop = 155f; val specH = 230f
+            val specLeft = 40f; val specRight = uiW - 80f; val specTop = 155f; val specH = 280f
             val specBot = specTop + specH
 
             // Background
@@ -2273,9 +2273,10 @@ class FilamentModelActivity : ComponentActivity() {
                     val barW = specW / (64f / (visRange * 64f)) - 1f
                     val barX = specLeft + screenFrac * specW
                     val vZoom = reactor?.specVZoom ?: 1f
-                    val level = (bins[i] * vZoom).coerceIn(0f, 1f)
-                    if (level < 0.005f) continue
-                    val barH = level * specH
+                    val rawLevel = bins[i] * vZoom
+                    if (rawLevel < 0.005f) continue
+                    // Don't clamp to 1.0 — let bars clip at spectrum top, not crush
+                    val barH = (rawLevel * specH).coerceAtMost(specH)
 
                     // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
                     val frac = i.toFloat() / 64f
@@ -2298,6 +2299,7 @@ class FilamentModelActivity : ComponentActivity() {
                     }
 
                     // Bar glow (slightly wider, dimmer underneath)
+                    val level = rawLevel.coerceAtMost(1f)  // for color/alpha calculations
                     val glowAlpha = (0x40 * level).toInt().coerceIn(0, 0x60)
                     p.color = (glowAlpha shl 24) or (cr shl 16) or (cg shl 8) or cb
                     canvas.drawRect(barX - 0.5f, specBot - barH - 2f, barX + barW + 0.5f, specBot, p)
@@ -2401,7 +2403,7 @@ class FilamentModelActivity : ComponentActivity() {
             p.textAlign = android.graphics.Paint.Align.LEFT
 
             // ── SLIDERS (below spectrum) ──
-            val sliderAreaTop = specBot + 28f
+            val sliderAreaTop = specBot + 20f
             val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 24f
             val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD1D5DB.toInt() }
             val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 20f; color = 0xFF9CA3AF.toInt() }
@@ -2459,7 +2461,7 @@ class FilamentModelActivity : ComponentActivity() {
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                 }
 
-                sy += 35f
+                sy += 32f
             }
 
             // ── Buttons ──
