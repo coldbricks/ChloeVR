@@ -158,11 +158,18 @@ class BleDeviceManager(private val context: Context) {
             val name = result.scanRecord?.deviceName
                 ?: device.name
                 ?: discoveredDevices[device.address]?.name
-                ?: return
-            val isLovense = name.startsWith("LVS-") || name.contains("Lovense", ignoreCase = true)
+
+            // Check service UUIDs for Lovense even if name is null
+            val serviceUuids = result.scanRecord?.serviceUuids?.map { it.uuid } ?: emptyList()
+            val hasLovenseService = KNOWN_SERVICES.any { it.service in serviceUuids }
+            val isLovense = hasLovenseService ||
+                (name != null && (name.startsWith("LVS-") || name.contains("Lovense", ignoreCase = true)))
+
+            val displayName = name ?: "Unknown-${device.address.takeLast(5)}"
+            android.util.Log.d(TAG, "Scan: $displayName rssi=${result.rssi} lovense=$isLovense uuids=$serviceUuids")
 
             val info = BleDeviceInfo(
-                name = name,
+                name = displayName,
                 address = device.address,
                 rssi = result.rssi,
                 isLovense = isLovense
@@ -172,7 +179,7 @@ class BleDeviceManager(private val context: Context) {
 
             // Auto-connect to first Lovense device found
             if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected) {
-                android.util.Log.i(TAG, "Auto-connecting to Lovense device: $name (${device.address})")
+                android.util.Log.i(TAG, "Auto-connecting to Lovense: $displayName (${device.address})")
                 autoConnect = false
                 stopScan()
                 connect(device.address)
