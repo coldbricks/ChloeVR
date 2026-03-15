@@ -257,9 +257,10 @@ class AudioReactor {
             if (binNormX < boxLeft || binNormX > boxRight) continue
             binsInBox++
 
-            // EXPAND amplifies bar height — bigger swings
-            val barHeight = (bins[i] * dynRange).coerceIn(0f, 1f)
-            // If bar reaches into the box, it contributes to fill
+            // RAW bar height — no expand, no zoom. Just the actual FFT level.
+            // Display transforms are for SEEING. Fill is the ACTUAL percentage.
+            val barHeight = bins[i]
+            // What fraction of the box height does this bar fill?
             val fillInBox = ((barHeight - boxBottom) / boxH).coerceIn(0f, 1f)
             fillSum += fillInBox
         }
