@@ -4,156 +4,97 @@ import android.media.audiofx.Visualizer
 import android.util.Log
 
 /**
- * AudioReactor — BeatReactor-style audio analysis for driving lighting parameters.
+ * AudioReactor — BCC BeatReactor clone for driving lighting parameters.
  *
- * Inspired by Boris FX BCC BeatReactor:
- *   - Captures system audio output via Android Visualizer API
- *   - User-tunable frequency band ranges (not just fixed bass/mid/high)
- *   - Multiple output modes: Magnitude, Gate (on/off trigger), Ramp
- *   - Per-band attack/decay envelope with floor/ceiling clamp
- *   - Configurable sensitivity and frequency cutoffs
- *   - Beat detection with threshold (gate mode)
+ * How it works:
+ *   1. FFT from Android Visualizer -> 64 log-frequency display bins (spectrumBins)
+ *   2. A bounding box sits on the spectrum display
+ *   3. Output = percentage of the box area filled by the spectrum bars
+ *   4. That raw fill goes through: attack/release envelope -> dynamic range -> floor/ceiling
+ *   5. Final boxFillPct (0..1) drives whatever parameter it's mapped to
  *
- * Usage:
- *   val reactor = AudioReactor()
- *   reactor.start()
- *   // Each frame on render thread:
- *   reactor.update()
- *   val bass = reactor.bass   // 0..1 smoothed
- *   reactor.stop()
+ * The spectrum display and the output are SEPARATE concerns:
+ *   - spectrumBins are for display (sensitivity is a display gain)
+ *   - boxFillPct is the shaped output (attack/release/dynRange shape it)
  */
 class AudioReactor {
 
     companion object {
         private const val TAG = "AudioReactor"
-        private const val CAPTURE_SIZE = 1024 // more FFT bins = better frequency resolution
+        private const val CAPTURE_SIZE = 1024
+        private const val DISPLAY_BINS = 64
     }
 
-    // ── Output values (read from render thread) ──
+    // ── THE output: 0..1, drives lighting ──
+    @Volatile var boxFillPct = 0f; private set
+
+    // ── Spectrum display bins (for UI visualization) ──
+    @Volatile var spectrumBins = FloatArray(DISPLAY_BINS)
+
+    // ── Per-band meters (for B/M/H display) ──
     @Volatile var bass = 0f; private set
     @Volatile var mid = 0f; private set
     @Volatile var high = 0f; private set
-    @Volatile var overall = 0f; private set
-    @Volatile var boxFillPct = 0f; private set  // THE output: % of bounding box filled
 
-    // ── Bounding box (user adjustable on spectrum) ──
-    // Normalized 0..1 coordinates on the spectrum display
-    @Volatile var boxLeft = 0.0f     // frequency range left (0=20Hz)
-    @Volatile var boxRight = 0.4f    // frequency range right (1=20kHz)
-    @Volatile var boxBottom = 0.1f   // amplitude floor (0=silence)
-    @Volatile var boxTop = 1.0f      // amplitude ceiling (1=max)
+    // ── Bounding box (0..1 normalized on spectrum display) ──
+    @Volatile var boxLeft = 0.0f
+    @Volatile var boxRight = 0.35f
+    @Volatile var boxBottom = 0.05f
+    @Volatile var boxTop = 0.85f
 
-    // ── Output controls ──
-    @Volatile var outputScale = 1.5f   // multiply the box fill % (>1 = expand, <1 = compress)
-    @Volatile var outputFloor = 0.0f   // minimum output value
-    @Volatile var outputCeiling = 1.0f // maximum output value
+    // ── Dynamics (applied to OUTPUT, not to spectrum) ──
+    @Volatile var attack = 0.7f       // how fast output RISES toward raw fill (1=instant)
+    @Volatile var release = 0.12f     // how fast output FALLS when raw drops (0.01=slow pump)
+    @Volatile var dynRange = 2.0f     // >1 = expand range, <1 = compress
+    @Volatile var outputFloor = 0.0f
+    @Volatile var outputCeiling = 1.0f
 
-    // ── Global config ──
+    // ── Input ──
+    @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
     @Volatile var enabled = false
-    @Volatile var sensitivity = 1.2f
 
-    // ── Per-band configuration (BeatReactor-style) ──
-    data class BandConfig(
-        var freqLow: Float,        // low cutoff Hz
-        var freqHigh: Float,       // high cutoff Hz
-        var attack: Float = 0.4f,  // 0..1, how fast values rise
-        var decay: Float = 0.08f,  // 0..1, how fast values fall
-        var floor: Float = 0f,     // output minimum (clamp)
-        var ceiling: Float = 1f,   // output maximum (clamp)
-        var mode: OutputMode = OutputMode.MAGNITUDE,
-        var falloff: Falloff = Falloff.QUADRATIC_SOFT,
-        var falloffTime: Float = 0.3f,  // seconds — duration of the falloff tail
-        var gateThreshold: Float = 0.3f,
-        var weight: Float = 1f,
-        var scaleOutput: Float = 1f  // final multiplier (like BeatReactor's Scale Output %)
-    )
-
-    enum class OutputMode {
-        MAGNITUDE,  // continuous 0..1 envelope following energy
-        GATE,       // binary 0 or 1 when energy crosses threshold
-        RAMP_UP,    // on beat: ramp from 0 to 1, then hold
-        RAMP_DOWN   // on beat: jump to 1, then ramp down to 0
-    }
-
-    /** BeatReactor-style falloff shapes for the decay tail after a beat */
-    enum class Falloff {
-        IMMEDIATE,       // no falloff — drops as soon as energy drops
-        LINEAR,          // straight line decay
-        QUADRATIC_HARD,  // fast start, ease toward end
-        QUADRATIC_SOFT,  // ease at peak, accelerate toward end
-        SUSTAIN          // hold peak value for falloffTime, then drop
-    }
-
-    val bassConfig = BandConfig(freqLow = 20f, freqHigh = 150f, attack = 0.6f, decay = 0.25f)
-    val midConfig = BandConfig(freqLow = 150f, freqHigh = 2000f, attack = 0.5f, decay = 0.3f)
-    val highConfig = BandConfig(freqLow = 2000f, freqHigh = 8000f, attack = 0.45f, decay = 0.35f)
-
-    // ── Internal state ──
+    // ── Internal ──
     private var visualizer: Visualizer? = null
+    private var started = false
+    private var smoothedOutput = 0f  // the envelope-followed output (before dynRange)
+
+    // Temp buffer to avoid allocation in FFT callback
+    private val tempBins = FloatArray(DISPLAY_BINS)
+    private val tempBinMax = FloatArray(DISPLAY_BINS)
+
+    // Per-band raw values (written by FFT thread, read by render thread)
     @Volatile private var rawBass = 0f
     @Volatile private var rawMid = 0f
     @Volatile private var rawHigh = 0f
-    private var started = false
-
-    // Gate state (edge detection for beat triggers)
-    private var bassGateOpen = false
-    private var midGateOpen = false
-    private var highGateOpen = false
-
-    // Ramp state
-    private var bassRamp = 0f
-    private var midRamp = 0f
-    private var highRamp = 0f
-
-    // Falloff state — tracks time since last beat peak for shaped decay
-    private var bassPeakVal = 0f; private var bassFalloffT = 0f
-    private var midPeakVal = 0f; private var midFalloffT = 0f
-    private var highPeakVal = 0f; private var highFalloffT = 0f
-
-    // Delay buffer (BeatReactor Delay feature — offset reaction from audio)
-    @Volatile var delaySeconds = 0.05f  // small positive = reaction slightly after beat (feels causal)
-    private val delayBufferSize = 30  // ~0.4s at 72fps
-    private val bassDelayBuf = FloatArray(delayBufferSize)
-    private val midDelayBuf = FloatArray(delayBufferSize)
-    private val highDelayBuf = FloatArray(delayBufferSize)
-    private var delayWriteIdx = 0
-
-    // Peak hold for auto-gain (adapts to volume level)
-    private var peakEnergy = 0.01f
-    @Volatile var autoGain = true
 
     fun start(): Boolean {
         if (started) return true
         try {
-            Log.i(TAG, "Attempting Visualizer(0) for system audio capture...")
-            val vis = Visualizer(0) // session 0 = system output mix
-            Log.i(TAG, "Visualizer created, setting capture size=$CAPTURE_SIZE")
+            Log.i(TAG, "Creating Visualizer(0) for system audio...")
+            val vis = Visualizer(0)
             vis.captureSize = CAPTURE_SIZE
 
             val maxRate = Visualizer.getMaxCaptureRate()
-            Log.i(TAG, "Max capture rate: $maxRate, setting listener...")
+            Log.i(TAG, "Visualizer capture size=$CAPTURE_SIZE, maxRate=$maxRate")
 
-            var fftCallCount = 0
+            var callCount = 0
             vis.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
                 override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
                 override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
                     if (fft != null) {
-                        fftCallCount++
-                        if (fftCallCount <= 3 || fftCallCount % 100 == 0) {
-                            Log.i(TAG, "FFT callback #$fftCallCount: ${fft.size} bytes, rate=$samplingRate")
+                        callCount++
+                        if (callCount <= 3 || callCount % 200 == 0) {
+                            Log.i(TAG, "FFT #$callCount: ${fft.size} bytes, rate=$samplingRate")
                         }
                         processFft(fft, samplingRate)
                     }
                 }
             }, maxRate, false, true)
 
-            Log.i(TAG, "Enabling Visualizer...")
             vis.enabled = true
-            Log.i(TAG, "Visualizer enabled=${vis.enabled}, samplingRate=${vis.samplingRate}")
-
             visualizer = vis
             started = true
-            Log.i(TAG, "AudioReactor started OK")
+            Log.i(TAG, "AudioReactor started, enabled=${vis.enabled}")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start Visualizer: ${e.message}", e)
@@ -170,228 +111,152 @@ class AudioReactor {
         }
         visualizer = null
         started = false
-        bass = 0f; mid = 0f; high = 0f; overall = 0f
-        peakEnergy = 0.01f
+        bass = 0f; mid = 0f; high = 0f
+        boxFillPct = 0f; smoothedOutput = 0f
     }
 
     /**
-     * FFT callback from Visualizer thread.
+     * FFT callback — runs on Visualizer thread.
      * FFT format: [real0, imag0, real1, imag1, ...] as signed bytes.
+     *
+     * Builds 64 log-frequency display bins using MAX of contributing FFT bins
+     * (not average — average kills peaks and makes bars barely move).
      */
-    // Raw per-bin magnitudes for spectrum visualization (written by FFT thread)
-    @Volatile var spectrumBins = FloatArray(64)  // reduced to 64 bars for display
-    private var spectrumBinsTemp = FloatArray(64)
-
     private fun processFft(fft: ByteArray, samplingRate: Int) {
         if (!enabled) return
 
         val binCount = fft.size / 2
-        val freqPerBin = (samplingRate / 1000f) / (2f * CAPTURE_SIZE) // Hz per bin
+        // samplingRate from Visualizer is in milliHz, convert to Hz
+        val nyquist = (samplingRate / 1000f) / 2f
+        val freqPerBin = nyquist / binCount
 
-        // Max possible magnitude from signed bytes: sqrt(127^2 + 127^2) ≈ 180
-        val maxMag = 180f
+        // Max theoretical magnitude: sqrt(127^2 + 127^2) ~ 180
+        // Use a moderate normalization so sensitivity can boost it
+        val normValue = 128f
 
-        var bassE = 0f; var bassBins = 0
-        var midE = 0f; var midBins = 0
-        var highE = 0f; var highBins = 0
+        // Clear temp bins
+        for (j in 0 until DISPLAY_BINS) { tempBins[j] = 0f; tempBinMax[j] = 0f }
 
-        // Build spectrum bars (64 display bins, log-spaced)
-        val displayBins = spectrumBinsTemp
-        for (j in displayBins.indices) displayBins[j] = 0f
-        var displayBinCounts = IntArray(64)
+        var bassE = 0f; var bassCnt = 0
+        var midE = 0f; var midCnt = 0
+        var highE = 0f; var highCnt = 0
 
         for (i in 1 until binCount) {
-            val freq = i * freqPerBin
             val real = fft[2 * i].toFloat()
             val imag = fft[2 * i + 1].toFloat()
             val mag = kotlin.math.sqrt(real * real + imag * imag)
 
-            // Percentage of max — this is BeatReactor "box percentage" style
-            val pct = (mag / maxMag) * sensitivity
+            // Normalize and apply sensitivity as display gain
+            val norm = (mag / normValue) * sensitivity
 
-            // Band totals
-            if (freq >= bassConfig.freqLow && freq < bassConfig.freqHigh) { bassE += pct; bassBins++ }
-            if (freq >= midConfig.freqLow && freq < midConfig.freqHigh) { midE += pct; midBins++ }
-            if (freq >= highConfig.freqLow && freq < highConfig.freqHigh) { highE += pct; highBins++ }
+            val freq = i * freqPerBin
 
-            // Map to display bin (log scale: bin 0=~20Hz, bin 63=~20kHz)
+            // Per-band accumulation for B/M/H meters
+            if (freq in 20f..150f) { bassE += norm; bassCnt++ }
+            if (freq in 150f..2000f) { midE += norm; midCnt++ }
+            if (freq in 2000f..8000f) { highE += norm; highCnt++ }
+
+            // Map FFT bin to one of 64 display bins (log frequency scale)
+            // log scale: bin 0 ~ 20Hz, bin 63 ~ 20kHz
             if (freq > 10f) {
-                val logFreq = kotlin.math.ln(freq / 10f) / kotlin.math.ln(2000f) // 0..1 log scale
-                val dBin = (logFreq * 63f).toInt().coerceIn(0, 63)
-                displayBins[dBin] += pct
-                displayBinCounts[dBin]++
+                val logPos = kotlin.math.ln(freq / 20f) / kotlin.math.ln(1000f) // 0..1 across 20Hz-20kHz
+                val dBin = (logPos * (DISPLAY_BINS - 1)).toInt().coerceIn(0, DISPLAY_BINS - 1)
+                // Use MAX of contributing bins (preserves peaks, makes bars actually move)
+                if (norm > tempBinMax[dBin]) tempBinMax[dBin] = norm
             }
         }
 
-        // Average each display bin
-        for (j in displayBins.indices) {
-            if (displayBinCounts[j] > 0) displayBins[j] /= displayBinCounts[j]
+        // Clamp display bins to 0..1 for rendering
+        val output = FloatArray(DISPLAY_BINS)
+        for (j in 0 until DISPLAY_BINS) {
+            output[j] = tempBinMax[j].coerceIn(0f, 1f)
         }
-        spectrumBins = displayBins.copyOf()
+        spectrumBins = output
 
-        // Band outputs: simple average percentage (0..1), no accumulation
-        rawBass = if (bassBins > 0) (bassE / bassBins).coerceIn(0f, 1f) else 0f
-        rawMid = if (midBins > 0) (midE / midBins).coerceIn(0f, 1f) else 0f
-        rawHigh = if (highBins > 0) (highE / highBins).coerceIn(0f, 1f) else 0f
+        // Per-band values (average, clamped)
+        rawBass = if (bassCnt > 0) (bassE / bassCnt).coerceIn(0f, 1f) else 0f
+        rawMid = if (midCnt > 0) (midE / midCnt).coerceIn(0f, 1f) else 0f
+        rawHigh = if (highCnt > 0) (highE / highCnt).coerceIn(0f, 1f) else 0f
     }
 
     /**
-     * Call once per frame. Computes bounding box fill percentage.
-     * This IS the output — percentage of the box area filled by spectrum bars.
+     * Call once per frame on the render thread.
+     *
+     * 1. Compute raw box fill percentage from spectrum bins
+     * 2. Apply attack/release envelope (shapes the output response)
+     * 3. Apply dynamic range scaling
+     * 4. Clamp to floor/ceiling
+     * 5. Store as boxFillPct
+     *
+     * The output NEVER accumulates. It tracks the audio and drops when audio drops.
+     * Attack/release only shape HOW FAST the output follows, not how high it goes.
      */
     fun update() {
         if (!enabled) {
-            bass = 0f; mid = 0f; high = 0f; overall = 0f; boxFillPct = 0f
+            bass = 0f; mid = 0f; high = 0f; boxFillPct = 0f; smoothedOutput = 0f
             return
         }
 
-        // Pass-through band values (light smoothing for display only)
+        // Light smoothing on band meters (display only, not used for output)
         val s = 0.3f
         bass = bass * s + rawBass * (1f - s)
         mid = mid * s + rawMid * (1f - s)
         high = high * s + rawHigh * (1f - s)
 
-        // ── Box fill percentage (the real output) ──
-        // For each spectrum bin inside the box's X range,
-        // compute how much of the bar fills the box's Y range
+        // ── Step 1: Raw box fill percentage ──
+        // For each display bin inside the box's X range,
+        // measure how much of the bar fills the box's Y range.
         val bins = spectrumBins
-        val boxH = (boxTop - boxBottom).coerceAtLeast(0.01f)
+        val boxH = (boxTop - boxBottom).coerceAtLeast(0.001f)
         var fillSum = 0f
         var binsInBox = 0
 
         for (i in bins.indices) {
-            val binNormX = i.toFloat() / bins.size  // 0..1 position
+            val binNormX = i.toFloat() / bins.size
             if (binNormX < boxLeft || binNormX > boxRight) continue
             binsInBox++
 
             val barHeight = bins[i].coerceIn(0f, 1f)
             // How much of this bar is within the box's Y range?
+            // If bar is below boxBottom, fill = 0
+            // If bar extends above boxTop, fill = 1 (fully fills the box height)
             val fillInBox = ((barHeight - boxBottom) / boxH).coerceIn(0f, 1f)
             fillSum += fillInBox
         }
 
         val rawFill = if (binsInBox > 0) fillSum / binsInBox else 0f
 
-        // Apply scale (expand/compress) and clamp to floor/ceiling
-        boxFillPct = (rawFill * outputScale).coerceIn(outputFloor, outputCeiling)
-
-        // Overall = boxFillPct (this drives the lighting)
-        overall = boxFillPct
-    }
-
-    private inline fun processBand(
-        current: Float, raw: Float, config: BandConfig,
-        gateOpen: kotlin.reflect.KMutableProperty0<Boolean>,
-        ramp: kotlin.reflect.KMutableProperty0<Float>,
-        peakVal: kotlin.reflect.KMutableProperty0<Float>,
-        falloffT: kotlin.reflect.KMutableProperty0<Float>,
-        dt: Float
-    ): Float {
-        val clamped = raw.coerceAtMost(1f)
-
-        // Detect new peak (for falloff shaping)
-        if (clamped > current + 0.05f) {
-            peakVal.set(clamped)
-            falloffT.set(0f)
+        // ── Step 2: Attack/Release envelope on the OUTPUT ──
+        // This shapes how fast the output follows the raw fill.
+        // It does NOT cause accumulation — smoothedOutput always converges toward rawFill.
+        if (rawFill > smoothedOutput) {
+            // Rising: attack controls how fast we chase upward
+            smoothedOutput += (rawFill - smoothedOutput) * attack
         } else {
-            falloffT.set(falloffT.get() + dt)
+            // Falling: release controls how fast we drop
+            smoothedOutput += (rawFill - smoothedOutput) * release
         }
 
-        val output = when (config.mode) {
-            OutputMode.MAGNITUDE -> {
-                // Apply shaped falloff instead of simple exponential decay
-                val rising = clamped > current
-                if (rising) {
-                    current + (clamped - current) * config.attack
-                } else {
-                    applyFalloff(current, peakVal.get(), config.falloff, falloffT.get(), config.falloffTime, config.decay)
-                }
-            }
-
-            OutputMode.GATE -> {
-                val wasOpen = gateOpen.get()
-                val nowOpen = clamped > config.gateThreshold
-                gateOpen.set(nowOpen)
-                if (nowOpen) 1f else {
-                    applyFalloff(current, 1f, config.falloff, falloffT.get(), config.falloffTime, config.decay)
-                }
-            }
-
-            OutputMode.RAMP_UP -> {
-                val wasOpen = gateOpen.get()
-                val nowOpen = clamped > config.gateThreshold
-                gateOpen.set(nowOpen)
-                if (nowOpen && !wasOpen) ramp.set(0f)
-                if (nowOpen || ramp.get() < 1f) {
-                    val r = (ramp.get() + config.attack * 0.5f).coerceAtMost(1f)
-                    ramp.set(r); r
-                } else {
-                    applyFalloff(ramp.get(), 1f, config.falloff, falloffT.get(), config.falloffTime, config.decay)
-                        .also { ramp.set(it) }
-                }
-            }
-
-            OutputMode.RAMP_DOWN -> {
-                val wasOpen = gateOpen.get()
-                val nowOpen = clamped > config.gateThreshold
-                gateOpen.set(nowOpen)
-                if (nowOpen && !wasOpen) { ramp.set(1f); peakVal.set(1f); falloffT.set(0f); 1f }
-                else {
-                    applyFalloff(ramp.get(), 1f, config.falloff, falloffT.get(), config.falloffTime, config.decay)
-                        .also { ramp.set(it) }
-                }
-            }
-        }
-
-        // Apply scale output and floor/ceiling
-        return (output * config.scaleOutput).coerceIn(config.floor, config.ceiling)
-    }
-
-    /** BeatReactor-style shaped falloff from peak value */
-    private fun applyFalloff(current: Float, peak: Float, falloff: Falloff,
-                             elapsed: Float, duration: Float, decayRate: Float): Float {
-        if (duration <= 0f || peak <= 0f) return (current - current * decayRate).coerceAtLeast(0f)
-        val t = (elapsed / duration).coerceIn(0f, 1f) // 0=just peaked, 1=falloff complete
-
-        return when (falloff) {
-            Falloff.IMMEDIATE -> (current - current * decayRate).coerceAtLeast(0f)
-
-            Falloff.LINEAR -> peak * (1f - t)
-
-            Falloff.QUADRATIC_HARD -> {
-                // Fast start, ease toward end: 1 - t^2
-                val ft = 1f - t
-                peak * ft * ft
-            }
-
-            Falloff.QUADRATIC_SOFT -> {
-                // Ease at peak, accelerate toward end: (1-t)^0.5 shaped
-                peak * (1f - t * t)
-            }
-
-            Falloff.SUSTAIN -> {
-                // Hold peak for duration, then instant drop
-                if (t < 1f) peak else 0f
-            }
-        }.coerceAtLeast(0f)
-    }
-
-    private fun envelope(current: Float, target: Float, atk: Float, dec: Float): Float {
-        return if (target > current) {
-            current + (target - current) * atk
+        // ── Step 3: Dynamic range scaling ──
+        // pow(value, 1/dynRange) expands the range when dynRange > 1
+        // (makes quiet parts relatively louder, expanding the usable range)
+        val scaled = if (smoothedOutput > 0f && dynRange > 0f) {
+            Math.pow(smoothedOutput.toDouble(), 1.0 / dynRange.toDouble()).toFloat()
         } else {
-            current + (target - current) * dec
+            0f
         }
+
+        // ── Step 4: Clamp to floor/ceiling ──
+        boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
     }
 
     val isActive: Boolean get() = started && enabled
 
-    /** Quick status string for debug HUD */
+    /** Status string for the main menu HUD */
     fun statusString(): String {
         if (!enabled) return "OFF"
-        return "B:%.0f M:%.0f H:%.0f pk:%.2f %s".format(
-            bass * 100, mid * 100, high * 100, peakEnergy,
-            if (autoGain) "AG" else ""
+        return "%.0f%% A:%.0f R:%.0f S:%.1f".format(
+            boxFillPct * 100, attack * 100, release * 100, dynRange
         )
     }
 }

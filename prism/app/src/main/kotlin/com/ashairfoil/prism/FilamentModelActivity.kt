@@ -577,20 +577,20 @@ class FilamentModelActivity : ComponentActivity() {
     private data class BeatSlider(val name: String, val unit: String, val min: Float, val max: Float,
                                    val get: () -> Float, val set: (Float) -> Unit)
     private val beatSliders by lazy { arrayOf(
-        BeatSlider("INPUT GAIN", "x", 0.2f, 5f,
-            { audioReactor?.sensitivity ?: 1.2f }, { audioReactor?.sensitivity = it }),
-        BeatSlider("BOX LEFT", "%", 0f, 100f,
-            { (audioReactor?.boxLeft ?: 0f) * 100f }, { audioReactor?.boxLeft = it / 100f }),
-        BeatSlider("BOX RIGHT", "%", 0f, 100f,
-            { (audioReactor?.boxRight ?: 40f) * 100f }, { audioReactor?.boxRight = it / 100f }),
+        BeatSlider("INPUT GAIN", "x", 0.5f, 8f,
+            { audioReactor?.sensitivity ?: 3f }, { audioReactor?.sensitivity = it }),
         BeatSlider("BOX BOTTOM", "%", 0f, 100f,
-            { (audioReactor?.boxBottom ?: 10f) * 100f }, { audioReactor?.boxBottom = it / 100f }),
-        BeatSlider("SCALE", "x", 0.1f, 5f,
-            { audioReactor?.outputScale ?: 1.5f }, { audioReactor?.outputScale = it }),
+            { (audioReactor?.boxBottom ?: 5f) * 100f }, { audioReactor?.boxBottom = it / 100f }),
+        BeatSlider("BOX TOP", "%", 0f, 100f,
+            { (audioReactor?.boxTop ?: 85f) * 100f }, { audioReactor?.boxTop = it / 100f }),
+        BeatSlider("ATTACK", "%", 1f, 100f,
+            { (audioReactor?.attack ?: 70f) * 100f }, { audioReactor?.attack = it / 100f }),
+        BeatSlider("RELEASE", "%", 1f, 100f,
+            { (audioReactor?.release ?: 12f) * 100f }, { audioReactor?.release = it / 100f }),
+        BeatSlider("DYN RANGE", "x", 0.2f, 5f,
+            { audioReactor?.dynRange ?: 2f }, { audioReactor?.dynRange = it }),
         BeatSlider("FLOOR", "%", 0f, 100f,
             { (audioReactor?.outputFloor ?: 0f) * 100f }, { audioReactor?.outputFloor = it / 100f }),
-        BeatSlider("CEILING", "%", 0f, 100f,
-            { (audioReactor?.outputCeiling ?: 100f) * 100f }, { audioReactor?.outputCeiling = it / 100f }),
         BeatSlider("MIX", "%", 0f, 100f,
             { beatIntensity * 50f }, { beatIntensity = it / 50f }),
     ) }
@@ -1076,14 +1076,57 @@ class FilamentModelActivity : ComponentActivity() {
                                 beatDraggingSlider = -1
                                 beatSliderLaserX = 0f
                                 hoveredActionButton = -1
+
+                                // Layout: spectrum 140..390, sliders 418..786, buttons 920+
+                                val specTopHit = 140f; val specBotHit = 390f
+                                val specLeftHit = 40f; val specRightHit = 984f  // uiW(1024) - 40
+                                val sliderAreaTopHit = 418f
+                                val sliderRowH = 46f
+
                                 if (by > 920f) {
                                     if (bx < 520f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
-                                } else if (by in 120f..880f) {
-                                    val sliderIdx = ((by - 120f) / 95f).toInt().coerceIn(0, 7)
+                                } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
+                                    // Laser is on the spectrum area — box dragging
+                                    val reactor = audioReactor
+                                    if (reactor != null && rightTrigger > 0.5f) {
+                                        val normX = ((bx - specLeftHit) / (specRightHit - specLeftHit)).coerceIn(0f, 1f)
+                                        val normY = (1f - (by - specTopHit) / (specBotHit - specTopHit)).coerceIn(0f, 1f) // flip: top=1, bot=0
+                                        val boxW = reactor.boxRight - reactor.boxLeft
+                                        val boxH2 = reactor.boxTop - reactor.boxBottom
+
+                                        // Check if laser is inside the box
+                                        val insideX = normX in reactor.boxLeft..reactor.boxRight
+                                        val insideY = normY in reactor.boxBottom..reactor.boxTop
+                                        if (insideX && insideY) {
+                                            // Drag the whole box (centered on laser)
+                                            val newL = (normX - boxW / 2f).coerceIn(0f, 1f - boxW)
+                                            val newB = (normY - boxH2 / 2f).coerceIn(0f, 1f - boxH2)
+                                            reactor.boxLeft = newL
+                                            reactor.boxRight = newL + boxW
+                                            reactor.boxBottom = newB
+                                            reactor.boxTop = newB + boxH2
+                                        } else {
+                                            // Resize: move nearest edge to laser position
+                                            val dL = kotlin.math.abs(normX - reactor.boxLeft)
+                                            val dR = kotlin.math.abs(normX - reactor.boxRight)
+                                            val dB = kotlin.math.abs(normY - reactor.boxBottom)
+                                            val dT = kotlin.math.abs(normY - reactor.boxTop)
+                                            val minD = minOf(dL, dR, dB, dT)
+                                            when (minD) {
+                                                dL -> reactor.boxLeft = normX.coerceAtMost(reactor.boxRight - 0.02f)
+                                                dR -> reactor.boxRight = normX.coerceAtLeast(reactor.boxLeft + 0.02f)
+                                                dB -> reactor.boxBottom = normY.coerceAtMost(reactor.boxTop - 0.02f)
+                                                dT -> reactor.boxTop = normY.coerceAtLeast(reactor.boxBottom + 0.02f)
+                                            }
+                                        }
+                                        uiNeedsRefresh = true
+                                    }
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 8f) {
+                                    // Slider area
+                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 7)
                                     beatDraggingSlider = sliderIdx
-                                    beatSliderLaserX = ((bx - 300f) / 650f).coerceIn(0f, 1f)
-                                    // Only apply when trigger is HELD (click-drag)
+                                    beatSliderLaserX = ((bx - 260f) / (984f - 260f)).coerceIn(0f, 1f)
                                     if (rightTrigger > 0.5f) {
                                         applyBeatSlider(sliderIdx, beatSliderLaserX)
                                         uiNeedsRefresh = true
@@ -1964,98 +2007,177 @@ class FilamentModelActivity : ComponentActivity() {
             val reactor = audioReactor
             val p = android.graphics.Paint().apply { isAntiAlias = true }
 
+            // Auto-refresh spectrum every 3 frames while settings panel is open
+            if (reactor != null && reactor.isActive && sensorPollFrame % 3 == 0) {
+                uiNeedsRefresh = true
+            }
+
             // Header
             p.textSize = 34f; p.color = 0xFFEC4899.toInt(); p.isFakeBoldText = true
             canvas.drawText("BEATREACTOR", 50f, 105f, p)
 
-            // Output meters (top right): B M H with percentages
-            p.textSize = 22f; p.isFakeBoldText = false
+            // FILL percentage — prominent display top right
+            val fillPct = reactor?.boxFillPct ?: 0f
+            p.textSize = 38f; p.color = 0xFFFFFFFF.toInt()
+            canvas.drawText("FILL: %.0f%%".format(fillPct * 100), 580f, 105f, p)
+            p.isFakeBoldText = false
+
+            // Band meters (smaller, below header)
+            p.textSize = 20f
             val b = reactor?.bass ?: 0f; val m = reactor?.mid ?: 0f; val h = reactor?.high ?: 0f
-            p.color = 0xFFEC4899.toInt(); canvas.drawText("B:%.0f%%".format(b * 100), 700f, 95f, p)
-            p.color = 0xFF10B981.toInt(); canvas.drawText("M:%.0f%%".format(m * 100), 810f, 95f, p)
-            p.color = 0xFF3B82F6.toInt(); canvas.drawText("H:%.0f%%".format(h * 100), 910f, 95f, p)
+            p.color = 0xFFEC4899.toInt(); canvas.drawText("B:%.0f%%".format(b * 100), 50f, 125f, p)
+            p.color = 0xFF10B981.toInt(); canvas.drawText("M:%.0f%%".format(m * 100), 150f, 125f, p)
+            p.color = 0xFF3B82F6.toInt(); canvas.drawText("H:%.0f%%".format(h * 100), 250f, 125f, p)
 
             // ── SPECTRUM ANALYZER ──
-            val specLeft = 40f; val specRight = uiW - 40f; val specTop = 120f; val specH = 280f
+            val specLeft = 40f; val specRight = uiW - 80f; val specTop = 140f; val specH = 250f
             val specBot = specTop + specH
 
             // Background
-            p.color = 0xFF0A0A14.toInt()
+            p.color = 0xFF080812.toInt()
             canvas.drawRoundRect(specLeft, specTop, specRight, specBot, 8f, 8f, p)
 
-            // Grid lines
-            p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
-            for (pct in arrayOf(0.25f, 0.5f, 0.75f)) {
+            // Grid lines with amplitude labels
+            p.color = 0x30FFFFFF.toInt(); p.strokeWidth = 1f
+            for (pct in arrayOf(0.25f, 0.5f, 0.75f, 1.0f)) {
                 val gy = specBot - pct * specH
                 canvas.drawLine(specLeft, gy, specRight, gy, p)
             }
+            p.color = 0x50FFFFFF.toInt(); p.textSize = 14f
+            canvas.drawText("25%", specLeft + 2f, specBot - 0.25f * specH - 2f, p)
+            canvas.drawText("50%", specLeft + 2f, specBot - 0.5f * specH - 2f, p)
+            canvas.drawText("75%", specLeft + 2f, specBot - 0.75f * specH - 2f, p)
 
-            // Spectrum bars
+            // Spectrum bars — bright, visible, with glow
             val bins = reactor?.spectrumBins ?: FloatArray(64)
             val barCount = 64
-            val barW = (specRight - specLeft) / barCount - 1f
+            val specW = specRight - specLeft
+            val barW = specW / barCount - 1f
             for (i in 0 until barCount) {
-                val bx = specLeft + i * (barW + 1f)
+                val barX = specLeft + i * (barW + 1f)
                 val level = bins[i].coerceIn(0f, 1f)
+                if (level < 0.005f) continue  // skip silent bins
                 val barH = level * specH
 
-                // Color: bass=pink, mid=green, high=blue (smooth gradient)
+                // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
                 val frac = i.toFloat() / barCount
-                val cr = if (frac < 0.25f) 0xEC else if (frac < 0.5f) ((0xEC * (1f - (frac - 0.25f) * 4f)).toInt().coerceIn(0x10, 0xEC)) else 0x10
-                val cg = if (frac in 0.15f..0.6f) 0xB9 else 0x30
-                val cb = if (frac > 0.5f) 0xF6 else 0x40
-                p.color = (0xFF shl 24) or (cr shl 16) or (cg shl 8) or cb
-                canvas.drawRect(bx, specBot - barH, bx + barW, specBot, p)
+                val cr: Int; val cg: Int; val cb: Int
+                if (frac < 0.3f) {
+                    // Bass: hot pink
+                    cr = 0xFF; cg = 0x40; cb = 0x80
+                } else if (frac < 0.6f) {
+                    // Mid: cyan/green blend
+                    val t = (frac - 0.3f) / 0.3f
+                    cr = (0xFF * (1f - t) + 0x10 * t).toInt().coerceIn(0, 255)
+                    cg = (0x40 * (1f - t) + 0xE0 * t).toInt().coerceIn(0, 255)
+                    cb = (0x80 * (1f - t) + 0xA0 * t).toInt().coerceIn(0, 255)
+                } else {
+                    // High: blue/purple
+                    val t = (frac - 0.6f) / 0.4f
+                    cr = (0x10 + 0x60 * t).toInt().coerceIn(0, 255)
+                    cg = (0xE0 * (1f - t) + 0x40 * t).toInt().coerceIn(0, 255)
+                    cb = 0xF6
+                }
+
+                // Bar glow (slightly wider, dimmer underneath)
+                val glowAlpha = (0x40 * level).toInt().coerceIn(0, 0x60)
+                p.color = (glowAlpha shl 24) or (cr shl 16) or (cg shl 8) or cb
+                canvas.drawRect(barX - 0.5f, specBot - barH - 2f, barX + barW + 0.5f, specBot, p)
+
+                // Solid bar
+                val alpha = (0xCC + 0x33 * level).toInt().coerceIn(0, 0xFF)
+                p.color = (alpha shl 24) or (cr shl 16) or (cg shl 8) or cb
+                canvas.drawRect(barX, specBot - barH, barX + barW, specBot, p)
+
+                // Peak cap (bright white line at top of bar)
+                if (level > 0.05f) {
+                    p.color = (0xCC shl 24) or 0xFFFFFF
+                    canvas.drawRect(barX, specBot - barH, barX + barW, specBot - barH + 2f, p)
+                }
             }
 
-            // Bounding box
+            // Bounding box (all 4 edges clearly visible)
             if (reactor != null) {
-                val bxL = specLeft + reactor.boxLeft * (specRight - specLeft)
-                val bxR = specLeft + reactor.boxRight * (specRight - specLeft)
+                val bxL = specLeft + reactor.boxLeft * specW
+                val bxR = specLeft + reactor.boxRight * specW
                 val bxT = specBot - reactor.boxTop * specH
                 val bxB = specBot - reactor.boxBottom * specH
 
-                // Fill (semi-transparent)
-                p.color = 0x18FFFFFF.toInt()
+                // Fill (semi-transparent yellow tint)
+                p.color = 0x20FFFF00.toInt()
                 canvas.drawRect(bxL, bxT, bxR, bxB, p)
 
-                // Border (white)
-                p.color = 0xCCFFFFFF.toInt()
-                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 2f
+                // All 4 edges as thick bright lines
+                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 3f
+                p.color = 0xFFFFFF00.toInt()  // yellow border — stands out from spectrum colors
                 canvas.drawRect(bxL, bxT, bxR, bxB, p)
                 p.style = android.graphics.Paint.Style.FILL
 
-                // Output meter (right edge of spectrum)
-                val meterX = specRight + 8f; val meterW = 16f
-                p.color = 0xFF1E1E28.toInt()
-                canvas.drawRect(meterX, specTop, meterX + meterW, specBot, p)
-                val fillH = reactor.boxFillPct * specH
-                p.color = 0xFFEC4899.toInt()
-                canvas.drawRect(meterX, specBot - fillH, meterX + meterW, specBot, p)
-                // Output % label
-                p.color = 0xFFFFFFFF.toInt(); p.textSize = 20f
-                canvas.drawText("%.0f%%".format(reactor.boxFillPct * 100), meterX - 4f, specTop - 6f, p)
+                // Corner markers for clarity
+                val cm = 8f
+                p.color = 0xFFFFFF00.toInt()
+                canvas.drawRect(bxL - 1f, bxT - 1f, bxL + cm, bxT + cm, p)
+                canvas.drawRect(bxR - cm, bxT - 1f, bxR + 1f, bxT + cm, p)
+                canvas.drawRect(bxL - 1f, bxB - cm, bxL + cm, bxB + 1f, p)
+                canvas.drawRect(bxR - cm, bxB - cm, bxR + 1f, bxB + 1f, p)
+
+                // ── Output meter (right side, wider and more prominent) ──
+                val meterX = specRight + 12f; val meterW = 28f
+                // Meter background
+                p.color = 0xFF0A0A14.toInt()
+                canvas.drawRoundRect(meterX, specTop, meterX + meterW, specBot, 4f, 4f, p)
+                // Meter grid
+                p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
+                for (pct2 in arrayOf(0.25f, 0.5f, 0.75f)) {
+                    val my = specBot - pct2 * specH
+                    canvas.drawLine(meterX, my, meterX + meterW, my, p)
+                }
+                // Meter fill (gradient: red at top, pink at bottom)
+                val meterFillH = reactor.boxFillPct * specH
+                if (meterFillH > 0f) {
+                    val meterFillTop = specBot - meterFillH
+                    // Hot pink fill
+                    p.color = 0xFFFF4090.toInt()
+                    canvas.drawRoundRect(meterX + 2f, meterFillTop, meterX + meterW - 2f, specBot, 3f, 3f, p)
+                    // Bright cap at top of fill
+                    if (meterFillH > 4f) {
+                        p.color = 0xFFFFFFFF.toInt()
+                        canvas.drawRect(meterX + 2f, meterFillTop, meterX + meterW - 2f, meterFillTop + 3f, p)
+                    }
+                }
+                // Meter border
+                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 1.5f
+                p.color = 0x80FFFFFF.toInt()
+                canvas.drawRoundRect(meterX, specTop, meterX + meterW, specBot, 4f, 4f, p)
+                p.style = android.graphics.Paint.Style.FILL
+
+                // Output % label above meter
+                p.color = 0xFFFFFFFF.toInt(); p.textSize = 22f; p.isFakeBoldText = true
+                p.textAlign = android.graphics.Paint.Align.CENTER
+                canvas.drawText("%.0f%%".format(reactor.boxFillPct * 100), meterX + meterW / 2f, specTop - 8f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
             }
 
             // Frequency labels
             p.color = 0xFF6B7280.toInt(); p.textSize = 16f
             canvas.drawText("20", specLeft, specBot + 16f, p)
-            canvas.drawText("100", specLeft + (specRight - specLeft) * 0.25f, specBot + 16f, p)
-            canvas.drawText("1k", specLeft + (specRight - specLeft) * 0.55f, specBot + 16f, p)
-            canvas.drawText("10k", specLeft + (specRight - specLeft) * 0.85f, specBot + 16f, p)
+            canvas.drawText("100", specLeft + specW * 0.25f, specBot + 16f, p)
+            canvas.drawText("1k", specLeft + specW * 0.55f, specBot + 16f, p)
+            canvas.drawText("10k", specLeft + specW * 0.85f, specBot + 16f, p)
 
             // ── SLIDERS (below spectrum) ──
-            val trackLeft = 280f; val trackRight = uiW - 40f; val trackH = 18f
-            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 24f; color = 0xFFD1D5DB.toInt() }
-            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFF9CA3AF.toInt() }
-            var sy = specBot + 30f
+            val sliderAreaTop = specBot + 28f
+            val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 16f
+            val labelP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD1D5DB.toInt() }
+            val valP = android.graphics.Paint().apply { isAntiAlias = true; textSize = 20f; color = 0xFF9CA3AF.toInt() }
+            var sy = sliderAreaTop
 
             for ((i, slider) in beatSliders.withIndex()) {
                 val isHovered = i == beatDraggingSlider
                 val value = slider.get()
                 val norm = ((value - slider.min) / (slider.max - slider.min)).coerceIn(0f, 1f)
 
-                canvas.drawText(slider.name, 40f, sy + 14f, labelP)
+                canvas.drawText(slider.name, 40f, sy + 13f, labelP)
                 val valStr = when (slider.unit) {
                     "x" -> "%.1fx".format(value)
                     "Hz" -> "%.0f Hz".format(value)
@@ -2063,19 +2185,20 @@ class FilamentModelActivity : ComponentActivity() {
                     else -> "%.0f%%".format(value)
                 }
                 val vw = valP.measureText(valStr)
-                canvas.drawText(valStr, trackLeft - vw - 8f, sy + 14f, valP)
+                canvas.drawText(valStr, trackLeft - vw - 6f, sy + 13f, valP)
 
-                // Track
+                // Track background
                 p.color = 0xFF1E1E28.toInt()
                 canvas.drawRoundRect(trackLeft, sy, trackRight, sy + trackH, 4f, 4f, p)
+                // Track fill
                 val fillEnd = trackLeft + norm * (trackRight - trackLeft)
                 p.color = if (isHovered) 0xFFFF6BB5.toInt() else 0xFFEC4899.toInt()
                 canvas.drawRoundRect(trackLeft, sy, fillEnd, sy + trackH, 4f, 4f, p)
                 // Knob
                 p.color = 0xFFFFFFFF.toInt()
-                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 12f else 8f, p)
+                canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 11f else 7f, p)
 
-                sy += 52f
+                sy += 46f
             }
 
             // ── Buttons ──
@@ -2419,7 +2542,7 @@ class FilamentModelActivity : ComponentActivity() {
             "Spread" to "%.1fm".format(renderer?.shadowSpread ?: 8f),
             "BeatReactor" to if (beatReactorEnabled) {
                 val r = audioReactor
-                if (r != null) "ON ${r.statusString()}" else "ON"
+                if (r != null) "ON %.0f%%".format((r.boxFillPct) * 100) else "ON"
             } else "OFF",
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
         )
