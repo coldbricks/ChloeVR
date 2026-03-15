@@ -275,11 +275,23 @@ class FilamentModelActivity : ComponentActivity() {
         // Initialize audio reactor (BeatReactor-style)
         audioReactor = AudioReactor()
 
-        // Scan for available GLB files upfront (for the ADD MODEL picker)
+        // Load cached GLB file list, then rescan in background
+        val cacheFile = File(cacheDir, "glb_cache.txt")
+        if (cacheFile.exists()) {
+            try {
+                val cached = cacheFile.readLines().map { File(it) }.filter { it.exists() }
+                if (cached.isNotEmpty()) {
+                    availableGlbFiles = cached
+                    Log.i(TAG, "Loaded ${cached.size} GLB files from cache")
+                }
+            } catch (_: Exception) {}
+        }
+        // Rescan in background and update cache
         Thread {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
             availableGlbFiles = glbFiles
-            Log.i(TAG, "Found ${glbFiles.size} GLB files for picker")
+            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (_: Exception) {}
+            Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated)")
         }.start()
 
         Thread {
