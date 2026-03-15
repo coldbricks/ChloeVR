@@ -2118,26 +2118,19 @@ class FilamentModelActivity : ComponentActivity() {
             canvas.drawText("50%", specLeft + 2f, specBot - 0.5f * specH - 2f, p)
             canvas.drawText("75%", specLeft + 2f, specBot - 0.75f * specH - 2f, p)
 
-            // Spectrum bars — trimmed to box frequency range (zoomed EQ view)
+            // Spectrum bars — FULL 64-bin display (20Hz-20kHz)
             val bins = reactor?.spectrumBins ?: FloatArray(64)
             val specW = specRight - specLeft
-            val bL = reactor?.boxLeft ?: 0f
-            val bR = reactor?.boxRight ?: 1f
-            // Find bin range matching box left/right
-            val binStart = (bL * 64).toInt().coerceIn(0, 63)
-            val binEnd = (bR * 64).toInt().coerceIn(binStart + 1, 64)
-            val visibleBins = binEnd - binStart
-            if (visibleBins > 0) {
-                val barW = specW / visibleBins - 1f
-                for (vi in 0 until visibleBins) {
-                    val i = binStart + vi
-                    val barX = specLeft + vi * (barW + 1f)
+            val barCount = 64
+            val barW = specW / barCount - 1f
+            for (i in 0 until barCount) {
+                    val barX = specLeft + i * (barW + 1f)
                     val level = bins[i].coerceIn(0f, 1f)
                     if (level < 0.005f) continue  // skip silent bins
                     val barH = level * specH
 
                     // Color gradient: bass(pink) -> mid(green/cyan) -> high(blue)
-                    val frac = i.toFloat() / 64
+                    val frac = i.toFloat() / barCount
                     val cr: Int; val cg: Int; val cb: Int
                     if (frac < 0.3f) {
                         // Bass: hot pink
@@ -2172,24 +2165,23 @@ class FilamentModelActivity : ComponentActivity() {
                         canvas.drawRect(barX, specBot - barH, barX + barW, specBot - barH + 2f, p)
                     }
                 }
-            }
 
-            // Bounding box — zoomed view: left/right edges are at display edges,
-            // only draw top and bottom edges + corner markers
+            // Bounding box — full view with all 4 edges
             if (reactor != null) {
-                val bxL = specLeft   // display IS the box's frequency range
-                val bxR = specRight
+                val bxL = specLeft + reactor.boxLeft * specW
+                val bxR = specLeft + reactor.boxRight * specW
                 val bxT = specBot - reactor.boxTop * specH
                 val bxB = specBot - reactor.boxBottom * specH
 
-                // Fill (semi-transparent yellow tint between top and bottom)
+                // Fill
                 p.color = 0x18FFFF00.toInt()
                 canvas.drawRect(bxL, bxT, bxR, bxB, p)
 
-                // Top and bottom edges as thick bright lines
-                p.color = 0xFFFFFF00.toInt(); p.strokeWidth = 3f
-                canvas.drawLine(bxL, bxT, bxR, bxT, p)  // top edge
-                canvas.drawLine(bxL, bxB, bxR, bxB, p)  // bottom edge
+                // All 4 edges
+                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 3f
+                p.color = 0xFFFFFF00.toInt()
+                canvas.drawRect(bxL, bxT, bxR, bxB, p)
+                p.style = android.graphics.Paint.Style.FILL
 
                 // Corner markers at all 4 corners
                 val cm = 8f
@@ -2244,17 +2236,13 @@ class FilamentModelActivity : ComponentActivity() {
                 p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
             }
 
-            // Frequency labels — show actual box frequency range
+            // Frequency labels (fixed, full range)
             p.color = 0xFF6B7280.toInt(); p.textSize = 16f
-            val freqL = 20f * Math.pow(1000.0, (reactor?.boxLeft ?: 0f).toDouble()).toFloat()
-            val freqR = 20f * Math.pow(1000.0, (reactor?.boxRight ?: 1f).toDouble()).toFloat()
-            fun fmtHz(hz: Float): String = if (hz >= 1000f) "%.1fk".format(hz / 1000f) else "%.0f".format(hz)
-            canvas.drawText(fmtHz(freqL), specLeft, specBot + 16f, p)
-            val midFreq = 20f * Math.pow(1000.0, (((reactor?.boxLeft ?: 0f) + (reactor?.boxRight ?: 1f)) / 2f).toDouble()).toFloat()
-            p.textAlign = android.graphics.Paint.Align.CENTER
-            canvas.drawText(fmtHz(midFreq), specLeft + specW / 2f, specBot + 16f, p)
-            p.textAlign = android.graphics.Paint.Align.RIGHT
-            canvas.drawText(fmtHz(freqR), specRight, specBot + 16f, p)
+            p.textAlign = android.graphics.Paint.Align.LEFT
+            canvas.drawText("20", specLeft, specBot + 16f, p)
+            canvas.drawText("100", specLeft + specW * 0.25f, specBot + 16f, p)
+            canvas.drawText("1k", specLeft + specW * 0.55f, specBot + 16f, p)
+            canvas.drawText("10k", specLeft + specW * 0.85f, specBot + 16f, p)
             p.textAlign = android.graphics.Paint.Align.LEFT
 
             // ── SLIDERS (below spectrum) ──
