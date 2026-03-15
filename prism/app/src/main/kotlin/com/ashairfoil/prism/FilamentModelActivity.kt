@@ -208,7 +208,7 @@ class FilamentModelActivity : ComponentActivity() {
     // Audio-reactive lighting (BeatReactor)
     private var audioReactor: AudioReactor? = null
     @Volatile private var beatReactorEnabled = false
-    @Volatile private var beatIntensity = 0.5f  // how strongly beats affect lighting (0..1)
+    @Volatile private var beatIntensity = 1.5f  // how strongly beats affect lighting — start high so effect is obvious
     @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     private var beatToggleLatch = false
     private var foveationToggleLatch = false
@@ -1335,6 +1335,7 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             } else if (menuVisible && hoveredMenuParam >= 0) {
                 // Select the param the laser is pointing at
+                Log.i(TAG, "Param selected: $hoveredMenuParam / ${PARAM_NAMES.getOrNull(hoveredMenuParam)}")
                 selectedParam = hoveredMenuParam
                 // Toggle params: trigger press directly toggles
                 if (hoveredMenuParam == 13) {
