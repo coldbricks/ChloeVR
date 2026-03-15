@@ -296,36 +296,33 @@ class AudioReactor {
         } else {
             throbLocked = false
 
-            // All modes: when box fill crosses threshold → snap to 100%
-            // The OUTPUT is always 0% or 100% on trigger, then decays.
-            // The box fill PERCENTAGE determines IF it triggers, not HOW MUCH.
-            val triggered = rawFill > threshold
-
+            // Output = actual box fill percentage. Trim the box tight to get 100%.
+            // Only THROB hard-snaps to 100%. Everything else tracks the real fill.
             when (rolloff) {
                 Rolloff.INSTANT -> {
-                    // Binary: above threshold = 100%, below = 0%
-                    smoothedOutput = if (triggered) 1f else 0f
+                    // Direct: output = box fill %. Below threshold = 0.
+                    smoothedOutput = if (rawFill > threshold) rawFill else 0f
                 }
                 Rolloff.HARD_KNEE -> {
-                    // Trigger → snap to 100%, linear decay over releaseMs
-                    if (triggered && !hardKneeTriggered) {
-                        smoothedOutput = 1f
+                    // Attack: track fill upward
+                    if (rawFill > smoothedOutput) {
+                        smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
                         hardKneeTriggered = true
                         hardKneeTimer = 0f
-                    }
-                    if (hardKneeTriggered && !triggered) {
+                    } else if (hardKneeTriggered) {
+                        // Linear decay from peak over releaseMs
                         hardKneeTimer += dt
                         val progress = (hardKneeTimer / (releaseMs / 1000f)).coerceIn(0f, 1f)
-                        smoothedOutput = 1f - progress  // linear ramp from 1 to 0
+                        smoothedOutput = smoothedOutput * (1f - progress * 0.3f)  // gradual
                         if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
                     }
                 }
                 Rolloff.SOFT_KNEE -> {
-                    // Trigger → snap to 100%, exponential decay
-                    if (triggered) {
-                        smoothedOutput = 1f
+                    // Envelope follower: tracks fill up (attack) and down (release)
+                    if (rawFill > smoothedOutput) {
+                        smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
                     } else {
-                        smoothedOutput += (0f - smoothedOutput) * relAlpha
+                        smoothedOutput += (rawFill - smoothedOutput) * relAlpha
                     }
                 }
                 else -> {}
