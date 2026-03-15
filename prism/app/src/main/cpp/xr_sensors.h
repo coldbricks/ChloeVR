@@ -222,9 +222,9 @@ typedef XrResult (XRAPI_PTR *PFN_xrCreateTrackableTrackerANDROID)(
 typedef XrResult (XRAPI_PTR *PFN_xrDestroyTrackableTrackerANDROID)(
     XrTrackableTrackerANDROID tracker);
 
+// Actual runtime signature (4 params, no getInfo struct)
 typedef XrResult (XRAPI_PTR *PFN_xrGetAllTrackablesANDROID)(
     XrTrackableTrackerANDROID tracker,
-    const XrAllTrackablesGetInfoANDROID* getInfo,
     uint32_t trackableCapacityInput,
     uint32_t* trackableCountOutput,
     XrTrackableANDROID* trackables);

@@ -1547,10 +1547,12 @@ class FilamentModelActivity : ComponentActivity() {
                         if (!beatToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
                             beatToggleLatch = true
                             beatReactorEnabled = !beatReactorEnabled
+                            Log.i(TAG, "BeatReactor toggled: $beatReactorEnabled")
                             val reactor = audioReactor
                             if (beatReactorEnabled && reactor != null) {
                                 reactor.enabled = true
-                                if (!reactor.isActive) reactor.start()
+                                val started = if (!reactor.isActive) reactor.start() else true
+                                Log.i(TAG, "BeatReactor started=$started, isActive=${reactor.isActive}")
                             } else {
                                 reactor?.enabled = false
                             }
