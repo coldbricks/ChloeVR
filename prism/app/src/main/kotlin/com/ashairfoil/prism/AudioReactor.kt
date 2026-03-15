@@ -42,9 +42,9 @@ class AudioReactor {
     @Volatile var boxBottom = 0.05f
     @Volatile var boxTop = 0.85f
 
-    // ── Mode ──
-    enum class Mode { SMOOTH, STROBE, PULSE }
-    @Volatile var mode = Mode.SMOOTH
+    // ── Roll-off mode ──
+    enum class Rolloff { INSTANT, HARD_KNEE, SOFT_KNEE }
+    @Volatile var rolloff = Rolloff.SOFT_KNEE
 
     // ── Dynamics ──
     @Volatile var attackMs = 20f      // rise time in milliseconds
@@ -52,8 +52,13 @@ class AudioReactor {
     @Volatile var dynRange = 2.0f
     @Volatile var outputFloor = 0.0f
     @Volatile var outputCeiling = 1.0f
-    @Volatile var threshold = 0.25f   // STROBE trigger level
-    @Volatile var trim = 1.0f         // output fine-tune multiplier
+    @Volatile var threshold = 0.15f
+    @Volatile var trim = 1.0f
+    @Volatile var beatHue = 330f      // 0-360 degrees, default hot pink
+
+    // Hard knee state: tracks time since last trigger for linear decay
+    private var hardKneeTimer = 0f
+    private var hardKneeTriggered = false
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -238,30 +243,31 @@ class AudioReactor {
         val atkAlpha = (1f - kotlin.math.exp(-dt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
         val relAlpha = (1f - kotlin.math.exp(-dt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
 
-        when (mode) {
-            Mode.STROBE -> {
-                // Instant snap to 1 when above threshold, then roll-off by releaseMs
-                // Like a real strobe: 4ms flash, 300ms decay
-                if (rawFill > threshold) {
-                    smoothedOutput = 1f  // instant ON
-                } else {
-                    // Roll-off using release time
-                    smoothedOutput += (0f - smoothedOutput) * relAlpha
+        // Attack: snap up fast when signal exceeds current output
+        if (rawFill > smoothedOutput) {
+            smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
+            hardKneeTriggered = true
+            hardKneeTimer = 0f
+        } else {
+            // Roll-off: how the output decays after the beat
+            when (rolloff) {
+                Rolloff.INSTANT -> {
+                    // Binary: above threshold = on, below = off, no decay
+                    smoothedOutput = if (rawFill > threshold) rawFill else 0f
                 }
-            }
-            Mode.PULSE -> {
-                // Instant attack, configurable release (pump)
-                if (rawFill > smoothedOutput) {
-                    smoothedOutput = rawFill  // instant snap up
-                } else {
-                    smoothedOutput += (rawFill - smoothedOutput) * relAlpha
+                Rolloff.HARD_KNEE -> {
+                    // Linear decay from peak over releaseMs
+                    // Straight line from current to 0 over the release time
+                    if (hardKneeTriggered) {
+                        hardKneeTimer += dt
+                        val releaseSec = releaseMs / 1000f
+                        val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
+                        smoothedOutput = smoothedOutput * (1f - progress)
+                        if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
+                    }
                 }
-            }
-            Mode.SMOOTH -> {
-                // Envelope follower with ms-based attack/release
-                if (rawFill > smoothedOutput) {
-                    smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
-                } else {
+                Rolloff.SOFT_KNEE -> {
+                    // Exponential decay (smooth, musical)
                     smoothedOutput += (rawFill - smoothedOutput) * relAlpha
                 }
             }
@@ -277,10 +283,25 @@ class AudioReactor {
 
     val isActive: Boolean get() = started && enabled
 
+    /** Convert beatHue to RGB floats (0..1 each) for lighting */
+    fun getBeatColor(): FloatArray {
+        val h = beatHue / 60f
+        val x = 1f - kotlin.math.abs(h % 2f - 1f)
+        val (r, g, b) = when {
+            h < 1f -> Triple(1f, x, 0f)
+            h < 2f -> Triple(x, 1f, 0f)
+            h < 3f -> Triple(0f, 1f, x)
+            h < 4f -> Triple(0f, x, 1f)
+            h < 5f -> Triple(x, 0f, 1f)
+            else -> Triple(1f, 0f, x)
+        }
+        return floatArrayOf(r, g, b)
+    }
+
     /** Status string for the main menu HUD */
     fun statusString(): String {
         if (!enabled) return "OFF"
-        val modeStr = when (mode) { Mode.SMOOTH -> "SM"; Mode.STROBE -> "ST"; Mode.PULSE -> "PU" }
+        val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT" }
         return "$modeStr %.0f%% A:%.0fms R:%.0fms".format(
             boxFillPct * 100, attackMs, releaseMs
         )
