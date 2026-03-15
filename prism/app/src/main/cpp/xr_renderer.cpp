@@ -1504,14 +1504,17 @@ bool XrRenderer::pollPlanes(PlaneData& data) {
 
     if (lastPredictedTime_ == 0) return false;
 
-    // Get all trackable IDs (runtime uses 4-param signature, no getInfo struct)
+    // Get all trackable IDs
+    XrAllTrackablesGetInfoANDROID allInfo = {};
+    allInfo.type = XR_TYPE_ALL_TRACKABLES_GET_INFO_ANDROID;
+
     uint32_t trackableCount = 0;
-    XrResult r = xrGetAllTrackables_(planeTracker_, 0, &trackableCount, nullptr);
+    XrResult r = xrGetAllTrackables_(planeTracker_, &allInfo, 0, &trackableCount, nullptr);
     if (XR_FAILED(r) || trackableCount == 0) return false;
 
     uint32_t maxGet = (trackableCount > PlaneData::MAX_PLANES) ? PlaneData::MAX_PLANES : trackableCount;
     XrTrackableANDROID trackableIds[PlaneData::MAX_PLANES];
-    r = xrGetAllTrackables_(planeTracker_, maxGet, &trackableCount, trackableIds);
+    r = xrGetAllTrackables_(planeTracker_, &allInfo, maxGet, &trackableCount, trackableIds);
     if (XR_FAILED(r)) return false;
 
     uint32_t count = (trackableCount > PlaneData::MAX_PLANES) ? PlaneData::MAX_PLANES : trackableCount;
