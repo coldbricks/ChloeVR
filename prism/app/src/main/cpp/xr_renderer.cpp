@@ -167,14 +167,15 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         XR_LOGI("  + Performance metrics");
     }
 
-    // Foveated rendering — disabled for now (investigating stability)
-    // TODO: re-enable after fixing struct type issues
-    // if (hasExt("XR_FB_foveation") && hasExt("XR_FB_foveation_configuration") && hasExt("XR_FB_swapchain_update_state")) {
-    //     extensions.push_back("XR_FB_foveation");
-    //     extensions.push_back("XR_FB_foveation_configuration");
-    //     extensions.push_back("XR_FB_swapchain_update_state");
-    //     foveationSupported_ = true;
-    // }
+    // Foveated rendering
+    if (hasExt("XR_FB_foveation") && hasExt("XR_FB_foveation_configuration") && hasExt("XR_FB_swapchain_update_state")) {
+        extensions.push_back("XR_FB_foveation");
+        extensions.push_back("XR_FB_foveation_configuration");
+        extensions.push_back("XR_FB_swapchain_update_state");
+        foveationSupported_ = true;
+        XR_LOGI("  + Foveated rendering (FB)");
+        // Don't request eye-tracked for now — may cause issues
+    }
 
     // Passthrough camera state
     if (hasExt(XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME)) {

@@ -1092,8 +1092,8 @@ class FilamentModelActivity : ComponentActivity() {
                                     else hoveredActionButton = 102                 // EXIT
                                 }
 
-                                // Param rows: ~195..800 in bitmap Y (16 params at 42px)
-                                if (by in 195f..800f) {
+                                // Param rows: ~195..790 in bitmap Y (16 params at 36px)
+                                if (by in 195f..790f) {
                                     val frac = (by - 195f) / (770f - 195f)
                                     val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
                                     hoveredMenuParam = idx
@@ -2192,13 +2192,13 @@ class FilamentModelActivity : ComponentActivity() {
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
         )
 
-        val rowH = 42f  // compact rows to fit 15 params
-        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt() }
+        val rowH = 36f  // 16 params must fit above buttons
+        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt() }
         val highlight = android.graphics.Paint().apply {
-            isAntiAlias = true; textSize = 36f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+            isAntiAlias = true; textSize = 32f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
         }
-        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 34f; color = 0xFF3A3A42.toInt() }
-        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF9CA3AF.toInt() }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 30f; color = 0xFF3A3A42.toInt() }
+        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 26f; color = 0xFF9CA3AF.toInt() }
         val hoverBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
         val selectedBg = android.graphics.Paint().apply { color = 0x3030D8D0.toInt() }
         val selectedBar = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
@@ -2239,11 +2239,9 @@ class FilamentModelActivity : ComponentActivity() {
         canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
         y += 16f
 
-        // ── Controls hint ──
-        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 18f; color = 0xFF58585F.toInt() }
-        canvas.drawText("Trigger:Select  Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next", 40f, y, hint)
-        y += 22f
-        canvas.drawText("Grip:Grab  R-Click:Grid  Menu:Sensors${if (sensorHudVisible) " [ON]" else ""}", 40f, y, hint)
+        // Controls hint (single compact line)
+        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 16f; color = 0xFF404048.toInt() }
+        canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y, hint)
 
         // ── Action buttons (2 rows) ──
         val btnGap = 8f
