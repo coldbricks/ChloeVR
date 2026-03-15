@@ -215,6 +215,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var beatBaseLight = 2f
     private var beatBaseFill = 0.5f
     private var beatBaseShadow = 0.7f
+    private var beatWashAlpha = 0f
     @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     private var beatToggleLatch = false
     private var foveationToggleLatch = false
@@ -776,38 +777,38 @@ class FilamentModelActivity : ComponentActivity() {
                                 val bi = beatIntensity
                                 val c = reactor.getBeatColor()
 
-                                // ── THE ENTIRE ROOM THROBS ──
-                                // Ambient is what lights EVERYTHING — crank it with color
-                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 2.5f
-                                gr.ambientColor = floatArrayOf(
-                                    c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f,
-                                    c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f,
-                                    c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
-                                )
+                                val affectsModels = reactor.washScope != AudioReactor.WashScope.ROOM
+                                val affectsRoom = reactor.washScope != AudioReactor.WashScope.MODELS
 
-                                // Main light: full color tint on beat
-                                gr.lightIntensity = beatBaseLight + pct * bi * 4f
-                                gr.lightColor = floatArrayOf(
-                                    c[0] * pct + (1f - pct) * 1f,
-                                    c[1] * pct + (1f - pct) * 0.95f,
-                                    c[2] * pct + (1f - pct) * 0.9f
-                                )
-
-                                // Fill light: complementary color for depth
-                                gr.fillLightIntensity = beatBaseFill + pct * bi * 2f
-                                gr.fillLightColor = floatArrayOf(
-                                    c[2] * pct + (1f - pct) * 0.85f,
-                                    c[0] * pct + (1f - pct) * 0.9f,
-                                    c[1] * pct + (1f - pct) * 1f
-                                )
-
-                                // Exposure pulse — models GLOW
-                                for (placed in models) {
-                                    val gpuModel = gr.getModel(placed.gpuModelId)
-                                    if (gpuModel != null) {
-                                        gpuModel.exposure = placed.exposure + pct * bi * 1f
+                                if (affectsModels) {
+                                    // Model lighting: colored light pulse
+                                    gr.ambientIntensity = beatBaseAmbient + pct * bi * 2.5f
+                                    gr.ambientColor = floatArrayOf(
+                                        c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                        c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                        c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
+                                    )
+                                    gr.lightIntensity = beatBaseLight + pct * bi * 4f
+                                    gr.lightColor = floatArrayOf(
+                                        c[0] * pct + (1f - pct) * 1f,
+                                        c[1] * pct + (1f - pct) * 0.95f,
+                                        c[2] * pct + (1f - pct) * 0.9f
+                                    )
+                                    gr.fillLightIntensity = beatBaseFill + pct * bi * 2f
+                                    gr.fillLightColor = floatArrayOf(
+                                        c[2] * pct + (1f - pct) * 0.85f,
+                                        c[0] * pct + (1f - pct) * 0.9f,
+                                        c[1] * pct + (1f - pct) * 1f
+                                    )
+                                    for (placed in models) {
+                                        val gpuModel = gr.getModel(placed.gpuModelId)
+                                        if (gpuModel != null) {
+                                            gpuModel.exposure = placed.exposure + pct * bi * 1f
+                                        }
                                     }
                                 }
+                                // Room wash alpha stored for render pass (applied per-eye later)
+                                beatWashAlpha = if (affectsRoom) pct * bi * 0.35f else 0f
                             } else if (beatBaseStored) {
                                 // Reactor turned off — restore base values
                                 gr.ambientIntensity = beatBaseAmbient
@@ -891,11 +892,11 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 laserHandPos, laserAimRot, hitDistance)
-                            // Color wash: tints the ENTIRE view (passthrough + scene)
-                            if (beatReactorEnabled && reactor != null) {
+                            // Color wash: tints ENTIRE view (passthrough + scene)
+                            if (beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f) {
                                 val wc = reactor.getBeatColor()
-                                val wa = reactor.boxFillPct * beatIntensity * 0.35f  // max ~35% tint
-                                gr.renderColorWash(wc[0], wc[1], wc[2], wa)
+                                val bm = reactor.blendMode.ordinal
+                                gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
                             }
                             gr.finishEyePass()
 
@@ -908,10 +909,10 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             if (laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
                                 laserHandPos, laserAimRot, hitDistance)
-                            if (beatReactorEnabled && reactor != null) {
+                            if (beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f) {
                                 val wc = reactor.getBeatColor()
-                                val wa = reactor.boxFillPct * beatIntensity * 0.35f
-                                gr.renderColorWash(wc[0], wc[1], wc[2], wa)
+                                val bm = reactor.blendMode.ordinal
+                                gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
                             }
                             gr.finishEyePass()
                             // Menu rendered via compositor quad layer (stereo-correct)
@@ -1139,10 +1140,19 @@ class FilamentModelActivity : ComponentActivity() {
                                     else if (bx in 560f..680f) hoveredActionButton = 115
                                     else if (bx in 690f..810f) hoveredActionButton = 116
                                 } else if (by in 130f..150f) {
-                                    // Color mode buttons
+                                    // Color mode buttons (left)
                                     if (bx in 50f..135f) hoveredActionButton = 117
                                     else if (bx in 141f..226f) hoveredActionButton = 118
                                     else if (bx in 232f..317f) hoveredActionButton = 119
+                                    // Scope buttons (middle)
+                                    else if (bx in 350f..435f) hoveredActionButton = 120
+                                    else if (bx in 441f..526f) hoveredActionButton = 121
+                                    else if (bx in 532f..617f) hoveredActionButton = 122
+                                    // Blend mode buttons (right)
+                                    else if (bx in 640f..708f) hoveredActionButton = 123
+                                    else if (bx in 712f..780f) hoveredActionButton = 124
+                                    else if (bx in 784f..852f) hoveredActionButton = 125
+                                    else if (bx in 856f..924f) hoveredActionButton = 126
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
                                     // Laser is on the spectrum area — corner/box dragging
                                     val reactor = audioReactor
@@ -1411,6 +1421,12 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 119) {
                 audioReactor?.colorMode = AudioReactor.ColorMode.FLASH
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton in 120..122) {
+                audioReactor?.washScope = AudioReactor.WashScope.entries[hoveredActionButton - 120]
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton in 123..126) {
+                audioReactor?.blendMode = AudioReactor.BlendMode.entries[hoveredActionButton - 123]
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 111) {
                 beatSettingsMode = false
@@ -2171,6 +2187,46 @@ class FilamentModelActivity : ComponentActivity() {
                 cx += cw + 6f
             }
 
+            // Scope buttons (what the beat affects)
+            val curScope = reactor?.washScope ?: AudioReactor.WashScope.BOTH
+            val scopes = arrayOf("GLBs" to AudioReactor.WashScope.MODELS, "ROOM" to AudioReactor.WashScope.ROOM, "BOTH" to AudioReactor.WashScope.BOTH)
+            val scopeIds = arrayOf(120, 121, 122)
+            cx = 350f
+            for ((si, spair) in scopes.withIndex()) {
+                val (slabel, smode) = spair
+                val isAct = curScope == smode
+                val isHov = hoveredActionButton == scopeIds[si]
+                val sw = 85f
+                p.color = if (isAct) 0xFF8B5CF6.toInt() else if (isHov) 0x608B5CF6.toInt() else 0x208B5CF6.toInt()
+                canvas.drawRoundRect(cx, 130f, cx + sw, 148f, 4f, 4f, p)
+                p.color = if (isAct || isHov) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.isFakeBoldText = isAct; p.textSize = 16f
+                p.textAlign = android.graphics.Paint.Align.CENTER
+                canvas.drawText(slabel, cx + sw / 2f, 145f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+                cx += sw + 6f
+            }
+
+            // Blend mode buttons
+            val curBlend = reactor?.blendMode ?: AudioReactor.BlendMode.ADD
+            val blends = arrayOf("NORM" to AudioReactor.BlendMode.NORMAL, "ADD" to AudioReactor.BlendMode.ADD, "MULT" to AudioReactor.BlendMode.MULTIPLY, "SCRN" to AudioReactor.BlendMode.SCREEN)
+            val blendIds = arrayOf(123, 124, 125, 126)
+            cx += 20f
+            for ((bi2, bpair) in blends.withIndex()) {
+                val (blabel, bmode) = bpair
+                val isAct = curBlend == bmode
+                val isHov = hoveredActionButton == blendIds[bi2]
+                val bw = 68f
+                p.color = if (isAct) 0xFFFF9500.toInt() else if (isHov) 0x60FF9500.toInt() else 0x20FF9500.toInt()
+                canvas.drawRoundRect(cx, 130f, cx + bw, 148f, 4f, 4f, p)
+                p.color = if (isAct || isHov) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.isFakeBoldText = isAct; p.textSize = 14f
+                p.textAlign = android.graphics.Paint.Align.CENTER
+                canvas.drawText(blabel, cx + bw / 2f, 145f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+                cx += bw + 4f
+            }
+
             // ── SPECTRUM ANALYZER ──
             val specLeft = 40f; val specRight = uiW - 80f; val specTop = 155f; val specH = 230f
             val specBot = specTop + specH
@@ -2208,13 +2264,14 @@ class FilamentModelActivity : ComponentActivity() {
             val center = reactor?.specViewCenter ?: 0.5f
             val visLeft = (center - viewWidth / 2f).coerceIn(0f, 1f - viewWidth)
             val visRight = (visLeft + viewWidth).coerceAtMost(1f)
-            val visLeftBin = (visLeft * 64).toInt().coerceIn(0, 63)
-            val visRightBin = (visRight * 64).toInt().coerceIn(visLeftBin + 1, 64)
-            val visBinCount = visRightBin - visLeftBin
-            val barW = specW / visBinCount - 1f
-            for (vi in 0 until visBinCount) {
-                    val i = visLeftBin + vi
-                    val barX = specLeft + vi * (barW + 1f)
+            // Draw bars by mapping each bin's normalized position to screen coords
+            val visRange = (visRight - visLeft).coerceAtLeast(0.001f)
+            for (i in 0 until 64) {
+                    val binNormPos = i.toFloat() / 64f
+                    if (binNormPos < visLeft || binNormPos > visRight) continue
+                    val screenFrac = (binNormPos - visLeft) / visRange
+                    val barW = specW / (64f / (visRange * 64f)) - 1f
+                    val barX = specLeft + screenFrac * specW
                     val vZoom = reactor?.specVZoom ?: 1f
                     val level = (bins[i] * vZoom).coerceIn(0f, 1f)
                     if (level < 0.005f) continue

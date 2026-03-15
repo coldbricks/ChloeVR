@@ -56,6 +56,10 @@ class AudioReactor {
     @Volatile var trim = 1.0f
     @Volatile var beatHue = 330f
     enum class ColorMode { FIXED, CYCLE, FLASH }
+    enum class BlendMode { NORMAL, ADD, MULTIPLY, SCREEN }
+    enum class WashScope { MODELS, ROOM, BOTH }
+    @Volatile var blendMode = BlendMode.ADD
+    @Volatile var washScope = WashScope.BOTH
     @Volatile var colorMode = ColorMode.CYCLE
     @Volatile var cycleSpeed = 60f     // degrees per second for CYCLE mode
     private var cycleHue = 0f

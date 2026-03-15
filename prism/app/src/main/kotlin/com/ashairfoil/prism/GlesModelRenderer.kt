@@ -781,18 +781,39 @@ class GlesModelRenderer {
 
     // ── Shadow Planes ──
 
-    /** Render a fullscreen color wash — tints EVERYTHING including passthrough */
-    fun renderColorWash(r: Float, g: Float, b: Float, a: Float) {
+    /** Render a fullscreen color wash with selectable blend mode */
+    fun renderColorWash(r: Float, g: Float, b: Float, a: Float, blendMode: Int = 0) {
         if (a < 0.005f || washProgramId == 0) return
         GLES30.glEnable(GLES30.GL_BLEND)
-        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthMask(false)
+
+        // Set blend function and compute fragment color based on mode
+        var fr = r; var fg = g; var fb = b; var fa = a
+        when (blendMode) {
+            0 -> { // NORMAL: standard alpha blend
+                GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            }
+            1 -> { // ADD: additive — bright neon flash
+                GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE)
+            }
+            2 -> { // MULTIPLY: color gel — darkens with color tint
+                GLES30.glBlendFunc(GLES30.GL_ZERO, GLES30.GL_SRC_COLOR)
+                // Fragment = mix(white, color, alpha) so at a=0 it's white (no change)
+                fr = 1f - a * (1f - r); fg = 1f - a * (1f - g); fb = 1f - a * (1f - b); fa = 1f
+            }
+            3 -> { // SCREEN: bright but softer than additive
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_COLOR)
+                fr = r * a; fg = g * a; fb = b * a; fa = a
+            }
+        }
+
         GLES30.glUseProgram(washProgramId)
-        GLES30.glUniform4f(GLES30.glGetUniformLocation(washProgramId, "uColor"), r, g, b, a)
+        GLES30.glUniform4f(GLES30.glGetUniformLocation(washProgramId, "uColor"), fr, fg, fb, fa)
         GLES30.glBindVertexArray(washVao)
-        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)  // fullscreen triangle
+        GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         GLES30.glBindVertexArray(0)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA) // reset
         GLES30.glDepthMask(true)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDisable(GLES30.GL_BLEND)
