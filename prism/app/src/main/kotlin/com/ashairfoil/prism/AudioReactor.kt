@@ -46,13 +46,14 @@ class AudioReactor {
     enum class Mode { SMOOTH, STROBE, PULSE }
     @Volatile var mode = Mode.SMOOTH
 
-    // ── Dynamics (applied to OUTPUT, not to spectrum) ──
-    @Volatile var attack = 0.7f
-    @Volatile var release = 0.12f
+    // ── Dynamics ──
+    @Volatile var attackMs = 20f      // rise time in milliseconds
+    @Volatile var releaseMs = 150f    // fall time in milliseconds
     @Volatile var dynRange = 2.0f
     @Volatile var outputFloor = 0.0f
     @Volatile var outputCeiling = 1.0f
-    @Volatile var threshold = 0.25f   // for STROBE: trigger level
+    @Volatile var threshold = 0.25f   // STROBE trigger level
+    @Volatile var trim = 1.0f         // output fine-tune multiplier
 
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
@@ -232,35 +233,45 @@ class AudioReactor {
         val rawFill = if (binsInBox > 0) fillSum / binsInBox else 0f
 
         // ── Step 2: Mode-specific processing ──
+        // Convert ms to per-frame alpha: alpha = 1 - exp(-dt/tau)
+        val dt = 1f / 72f  // frame time ~14ms
+        val atkAlpha = (1f - kotlin.math.exp(-dt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
+        val relAlpha = (1f - kotlin.math.exp(-dt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
+
         when (mode) {
             Mode.STROBE -> {
-                // Binary: above threshold = ON, below = OFF. No smoothing. Hard cut.
-                smoothedOutput = if (rawFill > threshold) 1f else 0f
+                // Instant snap to 1 when above threshold, then roll-off by releaseMs
+                // Like a real strobe: 4ms flash, 300ms decay
+                if (rawFill > threshold) {
+                    smoothedOutput = 1f  // instant ON
+                } else {
+                    // Roll-off using release time
+                    smoothedOutput += (0f - smoothedOutput) * relAlpha
+                }
             }
             Mode.PULSE -> {
-                // Fast attack (instant snap up), slow release (pump down)
+                // Instant attack, configurable release (pump)
                 if (rawFill > smoothedOutput) {
-                    smoothedOutput = rawFill  // instant attack
+                    smoothedOutput = rawFill  // instant snap up
                 } else {
-                    smoothedOutput += (rawFill - smoothedOutput) * release
+                    smoothedOutput += (rawFill - smoothedOutput) * relAlpha
                 }
             }
             Mode.SMOOTH -> {
-                // Envelope follower with configurable attack/release
+                // Envelope follower with ms-based attack/release
                 if (rawFill > smoothedOutput) {
-                    smoothedOutput += (rawFill - smoothedOutput) * attack
+                    smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
                 } else {
-                    smoothedOutput += (rawFill - smoothedOutput) * release
+                    smoothedOutput += (rawFill - smoothedOutput) * relAlpha
                 }
             }
         }
 
-        // ── Step 3: Dynamic range scaling ──
+        // Dynamic range + trim
         val scaled = if (smoothedOutput > 0f && dynRange > 0f) {
-            Math.pow(smoothedOutput.toDouble(), 1.0 / dynRange.toDouble()).toFloat()
+            Math.pow(smoothedOutput.toDouble(), 1.0 / dynRange.toDouble()).toFloat() * trim
         } else { 0f }
 
-        // ── Step 4: Clamp to floor/ceiling ──
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
     }
 
@@ -269,8 +280,9 @@ class AudioReactor {
     /** Status string for the main menu HUD */
     fun statusString(): String {
         if (!enabled) return "OFF"
-        return "%.0f%% A:%.0f R:%.0f S:%.1f".format(
-            boxFillPct * 100, attack * 100, release * 100, dynRange
+        val modeStr = when (mode) { Mode.SMOOTH -> "SM"; Mode.STROBE -> "ST"; Mode.PULSE -> "PU" }
+        return "$modeStr %.0f%% A:%.0fms R:%.0fms".format(
+            boxFillPct * 100, attackMs, releaseMs
         )
     }
 }

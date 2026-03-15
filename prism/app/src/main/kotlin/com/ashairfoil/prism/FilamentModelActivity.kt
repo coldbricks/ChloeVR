@@ -221,8 +221,10 @@ class FilamentModelActivity : ComponentActivity() {
 
     // BeatReactor settings sub-menu
     @Volatile private var beatSettingsMode = false
-    private var beatDraggingSlider = -1  // which slider the laser is on (-1 = none)
-    private var beatSliderLaserX = 0f    // 0..1 position on slider track
+    private var beatDraggingSlider = -1
+    private var beatSliderLaserX = 0f
+    @Volatile private var beatCursorX = -1f  // laser position on panel (bitmap coords)
+    @Volatile private var beatCursorY = -1f
 
     // Auto-floor: lock grid to detected XR floor plane
     @Volatile private var autoFloorEnabled = false  // disabled — causes jitter, user snaps manually with A
@@ -579,14 +581,18 @@ class FilamentModelActivity : ComponentActivity() {
     private val beatSliders by lazy { arrayOf(
         BeatSlider("GAIN", "x", 0.5f, 10f,
             { audioReactor?.sensitivity ?: 3f }, { audioReactor?.sensitivity = it }),
+        BeatSlider("LOW CUT", "Hz", 20f, 2000f,
+            { val r = audioReactor; if (r != null) 20f * Math.pow(1000.0, r.boxLeft.toDouble()).toFloat() else 20f },
+            { audioReactor?.boxLeft = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) }),
+        BeatSlider("HIGH CUT", "Hz", 100f, 20000f,
+            { val r = audioReactor; if (r != null) 20f * Math.pow(1000.0, r.boxRight.toDouble()).toFloat() else 300f },
+            { audioReactor?.boxRight = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) }),
         BeatSlider("THRESHOLD", "%", 0f, 80f,
             { (audioReactor?.threshold ?: 25f) * 100f }, { audioReactor?.threshold = it / 100f }),
-        BeatSlider("ATTACK", "%", 1f, 100f,
-            { (audioReactor?.attack ?: 70f) * 100f }, { audioReactor?.attack = it / 100f }),
-        BeatSlider("RELEASE", "%", 1f, 100f,
-            { (audioReactor?.release ?: 12f) * 100f }, { audioReactor?.release = it / 100f }),
-        BeatSlider("RANGE", "x", 0.2f, 5f,
-            { audioReactor?.dynRange ?: 2f }, { audioReactor?.dynRange = it }),
+        BeatSlider("ATTACK", "ms", 5f, 500f,
+            { audioReactor?.attackMs ?: 20f }, { audioReactor?.attackMs = it }),
+        BeatSlider("RELEASE", "ms", 10f, 2000f,
+            { audioReactor?.releaseMs ?: 150f }, { audioReactor?.releaseMs = it }),
         BeatSlider("MIX", "%", 0f, 100f,
             { beatIntensity * 50f }, { beatIntensity = it / 50f }),
     ) }
@@ -1071,6 +1077,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 beatDraggingSlider = -1
                                 beatSliderLaserX = 0f
                                 hoveredActionButton = -1
+                                beatCursorX = bx; beatCursorY = by  // track for visible cursor
 
                                 // Layout: spectrum 140..390, sliders 418..786, buttons 920+
                                 val specTopHit = 140f; val specBotHit = 390f
@@ -1122,9 +1129,9 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
                                         uiNeedsRefresh = true
                                     }
-                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 6f) {
-                                    // Slider area (6 sliders)
-                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 5)
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * 7f) {
+                                    // Slider area (7 sliders)
+                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, 6)
                                     beatDraggingSlider = sliderIdx
                                     beatSliderLaserX = ((bx - 260f) / (984f - 260f)).coerceIn(0f, 1f)
                                     if (rightTrigger > 0.5f) {
@@ -2250,6 +2257,21 @@ class FilamentModelActivity : ComponentActivity() {
             p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
             canvas.drawText("\u25C0 BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, btnY + 33f, p)
             p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+
+            // ── Laser cursor (bright, visible crosshair) ──
+            if (beatCursorX > 0f && beatCursorY > 0f) {
+                val cp = android.graphics.Paint().apply {
+                    isAntiAlias = true; color = 0xFFFFFFFF.toInt(); strokeWidth = 2f
+                    style = android.graphics.Paint.Style.STROKE
+                }
+                canvas.drawCircle(beatCursorX, beatCursorY, 12f, cp)
+                cp.strokeWidth = 1f; cp.color = 0x80FFFFFF.toInt()
+                canvas.drawLine(beatCursorX - 20f, beatCursorY, beatCursorX + 20f, beatCursorY, cp)
+                canvas.drawLine(beatCursorX, beatCursorY - 20f, beatCursorX, beatCursorY + 20f, cp)
+                // Bright dot at center
+                cp.style = android.graphics.Paint.Style.FILL; cp.color = 0xFFEC4899.toInt()
+                canvas.drawCircle(beatCursorX, beatCursorY, 3f, cp)
+            }
 
             pendingUiBitmap = bitmap
             return
