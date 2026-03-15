@@ -578,25 +578,21 @@ class FilamentModelActivity : ComponentActivity() {
                                    val get: () -> Float, val set: (Float) -> Unit)
     private val beatSliders by lazy { arrayOf(
         BeatSlider("INPUT GAIN", "x", 0.2f, 5f,
-            { audioReactor?.sensitivity ?: 1.5f }, { audioReactor?.sensitivity = it }),
-        BeatSlider("THRESHOLD", "%", 0f, 0.5f,
-            { audioReactor?.bassConfig?.gateThreshold ?: 0.3f },
-            { audioReactor?.let { r -> r.bassConfig.gateThreshold = it; r.midConfig.gateThreshold = it; r.highConfig.gateThreshold = it } }),
-        BeatSlider("ATTACK", "ms", 5f, 200f,
-            { (audioReactor?.bassConfig?.attack ?: 0.4f) * 500f },
-            { val v = it / 500f; audioReactor?.let { r -> r.bassConfig.attack = v; r.midConfig.attack = v; r.highConfig.attack = v } }),
-        BeatSlider("RELEASE", "ms", 10f, 500f,
-            { (audioReactor?.bassConfig?.decay ?: 0.08f) * 5000f },
-            { val v = it / 5000f; audioReactor?.let { r -> r.bassConfig.decay = v; r.midConfig.decay = v; r.highConfig.decay = v } }),
-        BeatSlider("LOW CUT", "Hz", 10f, 200f,
-            { audioReactor?.bassConfig?.freqLow ?: 20f }, { audioReactor?.bassConfig?.freqLow = it }),
-        BeatSlider("HIGH CUT", "Hz", 80f, 2000f,
-            { audioReactor?.bassConfig?.freqHigh ?: 150f }, { audioReactor?.bassConfig?.freqHigh = it }),
-        BeatSlider("OUTPUT MIX", "%", 0f, 100f,
+            { audioReactor?.sensitivity ?: 1.2f }, { audioReactor?.sensitivity = it }),
+        BeatSlider("BOX LEFT", "%", 0f, 100f,
+            { (audioReactor?.boxLeft ?: 0f) * 100f }, { audioReactor?.boxLeft = it / 100f }),
+        BeatSlider("BOX RIGHT", "%", 0f, 100f,
+            { (audioReactor?.boxRight ?: 40f) * 100f }, { audioReactor?.boxRight = it / 100f }),
+        BeatSlider("BOX BOTTOM", "%", 0f, 100f,
+            { (audioReactor?.boxBottom ?: 10f) * 100f }, { audioReactor?.boxBottom = it / 100f }),
+        BeatSlider("SCALE", "x", 0.1f, 5f,
+            { audioReactor?.outputScale ?: 1.5f }, { audioReactor?.outputScale = it }),
+        BeatSlider("FLOOR", "%", 0f, 100f,
+            { (audioReactor?.outputFloor ?: 0f) * 100f }, { audioReactor?.outputFloor = it / 100f }),
+        BeatSlider("CEILING", "%", 0f, 100f,
+            { (audioReactor?.outputCeiling ?: 100f) * 100f }, { audioReactor?.outputCeiling = it / 100f }),
+        BeatSlider("MIX", "%", 0f, 100f,
             { beatIntensity * 50f }, { beatIntensity = it / 50f }),
-        BeatSlider("OUTPUT FLOOR", "%", 0f, 50f,
-            { (audioReactor?.bassConfig?.floor ?: 0f) * 100f },
-            { val v = it / 100f; audioReactor?.let { r -> r.bassConfig.floor = v; r.midConfig.floor = v; r.highConfig.floor = v } }),
     ) }
 
     private fun applyBeatSlider(idx: Int, normalizedX: Float) {
@@ -745,20 +741,13 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // ── BeatReactor: audio-reactive lighting ──
-                            // Like BCC BeatReactor: each band maps to a RANGE on a parameter
-                            // Base value is preserved, beat oscillates between base and base+range
+                            // ── BeatReactor: box fill % drives light intensity ──
                             val reactor = audioReactor
                             if (reactor != null && beatReactorEnabled) {
                                 reactor.update()
-                                if (menuVisible && sensorPollFrame % 5 == 0) uiNeedsRefresh = true
+                                if (menuVisible && sensorPollFrame % 3 == 0) uiNeedsRefresh = true
 
-                                val bi = beatIntensity
-                                val b = reactor.bass   // 0..1
-                                val m = reactor.mid    // 0..1
-                                val h = reactor.high   // 0..1
-
-                                // Store base values on first beat frame (so we modulate FROM them)
+                                // Capture base values once
                                 if (!beatBaseStored) {
                                     beatBaseAmbient = gr.ambientIntensity
                                     beatBaseLight = gr.lightIntensity
@@ -767,36 +756,21 @@ class FilamentModelActivity : ComponentActivity() {
                                     beatBaseStored = true
                                 }
 
-                                // Ambient: bass drives between base and base+range
-                                // Range scales with beatIntensity (bi)
-                                gr.ambientIntensity = beatBaseAmbient + b * bi * 0.8f
+                                // THE output: box fill percentage (0..1)
+                                val pct = reactor.boxFillPct
+                                val bi = beatIntensity
 
-                                // Main light: mid band drives it
-                                gr.lightIntensity = beatBaseLight + m * bi * 1.2f
+                                // Light intensity = base + pct * range
+                                gr.lightIntensity = beatBaseLight + pct * bi * 2f
+                                gr.ambientIntensity = beatBaseAmbient + pct * bi * 0.6f
+                                gr.fillLightIntensity = beatBaseFill + pct * bi * 0.4f
+                                gr.shadowDarkness = (beatBaseShadow + pct * bi * 0.1f).coerceAtMost(1f)
 
-                                // Fill light: high frequencies add sparkle
-                                gr.fillLightIntensity = beatBaseFill + h * bi * 0.6f
-
-                                // Shadow: bass deepens shadows on the beat (tight range)
-                                gr.shadowDarkness = (beatBaseShadow + b * bi * 0.15f).coerceAtMost(1f)
-
-                                // Color: subtle warm shift on bass, cool on highs
-                                // Modulate the existing color, don't replace it
-                                val baseR = gr.ambientColor[0]
-                                val baseG = gr.ambientColor[1]
-                                val baseB = gr.ambientColor[2]
-                                gr.ambientColor = floatArrayOf(
-                                    baseR + b * bi * 0.15f,   // bass warms red
-                                    baseG + m * bi * 0.08f,   // mid tints green
-                                    baseB + h * bi * 0.12f    // high cools blue
-                                )
-
-                                // Per-model exposure: gentle pulse (not blinding)
-                                val beatExp = b * bi * 0.3f
+                                // Per-model exposure pulse
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
-                                        gpuModel.exposure = placed.exposure + beatExp
+                                        gpuModel.exposure = placed.exposure + pct * bi * 0.4f
                                     }
                                 }
                             } else if (beatBaseStored) {
@@ -2034,13 +2008,33 @@ class FilamentModelActivity : ComponentActivity() {
                 canvas.drawRect(bx, specBot - barH, bx + barW, specBot, p)
             }
 
-            // Threshold line
-            val thresh = reactor?.bassConfig?.gateThreshold ?: 0f
-            if (thresh > 0.01f) {
-                p.color = 0xCCFFFF00.toInt(); p.strokeWidth = 2f
-                val threshY = specBot - thresh * specH
-                canvas.drawLine(specLeft, threshY, specRight, threshY, p)
-                p.textSize = 18f; canvas.drawText("THRESH", specRight - 80f, threshY - 4f, p)
+            // Bounding box
+            if (reactor != null) {
+                val bxL = specLeft + reactor.boxLeft * (specRight - specLeft)
+                val bxR = specLeft + reactor.boxRight * (specRight - specLeft)
+                val bxT = specBot - reactor.boxTop * specH
+                val bxB = specBot - reactor.boxBottom * specH
+
+                // Fill (semi-transparent)
+                p.color = 0x18FFFFFF.toInt()
+                canvas.drawRect(bxL, bxT, bxR, bxB, p)
+
+                // Border (white)
+                p.color = 0xCCFFFFFF.toInt()
+                p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 2f
+                canvas.drawRect(bxL, bxT, bxR, bxB, p)
+                p.style = android.graphics.Paint.Style.FILL
+
+                // Output meter (right edge of spectrum)
+                val meterX = specRight + 8f; val meterW = 16f
+                p.color = 0xFF1E1E28.toInt()
+                canvas.drawRect(meterX, specTop, meterX + meterW, specBot, p)
+                val fillH = reactor.boxFillPct * specH
+                p.color = 0xFFEC4899.toInt()
+                canvas.drawRect(meterX, specBot - fillH, meterX + meterW, specBot, p)
+                // Output % label
+                p.color = 0xFFFFFFFF.toInt(); p.textSize = 20f
+                canvas.drawText("%.0f%%".format(reactor.boxFillPct * 100), meterX - 4f, specTop - 6f, p)
             }
 
             // Frequency labels

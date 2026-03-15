@@ -34,10 +34,23 @@ class AudioReactor {
     @Volatile var mid = 0f; private set
     @Volatile var high = 0f; private set
     @Volatile var overall = 0f; private set
+    @Volatile var boxFillPct = 0f; private set  // THE output: % of bounding box filled
+
+    // ── Bounding box (user adjustable on spectrum) ──
+    // Normalized 0..1 coordinates on the spectrum display
+    @Volatile var boxLeft = 0.0f     // frequency range left (0=20Hz)
+    @Volatile var boxRight = 0.4f    // frequency range right (1=20kHz)
+    @Volatile var boxBottom = 0.1f   // amplitude floor (0=silence)
+    @Volatile var boxTop = 1.0f      // amplitude ceiling (1=max)
+
+    // ── Output controls ──
+    @Volatile var outputScale = 1.5f   // multiply the box fill % (>1 = expand, <1 = compress)
+    @Volatile var outputFloor = 0.0f   // minimum output value
+    @Volatile var outputCeiling = 1.0f // maximum output value
 
     // ── Global config ──
     @Volatile var enabled = false
-    @Volatile var sensitivity = 0.8f       // global gain — lower = more headroom for dynamics
+    @Volatile var sensitivity = 1.2f
 
     // ── Per-band configuration (BeatReactor-style) ──
     data class BandConfig(
@@ -223,28 +236,47 @@ class AudioReactor {
     }
 
     /**
-     * Call once per frame. NO accumulation — just passes through the
-     * current percentage with minimal smoothing to avoid flicker.
+     * Call once per frame. Computes bounding box fill percentage.
+     * This IS the output — percentage of the box area filled by spectrum bars.
      */
     fun update() {
         if (!enabled) {
-            bass = 0f; mid = 0f; high = 0f; overall = 0f
+            bass = 0f; mid = 0f; high = 0f; overall = 0f; boxFillPct = 0f
             return
         }
 
-        // Light smoothing only (not envelope!) — just removes single-frame noise
-        val smooth = 0.3f  // 0=instant, 1=no change. 0.3 = slight smoothing
-        bass = bass * smooth + rawBass * (1f - smooth)
-        mid = mid * smooth + rawMid * (1f - smooth)
-        high = high * smooth + rawHigh * (1f - smooth)
+        // Pass-through band values (light smoothing for display only)
+        val s = 0.3f
+        bass = bass * s + rawBass * (1f - s)
+        mid = mid * s + rawMid * (1f - s)
+        high = high * s + rawHigh * (1f - s)
 
-        // Apply threshold — below this, output is zero
-        val thresh = bassConfig.gateThreshold
-        if (bass < thresh) bass = 0f
-        if (mid < thresh) mid = 0f
-        if (high < thresh) high = 0f
+        // ── Box fill percentage (the real output) ──
+        // For each spectrum bin inside the box's X range,
+        // compute how much of the bar fills the box's Y range
+        val bins = spectrumBins
+        val boxH = (boxTop - boxBottom).coerceAtLeast(0.01f)
+        var fillSum = 0f
+        var binsInBox = 0
 
-        overall = bass * 0.5f + mid * 0.3f + high * 0.2f
+        for (i in bins.indices) {
+            val binNormX = i.toFloat() / bins.size  // 0..1 position
+            if (binNormX < boxLeft || binNormX > boxRight) continue
+            binsInBox++
+
+            val barHeight = bins[i].coerceIn(0f, 1f)
+            // How much of this bar is within the box's Y range?
+            val fillInBox = ((barHeight - boxBottom) / boxH).coerceIn(0f, 1f)
+            fillSum += fillInBox
+        }
+
+        val rawFill = if (binsInBox > 0) fillSum / binsInBox else 0f
+
+        // Apply scale (expand/compress) and clamp to floor/ceiling
+        boxFillPct = (rawFill * outputScale).coerceIn(outputFloor, outputCeiling)
+
+        // Overall = boxFillPct (this drives the lighting)
+        overall = boxFillPct
     }
 
     private inline fun processBand(
