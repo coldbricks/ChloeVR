@@ -1332,6 +1332,23 @@ class FilamentModelActivity : ComponentActivity() {
             } else if (menuVisible && hoveredMenuParam >= 0) {
                 // Select the param the laser is pointing at
                 selectedParam = hoveredMenuParam
+                // Toggle params: trigger press directly toggles
+                if (hoveredMenuParam == 13) {
+                    beatReactorEnabled = !beatReactorEnabled
+                    val reactor = audioReactor
+                    if (beatReactorEnabled && reactor != null) {
+                        reactor.enabled = true
+                        val started = if (!reactor.isActive) reactor.start() else true
+                        Log.i(TAG, "BeatReactor ON, started=$started")
+                    } else {
+                        reactor?.enabled = false
+                        Log.i(TAG, "BeatReactor OFF")
+                    }
+                } else if (hoveredMenuParam == 15) {
+                    foveationLevel = (foveationLevel + 1) % 4
+                    nativeSetFoveationLevel(foveationLevel)
+                    Log.i(TAG, "Foveation: $foveationLevel")
+                }
                 uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0) {
                 selectedModelIndex = hoveredModelIndex
