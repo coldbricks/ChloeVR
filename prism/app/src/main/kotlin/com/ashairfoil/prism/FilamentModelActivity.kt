@@ -1092,8 +1092,8 @@ class FilamentModelActivity : ComponentActivity() {
                                     else hoveredActionButton = 102                 // EXIT
                                 }
 
-                                // Param rows: ~195..770 in bitmap Y
-                                if (by in 195f..770f) {
+                                // Param rows: ~195..800 in bitmap Y (16 params at 42px)
+                                if (by in 195f..800f) {
                                     val frac = (by - 195f) / (770f - 195f)
                                     val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
                                     hoveredMenuParam = idx
@@ -1513,7 +1513,7 @@ class FilamentModelActivity : ComponentActivity() {
                         gpuModel?.exposure = model.exposure
                     }
                     3 -> if (model != null) {
-                        model.contrast = (model.contrast + delta * 0.3f).coerceIn(0.8f, 1.3f)
+                        model.contrast = (model.contrast + delta * 0.2f).coerceIn(0.85f, 1.15f)
                         gpuModel?.contrast = model.contrast
                     }
                     4 -> if (model != null) {
