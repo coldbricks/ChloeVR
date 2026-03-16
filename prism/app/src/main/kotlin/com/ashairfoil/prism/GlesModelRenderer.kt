@@ -31,7 +31,7 @@ class GlesModelRenderer {
         var textureId: Int = 0,
         var indexCount: Int = 0,
         var modelMatrix: FloatArray = floatArrayOf(
-            1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,  0f, 0f, -2f, 1f
+            1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,  0f, 0f, -1f, 1f
         ),
         var metallic: Float = 0f,
         var roughness: Float = 0.9f,
@@ -62,6 +62,8 @@ class GlesModelRenderer {
 
     private val models = mutableListOf<GpuModel>()
     private var nextModelId = 1
+    private var maxTextureSize = 4096
+    var textureMaxSize = 0  // 0=auto, else hard cap (4096/2048/1024)
 
     // GL shared resources
     private var programId = 0
@@ -337,6 +339,11 @@ class GlesModelRenderer {
         GLES30.glEnableVertexAttribArray(1)
         GLES30.glVertexAttribPointer(1, 2, GLES30.GL_FLOAT, false, 16, 8)
         GLES30.glBindVertexArray(0)
+
+        val maxTexBuf = intArrayOf(0)
+        GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexBuf, 0)
+        maxTextureSize = if (maxTexBuf[0] > 0) maxTexBuf[0] else 4096
+        Log.i(TAG, "GPU max texture size: $maxTextureSize")
 
         initialized = true
         Log.i(TAG, "GLES renderer initialized (shadows, gizmo, laser, grid)")
@@ -665,6 +672,51 @@ class GlesModelRenderer {
             }
 
             // Helper to load a glTF texture by texture array index
+            // Texture cap: user override or adaptive budget
+            val texCount = (if (images != null) images.length() else 0).coerceAtLeast(1)
+            val vertexVram = posCnt.toLong() * 12 * 3 + idxCnt.toLong() * 4
+            val texCap: Int
+            if (textureMaxSize > 0) {
+                // User-specified hard cap
+                texCap = minOf(textureMaxSize, maxTextureSize)
+                Log.i(TAG, "Texture cap: ${texCap}px (user setting)")
+            } else {
+                // Auto: budget ~128MB for textures, scale down heavy models
+                val vramBudget = 128L * 1024 * 1024
+                val perTexBudget = ((vramBudget - vertexVram) / texCount).coerceAtLeast(1)
+                val maxDimFromBudget = kotlin.math.sqrt(perTexBudget / 4.0).toInt()
+                var cap = maxTextureSize
+                while (cap > maxDimFromBudget && cap > 512) cap /= 2
+                texCap = cap
+                Log.i(TAG, "Texture cap: ${texCap}px (auto, $texCount images, ${vertexVram/1024}KB vertex)")
+            }
+
+            fun clampBitmap(bmp: android.graphics.Bitmap): android.graphics.Bitmap {
+                if (bmp.width <= texCap && bmp.height <= texCap) return bmp
+                val scale = texCap.toFloat() / maxOf(bmp.width, bmp.height)
+                val w = (bmp.width * scale).toInt().coerceAtLeast(1)
+                val h = (bmp.height * scale).toInt().coerceAtLeast(1)
+                Log.w(TAG, "Clamping texture ${bmp.width}x${bmp.height} → ${w}x${h} (cap $texCap)")
+                val scaled = android.graphics.Bitmap.createScaledBitmap(bmp, w, h, true)
+                bmp.recycle()
+                return scaled
+            }
+
+            fun decodeTexBytes(texBytes: ByteArray, texLen: Int): android.graphics.Bitmap? {
+                // Probe dimensions first, then decode at capped size to save heap + VRAM
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(texBytes, 0, texLen, opts)
+                var sampleSize = 1
+                while (opts.outWidth / sampleSize > texCap || opts.outHeight / sampleSize > texCap) {
+                    sampleSize *= 2
+                }
+                val decOpts = if (sampleSize > 1) {
+                    Log.i(TAG, "Decode texture ${opts.outWidth}x${opts.outHeight} with sampleSize=$sampleSize")
+                    BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                } else null
+                return BitmapFactory.decodeByteArray(texBytes, 0, texLen, decOpts)
+            }
+
             fun loadGltfTex(texIdx: Int, label: String): Int {
                 if (texIdx < 0 || textures == null || images == null) return 0
                 if (texIdx >= textures.length()) return 0
@@ -676,7 +728,8 @@ class GlesModelRenderer {
                 val (texOff, texLen) = bv(texBvIdx)
                 val texBytes = ByteArray(texLen)
                 System.arraycopy(glbBytes, texOff, texBytes, 0, texLen)
-                val bitmap = BitmapFactory.decodeByteArray(texBytes, 0, texLen) ?: return 0
+                var bitmap = decodeTexBytes(texBytes, texLen) ?: return 0
+                bitmap = clampBitmap(bitmap)
                 val tb = intArrayOf(0)
                 GLES30.glGenTextures(1, tb, 0)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tb[0])
@@ -698,8 +751,9 @@ class GlesModelRenderer {
                     val (texOff, texLen) = bv(texBvIdx)
                     val texBytes = ByteArray(texLen)
                     System.arraycopy(glbBytes, texOff, texBytes, 0, texLen)
-                    val bitmap = BitmapFactory.decodeByteArray(texBytes, 0, texLen)
+                    var bitmap = decodeTexBytes(texBytes, texLen)
                     if (bitmap != null) {
+                        bitmap = clampBitmap(bitmap)
                         val tb = intArrayOf(0)
                         GLES30.glGenTextures(1, tb, 0)
                         model.textureId = tb[0]
@@ -1425,12 +1479,15 @@ class GlesModelRenderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexA)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(bloomBlurProgramId, "uTex"), 0)
         GLES30.glUniform2f(GLES30.glGetUniformLocation(bloomBlurProgramId, "uDirection"), 1f / bloomW, 0f)
+        GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
         // Pass 3: Vertical blur (bloom B → bloom A)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomFboA)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexB)
         GLES30.glUniform2f(GLES30.glGetUniformLocation(bloomBlurProgramId, "uDirection"), 0f, 1f / bloomH)
+        GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
         // Pass 4: Composite bloom onto scene (additive RGB only — preserve alpha for passthrough)
@@ -1442,9 +1499,11 @@ class GlesModelRenderer {
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)  // additive
         GLES30.glColorMask(true, true, true, false)  // DON'T touch alpha — passthrough needs alpha=0
         GLES30.glUseProgram(bloomCompositeProgramId)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexA)
         GLES30.glUniform1i(GLES30.glGetUniformLocation(bloomCompositeProgramId, "uBloom"), 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(bloomCompositeProgramId, "uIntensity"), bloomIntensity)
+        GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
         GLES30.glBindVertexArray(0)

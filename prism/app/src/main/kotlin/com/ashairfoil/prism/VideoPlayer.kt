@@ -10,6 +10,7 @@ import com.ashairfoil.prism.effects.ColorGradingEffect
 import com.ashairfoil.prism.effects.ColorGradingState
 import com.ashairfoil.prism.effects.LensDistortionEffect
 import com.ashairfoil.prism.effects.LensDistortionState
+import com.ashairfoil.prism.effects.PassthroughEffect
 import com.ashairfoil.prism.effects.StereoAdjustmentEffect
 import com.ashairfoil.prism.effects.StereoAdjustmentState
 import java.io.File
@@ -47,13 +48,16 @@ class VideoPlayer(private val context: Context) {
         stereoAdjustmentState: StereoAdjustmentState? = null
     ) {
         release()
+
+        // Pre-size the surface buffer so MediaCodec has a valid target.
+        // SurfaceEntity defaults to tiny/zero buffer; without this, video frames are dropped.
+        OpenXRInput.nativeSetSurfaceSize(surface, 1920, 1080)
+
         player = ExoPlayer.Builder(context).build().apply {
-            // Only add effects that are actually enabled.
-            // When effects are added, ExoPlayer routes through DefaultVideoFrameProcessor.
-            // On Galaxy XR, the FinalShaderWrapper drops frames if the output surface
-            // isn't properly sized — so skip the effects pipeline entirely when nothing
-            // is enabled. Each effect's shader has an early-return when disabled, but
-            // just being in the pipeline causes the surface routing issue.
+            // Galaxy XR: MediaCodec can't output directly to SurfaceEntity surfaces.
+            // Always route through the GL effects pipeline (DefaultVideoFrameProcessor)
+            // using at least a passthrough effect. GL rendering works because images
+            // use the same path successfully.
             val effects = mutableListOf<androidx.media3.common.Effect>()
 
             // 1. Alpha unpacking — must be first, restructures pixel layout
@@ -81,9 +85,21 @@ class VideoPlayer(private val context: Context) {
                 effects.add(StereoAdjustmentEffect(stereoAdjustmentState))
             }
 
-            if (effects.isNotEmpty()) {
-                setVideoEffects(effects)
+            // Always use GL pipeline — passthrough if no other effects
+            if (effects.isEmpty()) {
+                effects.add(PassthroughEffect())
             }
+            setVideoEffects(effects)
+
+            // Resize surface buffer to actual video resolution once known
+            addListener(object : androidx.media3.common.Player.Listener {
+                override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                    if (videoSize.width > 0 && videoSize.height > 0) {
+                        OpenXRInput.nativeSetSurfaceSize(surface, videoSize.width, videoSize.height)
+                    }
+                }
+            })
+
             setVideoSurface(surface)
             setMediaItem(MediaItem.fromUri(file.toURI().toString()))
             prepare()

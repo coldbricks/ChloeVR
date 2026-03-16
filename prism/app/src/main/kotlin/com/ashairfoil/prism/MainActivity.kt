@@ -448,14 +448,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         layout.addView(TextView(this).apply {
             text = "ChloeVR"
-            textSize = 28f
+            textSize = 36f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 4)
+            setPadding(0, 0, 0, 8)
             gravity = Gravity.CENTER
         })
 
         filePickerCountLabel = TextView(this).apply {
-            textSize = 14f
+            textSize = 18f
             setTextColor(0xFF666666.toInt())
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 12)
@@ -463,7 +463,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         layout.addView(filePickerCountLabel)
 
         filePickerStatusLabel = TextView(this).apply {
-            textSize = 14f
+            textSize = 18f
             setTextColor(0xFFAAAAAA.toInt())
             gravity = Gravity.CENTER
             setPadding(0, 0, 0, 12)
@@ -472,7 +472,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         layout.addView(TextView(this).apply {
             text = "Search"
-            textSize = 14f
+            textSize = 18f
             setTextColor(0xFFCCCCCC.toInt())
             setPadding(0, 0, 0, 6)
         })
@@ -735,9 +735,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             container.addView(TextView(this).apply {
                 text = dirName
-                textSize = 13f
+                textSize = 17f
                 setTextColor(0xFF4FC3F7.toInt())
-                setPadding(8, 16, 0, 8)
+                setPadding(8, 20, 0, 10)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -789,7 +789,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         if (isFavorite) {
                             addView(TextView(this@MainActivity).apply {
                                 text = "*"
-                                textSize = 18f
+                                textSize = 22f
                                 setTextColor(0xFFFFD600.toInt())
                                 setPadding(0, 0, 8, 0)
                             })
@@ -797,7 +797,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
                         addView(TextView(this@MainActivity).apply {
                             text = file.nameWithoutExtension
-                            textSize = 16f
+                            textSize = 20f
                             setTextColor(0xFFE0E0E0.toInt())
                             maxLines = 2
                             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -894,15 +894,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private fun makeTag(text: String, bgColor: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            textSize = 11f
+            textSize = 14f
             setTextColor(0xFFFFFFFF.toInt())
             setBackgroundColor(bgColor)
-            setPadding(14, 4, 14, 4)
+            setPadding(16, 6, 16, 6)
             val lp = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            lp.setMargins(0, 0, 6, 0)
+            lp.setMargins(0, 0, 8, 0)
             layoutParams = lp
         }
     }
@@ -1214,7 +1214,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private fun makeSectionLabel(text: String): TextView {
         return TextView(this).apply {
             this.text = text
-            textSize = 16f
+            textSize = 19f
             setTextColor(0xFFCCCCCC.toInt())
             setPadding(0, 0, 0, 8)
         }

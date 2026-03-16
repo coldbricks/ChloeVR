@@ -47,7 +47,7 @@ class FilamentModelActivity : ComponentActivity() {
         val baseScale: Float = 1f,
         var posX: Float = 0f,
         var posY: Float = 0f,
-        var posZ: Float = -2f,
+        var posZ: Float = -1f,
         var rotX: Float = 0f,
         var rotY: Float = 0f,
         var rotZ: Float = 0f,
@@ -144,7 +144,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var emitterGrabDist = 2f
 
     // Grid state
-    @Volatile var gridVisible = true
+    @Volatile var gridVisible = false
 
     // Gizmo state
     var gizmoVisible = true
@@ -159,12 +159,17 @@ class FilamentModelActivity : ComponentActivity() {
     private var handsLocked = false
     private var uiTextureId = 0
     @Volatile private var pendingUiBitmap: android.graphics.Bitmap? = null
+    private var uiFlipBitmap: android.graphics.Bitmap? = null
+    private var uiFlipCanvas: android.graphics.Canvas? = null
+    private val uiFlipMatrix = android.graphics.Matrix()
     private var selectedParam = 0
     private val PARAM_NAMES = arrayOf("Metallic", "Roughness", "Exposure",
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Foveation")
+        "BeatReactor", "Foveation", "Tex Quality")
+    // 0=auto (adaptive budget), 1=4096 (original), 2=2048, 3=1024
+    private var textureQuality = 0
     private var lastXState = false
     private var lastRightStickClick = false
     private var lastLeftStickClick = false
@@ -176,7 +181,7 @@ class FilamentModelActivity : ComponentActivity() {
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
     private var panelRotX = 0f; private var panelRotY = 0f; private var panelRotZ = 0f; private var panelRotW = 1f
-    private val PANEL_WIDTH = 1.1f  // meters in world space — big enough to read easily
+    private val PANEL_WIDTH = 1.1f  // meters in world space
     private val PANEL_HEIGHT = 1.2f
     private var draggingPanel = false
     private var panelGrabDist = 1.0f // distance from hand at grab time
@@ -355,10 +360,19 @@ class FilamentModelActivity : ComponentActivity() {
                 }
             }
 
+            // Auto-restore last scene if no intent models were loaded
+            if (models.isEmpty()) {
+                val autosave = File(getScenesDir(), "_autosave.json")
+                if (autosave.exists()) {
+                    Log.i(TAG, "Restoring last scene from autosave")
+                    loadScene(autosave)
+                }
+            }
+
             startRenderLoop()
 
             if (models.isNotEmpty()) {
-                menuVisible = true
+                menuVisible = false  // don't pop menu on restore
                 runOnUiThread { renderUiToBitmap() }
             }
         }.start()
@@ -390,7 +404,7 @@ class FilamentModelActivity : ComponentActivity() {
                 scale = autoScale,
                 baseScale = autoScale,
                 posX = offsetX,
-                posZ = -2f,
+                posZ = -1f,
                 metallic = gpuModel.metallic,
                 roughness = gpuModel.roughness
             )
@@ -433,6 +447,44 @@ class FilamentModelActivity : ComponentActivity() {
             (xz + wy) * s, (yz - wx) * s, (1f - (xx + yy)) * s, 0f,
             model.posX, model.posY, model.posZ, 1f
         )
+    }
+
+    private fun reloadAllModels() {
+        val renderer = glesRenderer ?: return
+        // Snapshot current state
+        val snapshots = models.map { m ->
+            Triple(m.file, m.copy(), m.gpuModelId)
+        }
+        // Remove old GPU models
+        for ((_, _, gpuId) in snapshots) renderer.removeModel(gpuId)
+        models.clear()
+        selectedModelIndex = -1
+        // Pass quality setting to renderer
+        renderer.textureMaxSize = when (textureQuality) {
+            1 -> 4096; 2 -> 2048; 3 -> 1024; else -> 0 // 0 = auto
+        }
+        // Reload each model preserving transforms
+        for ((file, snap, _) in snapshots) {
+            if (!file.exists()) continue
+            try {
+                val bytes = file.readBytes()
+                val gpuId = renderer.loadGlb(bytes)
+                if (gpuId < 0) continue
+                val placed = snap.copy(gpuModelId = gpuId)
+                models.add(placed)
+                updateModelTransform(placed)
+                val gpuModel = renderer.getModel(gpuId) ?: continue
+                gpuModel.metallic = placed.metallic
+                gpuModel.roughness = placed.roughness
+                gpuModel.exposure = placed.exposure
+                gpuModel.contrast = placed.contrast
+                gpuModel.saturation = placed.saturation
+            } catch (e: Exception) {
+                Log.e(TAG, "Reload failed: ${file.name}", e)
+            }
+        }
+        if (models.isNotEmpty()) selectedModelIndex = 0
+        Log.i(TAG, "Reloaded ${models.size} models (texQuality=$textureQuality)")
     }
 
     // ── Scene Save/Load ──
@@ -553,7 +605,7 @@ class FilamentModelActivity : ComponentActivity() {
                         baseScale = obj.optDouble("scale", 0.75).toFloat(),
                         posX = obj.optDouble("posX", 0.0).toFloat(),
                         posY = obj.optDouble("posY", 0.0).toFloat(),
-                        posZ = obj.optDouble("posZ", -2.0).toFloat(),
+                        posZ = obj.optDouble("posZ", -1.0).toFloat(),
                         rotX = obj.optDouble("rotX", 0.0).toFloat(),
                         rotY = obj.optDouble("rotY", 0.0).toFloat(),
                         rotZ = obj.optDouble("rotZ", 0.0).toFloat(),
@@ -833,13 +885,20 @@ class FilamentModelActivity : ComponentActivity() {
                                     val quadTex = nativeAcquireUiImage()
                                     if (quadTex > 0) {
                                         // Flip bitmap vertically — compositor quad UVs are bottom-up
-                                        val matrix = android.graphics.Matrix().apply { postScale(1f, -1f, bmp.width / 2f, bmp.height / 2f) }
-                                        val flipped = android.graphics.Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, false)
+                                        // Reuse cached flip canvas to avoid allocation every frame
+                                        var fb = uiFlipBitmap
+                                        if (fb == null || fb.width != bmp.width || fb.height != bmp.height) {
+                                            fb?.recycle()
+                                            fb = android.graphics.Bitmap.createBitmap(bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888)
+                                            uiFlipBitmap = fb
+                                            uiFlipCanvas = android.graphics.Canvas(fb)
+                                            uiFlipMatrix.setScale(1f, -1f, bmp.width / 2f, bmp.height / 2f)
+                                        }
+                                        uiFlipCanvas!!.drawBitmap(bmp, uiFlipMatrix, null)
                                         android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
-                                        android.opengl.GLUtils.texSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, 0, 0, flipped)
+                                        android.opengl.GLUtils.texSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, 0, 0, fb)
                                         android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
                                         nativeReleaseUiImage()
-                                        flipped.recycle()
                                     }
                                 }
                                 bmp.recycle()
@@ -983,9 +1042,13 @@ class FilamentModelActivity : ComponentActivity() {
         val ocY = rayOrigin[1] - sphereCenter[1]
         val ocZ = rayOrigin[2] - sphereCenter[2]
 
-        val a = rayDir[0] * rayDir[0] + rayDir[1] * rayDir[1] + rayDir[2] * rayDir[2]
-        val b = 2f * (ocX * rayDir[0] + ocY * rayDir[1] + ocZ * rayDir[2])
+        // c < 0 means ray origin is inside the sphere — skip so user can deselect
         val c = ocX * ocX + ocY * ocY + ocZ * ocZ - sphereRadius * sphereRadius
+        if (c < 0f) return -1f
+
+        val a = rayDir[0] * rayDir[0] + rayDir[1] * rayDir[1] + rayDir[2] * rayDir[2]
+        if (a < 1e-8f) return -1f  // zero-length ray guard
+        val b = 2f * (ocX * rayDir[0] + ocY * rayDir[1] + ocZ * rayDir[2])
 
         val disc = b * b - 4f * a * c
         if (disc < 0f) return -1f
@@ -1361,7 +1424,7 @@ class FilamentModelActivity : ComponentActivity() {
                 if (eDist > 0f) emitterHovered = true
             }
 
-            // Emitter grab: grip on hovered emitter → drag along ray + stick Y push/pull
+            // Emitter grab: grip on hovered emitter → drag along ray, delta-based
             if (emitterHovered && rightSqueeze > 0.5f && !emitterGrabbed) {
                 emitterGrabbed = true
                 val dx = renderer.emitterPos[0] - laserHandPos[0]
@@ -1373,30 +1436,24 @@ class FilamentModelActivity : ComponentActivity() {
                 if (rightSqueeze < 0.3f) {
                     emitterGrabbed = false
                 } else {
-                    // Stick Y adjusts orbit radius
+                    // Stick Y adjusts distance along ray
                     val rightThumbY = inputBuffer[3]
                     if (kotlin.math.abs(rightThumbY) > 0.15f) {
                         emitterGrabDist += rightThumbY * 0.02f
                         emitterGrabDist = emitterGrabDist.coerceIn(0.3f, 5f)
                     }
-                    // Scene center = average model position (or origin if no models)
+                    // Place emitter along the laser ray at grab distance — no snap
+                    renderer.emitterPos = floatArrayOf(
+                        laserHandPos[0] + rayDir[0] * emitterGrabDist,
+                        laserHandPos[1] + rayDir[1] * emitterGrabDist,
+                        laserHandPos[2] + rayDir[2] * emitterGrabDist
+                    )
+                    // Scene center for light direction
                     var scX = 0f; var scY = 0f; var scZ = 0f
                     if (models.isNotEmpty()) {
                         for (m in models) { scX += m.posX; scY += m.posY; scZ += m.posZ }
                         scX /= models.size; scY /= models.size; scZ /= models.size
                     }
-                    // Direction = from scene center toward where the ray points
-                    val pointX = laserHandPos[0] + rayDir[0] * 3f - scX
-                    val pointY = laserHandPos[1] + rayDir[1] * 3f - scY
-                    val pointZ = laserHandPos[2] + rayDir[2] * 3f - scZ
-                    val len = kotlin.math.sqrt(pointX*pointX + pointY*pointY + pointZ*pointZ)
-                        .coerceAtLeast(0.001f)
-                    // Place emitter on sphere around model center
-                    renderer.emitterPos = floatArrayOf(
-                        scX + pointX / len * emitterGrabDist,
-                        (scY + pointY / len * emitterGrabDist).coerceAtLeast(scY + 0.05f),
-                        scZ + pointZ / len * emitterGrabDist
-                    )
                     renderer.updateLightFromEmitter(scX, scY, scZ)
                 }
             }
@@ -1411,10 +1468,15 @@ class FilamentModelActivity : ComponentActivity() {
                     val worldCx = m[0]*gpuModel.boundsCenterX + m[4]*gpuModel.boundsCenterY + m[8]*gpuModel.boundsCenterZ + m[12]
                     val worldCy = m[1]*gpuModel.boundsCenterX + m[5]*gpuModel.boundsCenterY + m[9]*gpuModel.boundsCenterZ + m[13]
                     val worldCz = m[2]*gpuModel.boundsCenterX + m[6]*gpuModel.boundsCenterY + m[10]*gpuModel.boundsCenterZ + m[14]
+                    val center = floatArrayOf(worldCx, worldCy, worldCz)
                     val sx = kotlin.math.sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2])
                     val worldR = gpuModel.boundsRadius * sx
-                    val dist = raySphereIntersect(laserHandPos, rayDir,
-                        floatArrayOf(worldCx, worldCy, worldCz), worldR)
+                    var dist = raySphereIntersect(laserHandPos, rayDir, center, worldR)
+                    // Inside bounding sphere: allow selecting by aiming at the center (small core radius)
+                    if (dist < 0f) {
+                        val coreR = (worldR * 0.15f).coerceIn(0.05f, 0.15f)
+                        dist = raySphereIntersect(laserHandPos, rayDir, center, coreR)
+                    }
                     if (dist in 0.01f..nearestDist) { nearestDist = dist; nearestIdx = i }
                 }
                 hoveredModelIndex = nearestIdx
@@ -1681,6 +1743,10 @@ class FilamentModelActivity : ComponentActivity() {
                     foveationLevel = (foveationLevel + 1) % 4
                     nativeSetFoveationLevel(foveationLevel)
                     Log.i(TAG, "Foveation: $foveationLevel")
+                } else if (hoveredMenuParam == 15) {
+                    textureQuality = (textureQuality + 1) % 4
+                    Log.i(TAG, "Tex quality: $textureQuality (${arrayOf("Auto","4096","2048","1024")[textureQuality]})")
+                    reloadAllModels()
                 }
                 uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -2969,6 +3035,7 @@ class FilamentModelActivity : ComponentActivity() {
                 if (r != null) "ON %.0f%%".format((r.boxFillPct) * 100) else "ON"
             } else "OFF",
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
+            "Tex Quality" to arrayOf("Auto", "4096", "2048", "1024")[textureQuality],
         )
 
         val rowH = 38f  // 15 params
@@ -3220,7 +3287,7 @@ class FilamentModelActivity : ComponentActivity() {
                 setTextColor(0xFFFFFFFF.toInt())
                 setOnClickListener {
                     models.getOrNull(selectedModelIndex)?.let {
-                        it.posX = 0f; it.posY = 0f; it.posZ = -2f
+                        it.posX = 0f; it.posY = 0f; it.posZ = -1f
                         it.rotX = 0f; it.rotY = 0f; it.rotZ = 0f; it.rotW = 1f
                         updateModelTransform(it)
                     }
@@ -3554,6 +3621,16 @@ class FilamentModelActivity : ComponentActivity() {
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
         running = false
+
+        // Auto-save current scene for next launch
+        if (models.isNotEmpty()) {
+            try {
+                saveScene("_autosave")
+                Log.i(TAG, "Auto-saved scene (${models.size} models)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Auto-save failed", e)
+            }
+        }
 
         // Persist floor height for next session
         val gr = glesRenderer
