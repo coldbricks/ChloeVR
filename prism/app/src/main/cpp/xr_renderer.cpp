@@ -338,11 +338,18 @@ bool XrRenderer::createSession() {
     XR_CHK(xrCreateSession(instance_, &sessionInfo, &session_));
     XR_LOGI("OpenXR rendering session created");
 
-    // Create LOCAL reference space (origin at floor level on Galaxy XR)
+    // Try STAGE space (Y=0 at floor), fall back to LOCAL if unsupported
     XrReferenceSpaceCreateInfo spaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     spaceInfo.poseInReferenceSpace = {{0, 0, 0, 1}, {0, 0, 0}};
-    XR_CHK(xrCreateReferenceSpace(session_, &spaceInfo, &appSpace_));
+    spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    XrResult spaceResult = xrCreateReferenceSpace(session_, &spaceInfo, &appSpace_);
+    if (XR_FAILED(spaceResult)) {
+        XR_LOGE("STAGE space not supported (%d), falling back to LOCAL", (int)spaceResult);
+        spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        XR_CHK(xrCreateReferenceSpace(session_, &spaceInfo, &appSpace_));
+    } else {
+        XR_LOGI("Using STAGE reference space (Y=0 at floor)");
+    }
 
     return true;
 }
@@ -1115,11 +1122,11 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     ambLight.next = &dirLight;
     ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
 
-    // Skip first 200 frames (~3 seconds) to let runtime warm up, then poll every 10 frames
+    // Skip first 60 frames (~1 second) to let runtime warm up, then poll every 3 frames
     static int frameCount = 0;
     frameCount++;
-    if (frameCount < 200) return false;
-    if (frameCount % 10 != 0) {
+    if (frameCount < 60) return false;
+    if (frameCount % 3 != 0) {
         estimate = lastLightEstimate_;
         return estimate.valid;
     }

@@ -138,6 +138,10 @@ class FilamentModelActivity : ComponentActivity() {
     private var hoveredModelIndex = -1
     private var hitDistance = -1f
     private var lastRightTriggerState = false
+    // Light emitter grab
+    private var emitterHovered = false
+    private var emitterGrabbed = false
+    private var emitterGrabDist = 2f
 
     // Grid state
     @Volatile var gridVisible = true
@@ -163,6 +167,7 @@ class FilamentModelActivity : ComponentActivity() {
         "BeatReactor", "Foveation")
     private var lastXState = false
     private var lastRightStickClick = false
+    private var lastLeftStickClick = false
     private var uiNeedsRefresh = false
     private var lastBCloseTime = 0L
     private var hoveredMenuParam = -1
@@ -233,8 +238,8 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var hapticConnected = false
     @Volatile private var hapticEnabled = false
 
-    // Auto-floor: lock grid to detected XR floor plane
-    @Volatile private var autoFloorEnabled = false  // disabled — causes jitter, user snaps manually with A
+    // Floor detection: snap grid once at startup, track floor Y for model placement
+    @Volatile private var floorSnappedOnce = false  // true after first grid snap to detected floor
     @Volatile private var detectedFloorY = Float.MIN_VALUE
 
     // Yeet animation (model delete with fly-off)
@@ -323,13 +328,9 @@ class FilamentModelActivity : ComponentActivity() {
             glesRenderer = renderer
             Log.i(TAG, "GLES renderer initialized")
 
-            // Restore persistent floor height
-            val savedGridHeight = getSharedPreferences("chloe_vr", MODE_PRIVATE)
-                .getFloat("grid_height", 0f)
-            if (savedGridHeight != 0f) {
-                renderer.gridHeight = savedGridHeight
-                Log.i(TAG, "Restored grid height: $savedGridHeight")
-            }
+            // Grid starts at Y=0 (stage space floor level)
+            // Don't restore saved height — floor position changes between sessions/rooms
+            renderer.gridHeight = 0f
 
             // Load single model from intent
             val path = intent.getStringExtra(EXTRA_MODEL_PATH)
@@ -692,11 +693,10 @@ class FilamentModelActivity : ComponentActivity() {
                                     val dirX = lightEstimateBuffer[10]; val dirY = lightEstimateBuffer[11]; val dirZ = lightEstimateBuffer[12]
                                     val shValid = lightEstimateBuffer[13] > 0.5f
 
-                                    // Temporal smoothing: EMA to prevent jittery "moving light"
-                                    // α = 0.08 for intensity/color (smooth), 0.04 for direction (very smooth)
-                                    val aI = if (lightSmoothed) 0.08f else 1f  // instant on first frame
-                                    val aD = if (lightSmoothed) 0.04f else 1f
-                                    val aS = if (lightSmoothed) 0.06f else 1f
+                                    // Temporal smoothing: EMA — very smooth to prevent visible jolts
+                                    val aI = if (lightSmoothed) 0.03f else 1f  // intensity/color (slow)
+                                    val aD = if (lightSmoothed) 0.12f else 1f  // direction
+                                    val aS = if (lightSmoothed) 0.03f else 1f  // SH coefficients (slow)
                                     lightSmoothed = true
 
                                     // Smooth ambient
@@ -708,21 +708,11 @@ class FilamentModelActivity : ComponentActivity() {
                                     for (i in 0..2) smoothAmbientColor[i] += (tcc[i] - smoothAmbientColor[i]) * aI
                                     gr.ambientColor = smoothAmbientColor.copyOf()
 
-                                    // Smooth directional light
+                                    // Light direction: use manual azimuth/elevation (menu sliders)
+                                    // XR direction estimation is unreliable — don't override user's setting
+                                    // Auto-adjust intensity and color from XR only
                                     val dirScale = (dirR + dirG + dirB) / 3f
                                     if (dirScale > 0.01f) {
-                                        var ldx = dirX; var ldy = dirY; var ldz = dirZ
-                                        if (ldy < 0f) { ldx = -ldx; ldy = -ldy; ldz = -ldz }
-                                        if (ldy > 0.1f) {
-                                            // Smooth direction (slerp-like via EMA + renormalize)
-                                            smoothLightDir[0] += (ldx - smoothLightDir[0]) * aD
-                                            smoothLightDir[1] += (ldy - smoothLightDir[1]) * aD
-                                            smoothLightDir[2] += (ldz - smoothLightDir[2]) * aD
-                                            val len = kotlin.math.sqrt(smoothLightDir[0]*smoothLightDir[0] +
-                                                smoothLightDir[1]*smoothLightDir[1] + smoothLightDir[2]*smoothLightDir[2])
-                                                .coerceAtLeast(0.001f)
-                                            gr.lightDir = floatArrayOf(smoothLightDir[0]/len, smoothLightDir[1]/len, smoothLightDir[2]/len)
-                                        }
                                         val targetInt = (dirScale * 3f).coerceIn(0.5f, 5f)
                                         smoothLightIntensity += (targetInt - smoothLightIntensity) * aI
                                         gr.lightIntensity = smoothLightIntensity
@@ -732,6 +722,8 @@ class FilamentModelActivity : ComponentActivity() {
                                         for (i in 0..2) smoothLightColor[i] += (tColor[i] - smoothLightColor[i]) * aI
                                         gr.lightColor = smoothLightColor.copyOf()
                                     }
+                                    // Direction set by azimuth/elevation sliders (params 8/9)
+                                    gr.updateLightDirFromAngles()
 
                                     // Smooth SH coefficients
                                     xrSHAvailable = shValid
@@ -901,6 +893,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderShadowPlanes(leftProj, leftView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, hoveredGizmoAxis)
+                            gr.renderEmitter(leftProj, leftView, emitterHovered)
                             if (laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 laserHandPos, laserAimRot, hitDistance)
                             // Color wash: tints ENTIRE view (passthrough + scene)
@@ -909,6 +902,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 val bm = reactor.blendMode.ordinal
                                 gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
                             }
+                            gr.renderBloom(leftTexId, width, height)
                             gr.finishEyePass()
 
                             // Right eye
@@ -918,6 +912,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderShadowPlanes(rightProj, rightView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, hoveredGizmoAxis)
+                            gr.renderEmitter(rightProj, rightView, emitterHovered)
                             if (laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
                                 laserHandPos, laserAimRot, hitDistance)
                             if (beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f) {
@@ -925,6 +920,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 val bm = reactor.blendMode.ordinal
                                 gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
                             }
+                            gr.renderBloom(rightTexId, width, height)
                             gr.finishEyePass()
                             // Menu rendered via compositor quad layer (stereo-correct)
 
@@ -1358,8 +1354,55 @@ class FilamentModelActivity : ComponentActivity() {
                 hoveredGizmoAxis = axis
             }
 
-            // Test model intersection (only if not hovering gizmo and menu is closed)
-            if (!menuVisible && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE) {
+            // Test emitter hit
+            emitterHovered = false
+            if (!menuVisible && !emitterGrabbed) {
+                val eDist = renderer.testEmitterHit(laserHandPos, rayDir)
+                if (eDist > 0f) emitterHovered = true
+            }
+
+            // Emitter grab: grip on hovered emitter → drag along ray + stick Y push/pull
+            if (emitterHovered && rightSqueeze > 0.5f && !emitterGrabbed) {
+                emitterGrabbed = true
+                val dx = renderer.emitterPos[0] - laserHandPos[0]
+                val dy = renderer.emitterPos[1] - laserHandPos[1]
+                val dz = renderer.emitterPos[2] - laserHandPos[2]
+                emitterGrabDist = kotlin.math.sqrt(dx*dx + dy*dy + dz*dz).coerceAtLeast(0.1f)
+            }
+            if (emitterGrabbed) {
+                if (rightSqueeze < 0.3f) {
+                    emitterGrabbed = false
+                } else {
+                    // Stick Y adjusts orbit radius
+                    val rightThumbY = inputBuffer[3]
+                    if (kotlin.math.abs(rightThumbY) > 0.15f) {
+                        emitterGrabDist += rightThumbY * 0.02f
+                        emitterGrabDist = emitterGrabDist.coerceIn(0.3f, 5f)
+                    }
+                    // Scene center = average model position (or origin if no models)
+                    var scX = 0f; var scY = 0f; var scZ = 0f
+                    if (models.isNotEmpty()) {
+                        for (m in models) { scX += m.posX; scY += m.posY; scZ += m.posZ }
+                        scX /= models.size; scY /= models.size; scZ /= models.size
+                    }
+                    // Direction = from scene center toward where the ray points
+                    val pointX = laserHandPos[0] + rayDir[0] * 3f - scX
+                    val pointY = laserHandPos[1] + rayDir[1] * 3f - scY
+                    val pointZ = laserHandPos[2] + rayDir[2] * 3f - scZ
+                    val len = kotlin.math.sqrt(pointX*pointX + pointY*pointY + pointZ*pointZ)
+                        .coerceAtLeast(0.001f)
+                    // Place emitter on sphere around model center
+                    renderer.emitterPos = floatArrayOf(
+                        scX + pointX / len * emitterGrabDist,
+                        (scY + pointY / len * emitterGrabDist).coerceAtLeast(scY + 0.05f),
+                        scZ + pointZ / len * emitterGrabDist
+                    )
+                    renderer.updateLightFromEmitter(scX, scY, scZ)
+                }
+            }
+
+            // Test model intersection (only if not hovering gizmo/emitter and menu is closed)
+            if (!menuVisible && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE && !emitterHovered && !emitterGrabbed) {
                 var nearestDist = Float.MAX_VALUE
                 var nearestIdx = -1
                 for ((i, placed) in models.withIndex()) {
@@ -1369,8 +1412,9 @@ class FilamentModelActivity : ComponentActivity() {
                     val worldCy = m[1]*gpuModel.boundsCenterX + m[5]*gpuModel.boundsCenterY + m[9]*gpuModel.boundsCenterZ + m[13]
                     val worldCz = m[2]*gpuModel.boundsCenterX + m[6]*gpuModel.boundsCenterY + m[10]*gpuModel.boundsCenterZ + m[14]
                     val sx = kotlin.math.sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2])
+                    val worldR = gpuModel.boundsRadius * sx
                     val dist = raySphereIntersect(laserHandPos, rayDir,
-                        floatArrayOf(worldCx, worldCy, worldCz), gpuModel.boundsRadius * sx)
+                        floatArrayOf(worldCx, worldCy, worldCz), worldR)
                     if (dist in 0.01f..nearestDist) { nearestDist = dist; nearestIdx = i }
                 }
                 hoveredModelIndex = nearestIdx
@@ -1639,11 +1683,21 @@ class FilamentModelActivity : ComponentActivity() {
                     Log.i(TAG, "Foveation: $foveationLevel")
                 }
                 uiNeedsRefresh = true
-            } else if (hoveredModelIndex >= 0) {
+            } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
+                // Select a different model
                 selectedModelIndex = hoveredModelIndex
                 uiNeedsRefresh = true
+            } else if (hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0) {
+                // Clicking already-selected model = deselect
+                selectedModelIndex = -1
+                if (renderer != null) {
+                    for (placed in models) {
+                        renderer.getModel(placed.gpuModelId)?.selected = false
+                    }
+                }
+                uiNeedsRefresh = true
             } else {
-                // Deselect when pointing at nothing
+                // Pointing at nothing = deselect
                 selectedModelIndex = -1
                 if (renderer != null) {
                     for (placed in models) {
@@ -1664,7 +1718,7 @@ class FilamentModelActivity : ComponentActivity() {
         // (lastRightStickClick updated in menu section below)
 
         // Grid height: grip + stick Y with nothing selected → adjust grid Y
-        if (selectedModelIndex < 0 && rightHandValid && rightSqueeze > 0.5f && renderer != null) {
+        if (selectedModelIndex < 0 && rightHandValid && rightSqueeze > 0.5f && !emitterGrabbed && renderer != null) {
             if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
                 renderer.gridHeight += rightThumbY * 0.02f
                 renderer.gridHeight = renderer.gridHeight.coerceIn(-3f, 3f)
@@ -2065,6 +2119,17 @@ class FilamentModelActivity : ComponentActivity() {
                 updateModelTransform(selected)
             }
         }
+
+        // Left stick click = toggle light emitter visibility
+        val leftStickClick = inputBuffer[13] > 0.5f
+        if (leftStickClick && !lastLeftStickClick) {
+            val gr = glesRenderer
+            if (gr != null) {
+                gr.emitterVisible = !gr.emitterVisible
+                Log.i(TAG, "Light emitter ${if (gr.emitterVisible) "ON" else "OFF"}")
+            }
+        }
+        lastLeftStickClick = leftStickClick
 
         // Y = cycle selected model
         if (yButton && !lastYState && models.size > 1) {
@@ -3330,21 +3395,33 @@ class FilamentModelActivity : ComponentActivity() {
                     gr.shadowPlanes = planes
                 }
 
-                // Auto-floor: find the floor plane and lock grid to its Y position
-                if (autoFloorEnabled) {
-                    for (i in 0 until minOf(detectedPlaneCount, 32)) {
-                        val off = 2 + i * 10
-                        val label = planeBuffer[off + 9].toInt()
-                        if (label == 1) { // 1 = floor
-                            val floorY = planeBuffer[off + 1]
-                            // Very slow smoothing + dead zone to prevent earthquake
-                            detectedFloorY = if (detectedFloorY == Float.MIN_VALUE) floorY
-                                else detectedFloorY + (floorY - detectedFloorY) * 0.005f
-                            val gr = glesRenderer
-                            if (gr != null && kotlin.math.abs(gr.gridHeight - detectedFloorY) > 0.01f) {
-                                gr.gridHeight = detectedFloorY
-                            }
-                            break
+                // Find the LOWEST horizontal surface — don't trust labels
+                // (runtime labels bed as "floor", real floor may have any label)
+                var lowestHorizY = Float.MAX_VALUE
+                for (i in 0 until minOf(detectedPlaneCount, 32)) {
+                    val off = 2 + i * 10
+                    val posY = planeBuffer[off + 1]
+                    val qx = planeBuffer[off + 3]; val qy = planeBuffer[off + 4]
+                    val qz = planeBuffer[off + 5]; val qw = planeBuffer[off + 6]
+                    // Plane normal Y = transform local up (0,1,0) by quaternion
+                    val normalY = 1f - 2f * (qx * qx + qz * qz)
+                    // Horizontal if normal Y > 0.7 (allows ~45° tilt)
+                    if (normalY > 0.7f && posY < lowestHorizY) {
+                        lowestHorizY = posY
+                    }
+                }
+                if (lowestHorizY < Float.MAX_VALUE) {
+                    val gr = glesRenderer
+                    if (gr != null) {
+                        if (!floorSnappedOnce) {
+                            gr.gridHeight = lowestHorizY
+                            detectedFloorY = lowestHorizY
+                            floorSnappedOnce = true
+                            Log.i(TAG, "Grid snap to lowest horizontal surface: $lowestHorizY")
+                        } else if (lowestHorizY < detectedFloorY - 0.05f) {
+                            gr.gridHeight = lowestHorizY
+                            detectedFloorY = lowestHorizY
+                            Log.i(TAG, "Grid re-snap to lower surface: $lowestHorizY")
                         }
                     }
                 }
