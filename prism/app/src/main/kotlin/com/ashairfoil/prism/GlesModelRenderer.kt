@@ -776,9 +776,15 @@ class GlesModelRenderer {
             model.hasNormalMap = model.normalMapTexId != 0
 
             // Compute tangents if normal map exists but glTF lacks TANGENT attribute
-            if (model.hasNormalMap && tangents == null && texCoords != null) {
+            // Skip on very dense meshes (>500K verts) — computed tangents create
+            // checkerboard artifacts due to handedness flipping across shared vertices
+            if (model.hasNormalMap && tangents == null && texCoords != null && posCnt <= 500000) {
                 tangents = computeTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
                 Log.i(TAG, "Computed tangents for normal mapping ($posCnt verts)")
+            } else if (model.hasNormalMap && tangents == null && posCnt > 500000) {
+                Log.w(TAG, "Skipping tangent compute on dense mesh ($posCnt verts) — using vertex normals only")
+                model.hasNormalMap = false
+                model.normalMapTexId = 0
             }
 
             // Upload tangent VBO if available
