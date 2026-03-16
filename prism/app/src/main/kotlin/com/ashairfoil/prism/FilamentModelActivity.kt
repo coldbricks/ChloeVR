@@ -167,7 +167,13 @@ class FilamentModelActivity : ComponentActivity() {
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Foveation", "Tex Quality")
+        "BeatReactor", "Foveation", "Tex Quality", "Show Planes")
+    // Slider ranges for continuous params 0-12. Toggles (13-16) have no range.
+    private val PARAM_RANGES = arrayOf(
+        0f to 1f, 0.05f to 1f, -5f to 5f, 0.85f to 1.15f, 0f to 3f,
+        0f to 10f, 0f to 5f, 0f to 5f, 0f to 360f, 5f to 90f,
+        0f to 1f, 0.5f to 5f, 2f to 30f
+    )
     // 0=auto (adaptive budget), 1=4096 (original), 2=2048, 3=1024
     private var textureQuality = 0
     private var lastXState = false
@@ -181,8 +187,9 @@ class FilamentModelActivity : ComponentActivity() {
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
     private var panelRotX = 0f; private var panelRotY = 0f; private var panelRotZ = 0f; private var panelRotW = 1f
-    private val PANEL_WIDTH = 1.1f  // meters in world space
-    private val PANEL_HEIGHT = 1.2f
+    private val PANEL_WIDTH = 0.9f   // meters in world space (base size)
+    private val PANEL_HEIGHT = 1.0f
+    private var panelScale = 1.0f    // zoom factor (0.5..2.0)
     private var draggingPanel = false
     private var panelGrabDist = 1.0f // distance from hand at grab time
 
@@ -219,6 +226,17 @@ class FilamentModelActivity : ComponentActivity() {
     private var audioReactor: AudioReactor? = null
     @Volatile private var beatReactorEnabled = false
     @Volatile private var beatIntensity = 1.0f
+
+    // ── Climax Engine state ──
+    private var climaxAccum = 0f       // 0..1, builds over sustained audio
+    private var climaxPeak = 0f        // short-term peak tracker (fast attack, slow decay)
+    private var lastBass = 0f          // previous frame bass for slam detection
+    private var bassSlam = 0f          // 0..1, spikes on bass transient, fast decay
+    private var breathPhase = 0f       // sine phase for idle breathing pulse
+    private var hapticLeadBuffer = 0f  // buffered pct sent 1 frame early
+    private var edgeSustain = 0f       // time spent near peak (seconds)
+    private var lastClimaxTime = 0L    // for dt calculation
+    private var bassSlamCooldown = 0f  // prevents slam retriggering too fast
     // Base values captured when BeatReactor turns on — beat modulates FROM these
     private var beatBaseStored = false
     private var beatBaseAmbient = 1f
@@ -229,6 +247,19 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     private var beatToggleLatch = false
     private var foveationToggleLatch = false
+    private var planeVisToggleLatch = false
+    private var lastLaserBx = 0f      // last laser bitmap X on menu panel
+    private var sliderDragging = -1   // param index being slider-dragged, -1 if none
+
+    // ── Audio Player ──
+    private var audioPlayer: AudioPlayer? = null
+    @Volatile private var audioPlayerMode = false
+    @Volatile private var audioPickerMode = false
+    private var availableAudioFiles: List<File> = emptyList()
+    private var hoveredAudioButton = -1
+    private var hoveredAudioFileIndex = -1
+    private var audioPickerScrollOffset = 0
+    private var audioSeekDragging = false
 
     // BeatReactor settings sub-menu
     @Volatile private var beatSettingsMode = false
@@ -807,7 +838,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // ── BeatReactor: box fill % drives light intensity ──
+                            // ── BeatReactor + Climax Engine ──
                             val reactor = audioReactor
                             if (reactor != null && beatReactorEnabled) {
                                 reactor.update()
@@ -820,61 +851,171 @@ class FilamentModelActivity : ComponentActivity() {
                                     beatBaseFill = gr.fillLightIntensity
                                     beatBaseShadow = gr.shadowDarkness
                                     beatBaseStored = true
+                                    lastClimaxTime = System.nanoTime()
+                                    climaxAccum = 0f; climaxPeak = 0f; bassSlam = 0f
+                                    edgeSustain = 0f; breathPhase = 0f
                                 }
+
+                                val now = System.nanoTime()
+                                val dt = ((now - lastClimaxTime) / 1_000_000_000f).coerceIn(0.001f, 0.1f)
+                                lastClimaxTime = now
 
                                 val pct = reactor.boxFillPct
                                 val bi = beatIntensity
                                 val c = reactor.getBeatColor()
+                                val bass = reactor.bass
+
+                                // ── Climax Accumulator ──
+                                // Slowly builds when audio is active, decays when quiet.
+                                // Creates an escalating intensity curve over the duration of a track.
+                                val buildRate = 0.03f  // takes ~33s of sustained audio to reach 1.0
+                                val decayRate = 0.008f // slow bleed when quiet
+                                if (pct > 0.15f) {
+                                    climaxAccum = (climaxAccum + pct * buildRate * dt * bi).coerceAtMost(1f)
+                                } else {
+                                    climaxAccum = (climaxAccum - decayRate * dt).coerceAtLeast(0f)
+                                }
+
+                                // ── Peak Tracker (fast attack, slow release) ──
+                                if (pct > climaxPeak) {
+                                    climaxPeak = climaxPeak + (pct - climaxPeak) * 0.5f // fast attack
+                                } else {
+                                    climaxPeak = climaxPeak - (climaxPeak - pct) * 2f * dt // slow decay
+                                }
+                                climaxPeak = climaxPeak.coerceIn(0f, 1f)
+
+                                // ── Bass Slam Detector ──
+                                // Detects sudden bass transients (kick drums, drops)
+                                bassSlamCooldown = (bassSlamCooldown - dt).coerceAtLeast(0f)
+                                val bassDelta = bass - lastBass
+                                if (bassDelta > 0.15f && bass > 0.3f && bassSlamCooldown <= 0f) {
+                                    // SLAM! Scale by how much we've built up (louder when climax is higher)
+                                    bassSlam = (0.6f + climaxAccum * 0.4f).coerceAtMost(1f)
+                                    bassSlamCooldown = 0.08f // 80ms cooldown prevents multi-trigger
+                                }
+                                bassSlam = (bassSlam * (1f - 12f * dt)).coerceAtLeast(0f) // fast ~80ms decay
+                                lastBass = bass
+
+                                // ── Edge Sustain ──
+                                // Tracks how long we've been near the peak — tension builder
+                                if (pct > 0.7f && climaxAccum > 0.4f) {
+                                    edgeSustain = (edgeSustain + dt).coerceAtMost(8f)
+                                } else {
+                                    edgeSustain = (edgeSustain - dt * 0.5f).coerceAtLeast(0f)
+                                }
+                                val edgeMult = 1f + edgeSustain * 0.15f // up to 2.2x after 8s of edge
+
+                                // ── Breathing Pulse (idle/low moments) ──
+                                breathPhase += dt * 1.2f // ~0.2 Hz breathing cycle
+                                val breathVal = if (pct < 0.1f) {
+                                    (kotlin.math.sin(breathPhase.toDouble()).toFloat() * 0.5f + 0.5f) * 0.15f
+                                } else 0f
+
+                                // ── Composite intensity ──
+                                // Base beat + climax buildup escalation + slam spike + breathing
+                                val intensity = pct * bi * (1f + climaxAccum * 1.5f) * edgeMult
+                                val slamBoost = bassSlam * bi * 3f
 
                                 val affectsModels = reactor.washScope != AudioReactor.WashScope.ROOM
                                 val affectsRoom = reactor.washScope != AudioReactor.WashScope.MODELS
 
                                 if (affectsModels) {
-                                    // Model lighting: colored light pulse
-                                    gr.ambientIntensity = beatBaseAmbient + pct * bi * 2.5f
+                                    // Ambient: warm glow that builds with climax
+                                    gr.ambientIntensity = beatBaseAmbient + intensity * 2.5f + breathVal * 0.5f
                                     gr.ambientColor = floatArrayOf(
-                                        c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f,
-                                        c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                        c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.2f,
+                                        c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.1f,
                                         c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
                                     )
-                                    gr.lightIntensity = beatBaseLight + pct * bi * 4f
+
+                                    // Main light: punches hard on slam, builds with climax
+                                    gr.lightIntensity = beatBaseLight + intensity * 4f + slamBoost * 5f
                                     gr.lightColor = floatArrayOf(
-                                        c[0] * pct + (1f - pct) * 1f,
-                                        c[1] * pct + (1f - pct) * 0.95f,
+                                        c[0] * pct + (1f - pct) * 1f + bassSlam * 0.3f,
+                                        c[1] * pct + (1f - pct) * 0.95f + bassSlam * 0.1f,
                                         c[2] * pct + (1f - pct) * 0.9f
                                     )
-                                    gr.fillLightIntensity = beatBaseFill + pct * bi * 2f
+
+                                    // Fill: contrast light follows
+                                    gr.fillLightIntensity = beatBaseFill + intensity * 2f + slamBoost * 2f
                                     gr.fillLightColor = floatArrayOf(
                                         c[2] * pct + (1f - pct) * 0.85f,
                                         c[0] * pct + (1f - pct) * 0.9f,
                                         c[1] * pct + (1f - pct) * 1f
                                     )
+
+                                    // Per-model: exposure + EMISSIVE PULSE (models glow from within)
                                     for (placed in models) {
                                         val gpuModel = gr.getModel(placed.gpuModelId)
                                         if (gpuModel != null) {
-                                            gpuModel.exposure = placed.exposure + pct * bi * 1f
+                                            // Exposure builds with climax
+                                            gpuModel.exposure = placed.exposure + intensity * 1f + slamBoost * 0.5f
+                                            // Emissive glow: models radiate light on beats
+                                            // Stronger as climax builds, spikes on slam
+                                            val emGlow = pct * bi * (0.5f + climaxAccum * 1.5f) + bassSlam * 2f + breathVal
+                                            gpuModel.emissiveFactor = floatArrayOf(
+                                                c[0] * emGlow + breathVal * 0.5f,
+                                                c[1] * emGlow + breathVal * 0.3f,
+                                                c[2] * emGlow + breathVal * 0.2f
+                                            )
+                                            // Saturation surge on slam (punchy color)
+                                            gpuModel.saturation = placed.saturation + bassSlam * 0.5f
                                         }
                                     }
-                                }
-                                // Room wash alpha stored for render pass (applied per-eye later)
-                                beatWashAlpha = if (affectsRoom) pct * bi * 0.35f else 0f
 
-                                // Haptic output: drive vibrator in sync with lights
-                                if (hapticEnabled && hapticConnected) {
-                                    val intensity = (pct * 20f).toInt().coerceIn(0, 20)
-                                    hapticManager?.setIntensity(intensity)
+                                    // Shadows soften as intensity builds (removes harsh edges)
+                                    gr.shadowDarkness = beatBaseShadow * (1f - pct * 0.4f * bi)
                                 }
+
+                                // ── Beat-synced bloom ──
+                                // Threshold drops on slam → bloom FLARES on bass hits
+                                // Intensity rises with climax accumulator
+                                if (gr.bloomEnabled) {
+                                    gr.bloomThreshold = (0.8f - bassSlam * 0.5f - climaxAccum * 0.15f).coerceAtLeast(0.2f)
+                                    gr.bloomIntensity = 0.3f + pct * bi * 0.3f + bassSlam * 0.8f + climaxAccum * 0.2f
+                                }
+
+                                // ── Room wash: builds with climax, flashes on slam ──
+                                beatWashAlpha = if (affectsRoom) {
+                                    val baseWash = intensity * 0.35f
+                                    val slamFlash = bassSlam * 0.5f
+                                    (baseWash + slamFlash + breathVal * 0.1f).coerceAtMost(0.85f)
+                                } else 0f
+
+                                // ── Haptic output: LEADS visual by 1 frame ──
+                                // Send the CURRENT pct now (visual won't render until next composite)
+                                // Plus slam spike for physical punch on bass drops
+                                if (hapticEnabled && hapticConnected) {
+                                    val hapticPct = (pct * bi * (1f + climaxAccum * 0.8f)
+                                        + bassSlam * 0.4f + breathVal * 0.3f).coerceIn(0f, 1f)
+                                    val hIntensity = (hapticPct * 20f).toInt().coerceIn(0, 20)
+                                    hapticManager?.setIntensity(hIntensity)
+                                }
+
                             } else if (beatBaseStored) {
                                 // Reactor turned off — restore base values
                                 gr.ambientIntensity = beatBaseAmbient
                                 gr.lightIntensity = beatBaseLight
                                 gr.fillLightIntensity = beatBaseFill
                                 gr.shadowDarkness = beatBaseShadow
+                                gr.bloomThreshold = 0.8f
+                                gr.bloomIntensity = 0.3f
                                 beatBaseStored = false
+                                climaxAccum = 0f; climaxPeak = 0f; bassSlam = 0f; edgeSustain = 0f
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
-                                    if (gpuModel != null) gpuModel.exposure = placed.exposure
+                                    if (gpuModel != null) {
+                                        gpuModel.exposure = placed.exposure
+                                        gpuModel.emissiveFactor = floatArrayOf(1f, 1f, 1f)
+                                        gpuModel.saturation = placed.saturation
+                                    }
                                 }
+                            }
+
+                            // Audio player A/B loop enforcement + UI refresh
+                            audioPlayer?.updateLoop()
+                            if (audioPlayerMode && audioPlayer?.isPlaying == true && sensorPollFrame % 5 == 0) {
+                                uiNeedsRefresh = true
                             }
 
                             // Upload pending UI bitmap to compositor quad layer (swapchain texture)
@@ -950,6 +1091,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderGrid(leftTexId, width, height, leftProj, leftView,
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(leftProj, leftView)
+                            gr.renderPlaneVisualization(leftProj, leftView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             gr.renderEmitter(leftProj, leftView, emitterHovered)
@@ -969,6 +1111,7 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderGrid(rightTexId, width, height, rightProj, rightView,
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(rightProj, rightView)
+                            gr.renderPlaneVisualization(rightProj, rightView)
                             if (gizmoVisible && gizmoPos != null && gizmoRot != null)
                                 gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, hoveredGizmoAxis)
                             gr.renderEmitter(rightProj, rightView, emitterHovered)
@@ -1187,7 +1330,63 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            if (beatSettingsMode) {
+                            if (audioPlayerMode) {
+                                hoveredAudioButton = -1
+                                hoveredAudioFileIndex = -1
+                                lastLaserBx = bx
+
+                                if (audioPickerMode) {
+                                    // File list hover
+                                    val maxVis = 10; val rowH = 72f; val startY = 140f
+                                    if (by in startY..(startY + maxVis * rowH)) {
+                                        val vi = ((by - startY) / rowH).toInt()
+                                        val idx = audioPickerScrollOffset + vi
+                                        if (idx < availableAudioFiles.size) hoveredAudioFileIndex = idx
+                                    }
+                                    if (by > (1024 - 80f)) hoveredAudioButton = 50 // BACK
+                                } else {
+                                    // Transport buttons: y=245..300
+                                    if (by in 245f..300f) {
+                                        val btnW = 130f; val gap = 12f
+                                        for (i in 0..3) {
+                                            val bxl = 60f + i * (btnW + gap)
+                                            if (bx in bxl..(bxl + btnW)) { hoveredAudioButton = i; break }
+                                        }
+                                    }
+                                    // Speed -/+: y=303..331
+                                    if (by in 303f..331f) {
+                                        if (bx in 260f..320f) hoveredAudioButton = 10
+                                        if (bx in 330f..390f) hoveredAudioButton = 11
+                                    }
+                                    // A/B buttons: y=355..383
+                                    if (by in 355f..383f) {
+                                        for (i in 0..2) {
+                                            val bxl = 220f + i * 100f
+                                            if (bx in bxl..(bxl + 90f)) { hoveredAudioButton = 20 + i; break }
+                                        }
+                                    }
+                                    // Repeat: y=405..433
+                                    if (by in 405f..433f && bx in 180f..280f) hoveredAudioButton = 30
+                                    // EQ presets: y=455..483
+                                    if (by in 455f..483f) {
+                                        for (i in 0..3) {
+                                            val bxl = 130f + i * 120f
+                                            if (bx in bxl..(bxl + 110f)) { hoveredAudioButton = 40 + i; break }
+                                        }
+                                    }
+                                    // Progress bar drag: y=210..220
+                                    if (by in 200f..230f && bx in 60f..964f) {
+                                        hoveredAudioButton = 60 // seekbar
+                                    }
+                                    // BROWSE / BACK: bottom
+                                    if (by > (1024 - 80f)) {
+                                        val halfW = (1024 - 70f) / 2f
+                                        if (bx < 30f + halfW) hoveredAudioButton = 51
+                                        else hoveredAudioButton = 52
+                                    }
+                                }
+                                uiNeedsRefresh = true
+                            } else if (beatSettingsMode) {
                                 val prevDragging = beatDraggingSlider
                                 beatDraggingSlider = -1
                                 beatSliderLaserX = 0f
@@ -1356,17 +1555,24 @@ class FilamentModelActivity : ComponentActivity() {
                                     else if (bx < 690f) hoveredActionButton = 107 // DELETE
                                     else hoveredActionButton = 108                 // RESET
                                 }
-                                // Row 3 (~925-990): FILE MENU / EXIT
+                                // Row 3 (~925-990): AUDIO / FILE MENU / EXIT
                                 if (by > 925f) {
-                                    if (bx < 520f) hoveredActionButton = 100      // FILE MENU
+                                    if (bx < 360f) hoveredActionButton = 109      // AUDIO
+                                    else if (bx < 690f) hoveredActionButton = 100 // FILE MENU
                                     else hoveredActionButton = 102                 // EXIT
                                 }
 
-                                // Param rows: ~195..765 in bitmap Y (15 params at 38px)
-                                if (by in 195f..765f) {
-                                    val frac = (by - 195f) / (770f - 195f)
-                                    val idx = (frac * PARAM_NAMES.size).toInt().coerceIn(0, PARAM_NAMES.size - 1)
-                                    hoveredMenuParam = idx
+                                // Param rows with section headers (MODEL@0, LIGHTING@5, SYSTEM@13)
+                                if (by in 160f..850f) {
+                                    val adjustedBy = by - 160f
+                                    var acc = 0f; var idx = -1
+                                    for (p in 0 until PARAM_NAMES.size) {
+                                        if (p == 0 || p == 5 || p == 13) acc += 10f // section header
+                                        if (adjustedBy >= acc && adjustedBy < acc + 38f) { idx = p; break }
+                                        acc += 38f
+                                    }
+                                    if (idx >= 0) hoveredMenuParam = idx
+                                    lastLaserBx = bx
                                 }
                             }
                         }
@@ -1382,6 +1588,14 @@ class FilamentModelActivity : ComponentActivity() {
                         if (kotlin.math.abs(stickY) > STICK_DEADZONE) {
                             panelGrabDist += stickY * 0.03f
                             panelGrabDist = panelGrabDist.coerceIn(0.3f, 5f)
+                        }
+                        // Left stick Y to zoom panel size
+                        val leftStickY = inputBuffer[2]
+                        if (kotlin.math.abs(leftStickY) > STICK_DEADZONE) {
+                            panelScale += leftStickY * 0.02f
+                            panelScale = panelScale.coerceIn(0.5f, 2.0f)
+                            renderer.panelW = PANEL_WIDTH * panelScale
+                            renderer.panelH = PANEL_HEIGHT * panelScale
                         }
                         renderer.panelX = laserHandPos[0] + rayDir[0] * panelGrabDist
                         renderer.panelY = laserHandPos[1] + rayDir[1] * panelGrabDist
@@ -1528,7 +1742,63 @@ class FilamentModelActivity : ComponentActivity() {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
-            if (menuVisible && beatSettingsMode && hoveredActionButton == 113) {
+            // ── Audio Player trigger handling ──
+            if (menuVisible && audioPlayerMode && audioPickerMode) {
+                when {
+                    hoveredAudioFileIndex >= 0 && hoveredAudioFileIndex < availableAudioFiles.size -> {
+                        val file = availableAudioFiles[hoveredAudioFileIndex]
+                        if (audioPlayer == null) audioPlayer = AudioPlayer(this)
+                        audioPlayer?.play(file)
+                        // Connect BeatReactor to this audio session
+                        val reactor = audioReactor
+                        val sid = audioPlayer?.audioSessionId ?: 0
+                        if (reactor != null && sid != 0) {
+                            reactor.restart(sid)
+                            if (!beatReactorEnabled) {
+                                beatReactorEnabled = true
+                                reactor.enabled = true
+                            }
+                        }
+                        audioPickerMode = false
+                        Log.i(TAG, "Audio: playing ${file.name}, session=$sid")
+                    }
+                    hoveredAudioButton == 50 -> audioPickerMode = false // BACK
+                }
+                uiNeedsRefresh = true
+            } else if (menuVisible && audioPlayerMode && !audioPickerMode) {
+                val ap = audioPlayer
+                when (hoveredAudioButton) {
+                    0 -> ap?.seekBy(-10000) // |<< skip back 10s
+                    1 -> ap?.togglePlayPause() // PLAY/PAUSE
+                    2 -> ap?.seekBy(10000)  // >>| skip fwd 10s
+                    3 -> { ap?.stop(); audioReactor?.restart(0) } // STOP + back to system audio
+                    10 -> ap?.cycleSpeed(false) // speed -
+                    11 -> ap?.cycleSpeed(true)  // speed +
+                    20 -> ap?.setLoopA()
+                    21 -> ap?.setLoopB()
+                    22 -> ap?.clearLoop()
+                    30 -> ap?.cycleRepeat()
+                    in 40..43 -> audioPlayer?.setEqPresetByIndex(hoveredAudioButton - 40)
+                    51 -> { // BROWSE
+                        availableAudioFiles = FilePicker.listVideoFiles(this)
+                            .filter { FilePicker.isAudioFile(it) }
+                            .sortedBy { it.nameWithoutExtension.lowercase() }
+                        audioPickerMode = true
+                        audioPickerScrollOffset = 0
+                        hoveredAudioFileIndex = -1
+                    }
+                    52 -> audioPlayerMode = false // BACK to main menu
+                    60 -> { // Seekbar click
+                        val dur = ap?.durationMs ?: 0
+                        if (dur > 0) {
+                            val t = ((lastLaserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
+                            ap?.seekTo((t * dur).toLong())
+                            audioSeekDragging = true
+                        }
+                    }
+                }
+                uiNeedsRefresh = true
+            } else if (menuVisible && beatSettingsMode && hoveredActionButton == 113) {
                 audioReactor?.rolloff = AudioReactor.Rolloff.INSTANT
                 uiNeedsRefresh = true
             } else if (menuVisible && beatSettingsMode && hoveredActionButton == 114) {
@@ -1635,6 +1905,12 @@ class FilamentModelActivity : ComponentActivity() {
                 glbPickerMode = false
                 hoveredGlbIndex = -1
                 uiNeedsRefresh = true
+            } else if (menuVisible && hoveredActionButton == 109) {
+                // Open audio player
+                Log.i(TAG, "Action: Audio player")
+                audioPlayerMode = true
+                hoveredAudioButton = -1
+                uiNeedsRefresh = true
             } else if (menuVisible && hoveredActionButton == 100) {
                 // Back to file menu
                 Log.i(TAG, "Action: Return to file menu")
@@ -1719,9 +1995,19 @@ class FilamentModelActivity : ComponentActivity() {
                 hoveredGlbIndex = -1
                 glbPickerScrollOffset = 0
                 uiNeedsRefresh = true
-            } else if (menuVisible && hoveredMenuParam >= 0) {
+            } else if (menuVisible && hoveredMenuParam in 0..12) {
+                // Slider click: set value from laser X position
+                selectedParam = hoveredMenuParam
+                val sliderLeft = 240f; val sliderRight = 904f
+                if (lastLaserBx in sliderLeft..sliderRight) {
+                    val t = ((lastLaserBx - sliderLeft) / (sliderRight - sliderLeft)).coerceIn(0f, 1f)
+                    val range = PARAM_RANGES[hoveredMenuParam]
+                    setParamValue(hoveredMenuParam, range.first + t * (range.second - range.first))
+                    sliderDragging = hoveredMenuParam
+                }
+                uiNeedsRefresh = true
+            } else if (menuVisible && hoveredMenuParam >= 13) {
                 // Select the param the laser is pointing at
-                Log.i(TAG, "Param selected: $hoveredMenuParam / ${PARAM_NAMES.getOrNull(hoveredMenuParam)}")
                 selectedParam = hoveredMenuParam
                 // Toggle params: trigger press directly toggles
                 if (hoveredMenuParam == 13) {
@@ -1747,6 +2033,12 @@ class FilamentModelActivity : ComponentActivity() {
                     textureQuality = (textureQuality + 1) % 4
                     Log.i(TAG, "Tex quality: $textureQuality (${arrayOf("Auto","4096","2048","1024")[textureQuality]})")
                     reloadAllModels()
+                } else if (hoveredMenuParam == 16) {
+                    val gr = glesRenderer
+                    if (gr != null) {
+                        gr.showPlaneVisualization = !gr.showPlaneVisualization
+                        Log.i(TAG, "Plane visualization: ${gr.showPlaneVisualization}")
+                    }
                 }
                 uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -1773,6 +2065,17 @@ class FilamentModelActivity : ComponentActivity() {
                 uiNeedsRefresh = true
             }
         }
+        // Slider drag: while trigger held and dragging a slider, update continuously
+        if (rightTriggerPressed && sliderDragging in 0..12 && menuVisible) {
+            val sliderLeft = 240f; val sliderRight = 904f
+            if (lastLaserBx in sliderLeft..sliderRight) {
+                val t = ((lastLaserBx - sliderLeft) / (sliderRight - sliderLeft)).coerceIn(0f, 1f)
+                val range = PARAM_RANGES[sliderDragging]
+                setParamValue(sliderDragging, range.first + t * (range.second - range.first))
+                uiNeedsRefresh = true
+            }
+        }
+        if (!rightTriggerPressed) sliderDragging = -1
         lastRightTriggerState = rightTriggerPressed
 
         // Right stick click = toggle grid
@@ -1801,6 +2104,18 @@ class FilamentModelActivity : ComponentActivity() {
 
         // B = toggle menu panel (or close sub-pickers first)
         if (bButton && !lastBState) {
+            if (audioPickerMode) {
+                audioPickerMode = false
+                uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
+            if (audioPlayerMode) {
+                audioPlayerMode = false
+                uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
             if (glbPickerMode) {
                 glbPickerMode = false
                 hoveredGlbIndex = -1
@@ -1829,6 +2144,9 @@ class FilamentModelActivity : ComponentActivity() {
             }
             menuVisible = !menuVisible
             if (menuVisible && renderer != null) {
+                // Apply current scale
+                renderer.panelW = PANEL_WIDTH * panelScale
+                renderer.panelH = PANEL_HEIGHT * panelScale
                 // Place panel 1.2m in front of the user's head
                 renderer.panelX = camPosX + camFwdX * 1.2f
                 renderer.panelY = camPosY + camFwdY * 1.2f
@@ -1898,6 +2216,21 @@ class FilamentModelActivity : ComponentActivity() {
             }
 
             // GLB picker mode: stick scrolls the file list
+            if (audioPickerMode) {
+                if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
+                    val maxVisible = 10
+                    val maxScroll = (availableAudioFiles.size - maxVisible).coerceAtLeast(0)
+                    if (rightThumbY < -STICK_DEADZONE && audioPickerScrollOffset < maxScroll) {
+                        audioPickerScrollOffset++; uiNeedsRefresh = true
+                    } else if (rightThumbY > STICK_DEADZONE && audioPickerScrollOffset > 0) {
+                        audioPickerScrollOffset--; uiNeedsRefresh = true
+                    }
+                }
+                lastRightStickClick = rightStickClick
+                if (uiNeedsRefresh) { uiNeedsRefresh = false; runOnUiThread { renderUiToBitmap() } }
+                lastRightStickClick = rightStickClick
+                return
+            }
             if (glbPickerMode) {
                 if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
                     val maxVisible = 13
@@ -2001,6 +2334,31 @@ class FilamentModelActivity : ComponentActivity() {
                         }
                         if (kotlin.math.abs(rightThumbY) < 0.3f) foveationToggleLatch = false
                     }
+                    15 -> {
+                        // Tex Quality toggle (one-shot)
+                        if (!foveationToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                            foveationToggleLatch = true
+                            textureQuality = if (rightThumbY > 0) {
+                                (textureQuality + 1) % 4
+                            } else {
+                                (textureQuality - 1 + 4) % 4
+                            }
+                            reloadAllModels()
+                        }
+                        if (kotlin.math.abs(rightThumbY) < 0.3f) foveationToggleLatch = false
+                    }
+                    16 -> {
+                        // Show Planes toggle (one-shot)
+                        if (!planeVisToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                            planeVisToggleLatch = true
+                            val gr = glesRenderer
+                            if (gr != null) {
+                                gr.showPlaneVisualization = !gr.showPlaneVisualization
+                                Log.i(TAG, "Plane visualization: ${gr.showPlaneVisualization}")
+                            }
+                        }
+                        if (kotlin.math.abs(rightThumbY) < 0.3f) planeVisToggleLatch = false
+                    }
                 }
                 uiNeedsRefresh = true
             }
@@ -2027,6 +2385,8 @@ class FilamentModelActivity : ComponentActivity() {
                         audioReactor?.enabled = false
                     }
                     14 -> { foveationLevel = 0; nativeSetFoveationLevel(0) }
+                    15 -> { textureQuality = 0; reloadAllModels() }
+                    16 -> { glesRenderer?.showPlaneVisualization = false }
                 }
                 uiNeedsRefresh = true
             }
@@ -2243,6 +2603,28 @@ class FilamentModelActivity : ComponentActivity() {
         if (uiNeedsRefresh) {
             uiNeedsRefresh = false
             runOnUiThread { renderUiToBitmap() }
+        }
+    }
+
+    /** Set an absolute value for slider param 0-12 */
+    private fun setParamValue(idx: Int, value: Float) {
+        val renderer = glesRenderer ?: return
+        val model = models.getOrNull(selectedModelIndex)
+        val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
+        when (idx) {
+            0 -> if (model != null) { model.metallic = value; gpuModel?.metallic = value }
+            1 -> if (model != null) { model.roughness = value; gpuModel?.roughness = value }
+            2 -> if (model != null) { model.exposure = value; gpuModel?.exposure = value }
+            3 -> if (model != null) { model.contrast = value; gpuModel?.contrast = value }
+            4 -> if (model != null) { model.saturation = value; gpuModel?.saturation = value }
+            5 -> renderer.lightIntensity = value
+            6 -> renderer.fillLightIntensity = value
+            7 -> { autoAmbient = false; renderer.ambientIntensity = value }
+            8 -> { renderer.lightAngleDeg = value; renderer.updateLightDirFromAngles() }
+            9 -> { renderer.lightElevDeg = value; renderer.updateLightDirFromAngles() }
+            10 -> renderer.shadowDarkness = value
+            11 -> renderer.shadowSoftness = value
+            12 -> renderer.shadowSpread = value
         }
     }
 
@@ -2711,6 +3093,248 @@ class FilamentModelActivity : ComponentActivity() {
             return
         }
 
+        // ═══ Audio Player ═══
+        if (audioPlayerMode) {
+            val ap = audioPlayer
+            val p = android.graphics.Paint().apply { isAntiAlias = true }
+
+            // Audio file picker sub-mode
+            if (audioPickerMode) {
+                p.textSize = 42f; p.color = 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+                canvas.drawText("Select Audio File", 60f, 112f, p)
+                canvas.drawLine(60f, 120f, uiW - 60f, 120f,
+                    android.graphics.Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f })
+
+                val files = availableAudioFiles
+                if (files.isEmpty()) {
+                    p.textSize = 32f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
+                    canvas.drawText("No audio files found", 60f, 200f, p)
+                } else {
+                    val maxVis = 10; val rowH = 72f; val startY = 140f
+                    for (vi in 0 until maxVis) {
+                        val idx = audioPickerScrollOffset + vi
+                        if (idx >= files.size) break
+                        val file = files[idx]
+                        val ry = startY + vi * rowH
+                        val isHov = idx == hoveredAudioFileIndex
+
+                        if (isHov) {
+                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
+                                android.graphics.Paint().apply { color = 0x208B5CF6.toInt(); isAntiAlias = true })
+                        }
+                        if (vi % 2 == 0) {
+                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
+                                android.graphics.Paint().apply { color = 0x08FFFFFF.toInt(); isAntiAlias = true })
+                        }
+                        val name = file.nameWithoutExtension
+                        val display = if (name.length > 28) name.take(26) + ".." else name
+                        p.textSize = if (isHov) 36f else 34f
+                        p.color = if (isHov) 0xFF8B5CF6.toInt() else 0xFFE8EAF0.toInt()
+                        p.isFakeBoldText = isHov
+                        canvas.drawText(display, 50f, ry + 32f, p)
+
+                        // Extension + size
+                        p.textSize = 18f; p.color = 0xFF505868.toInt(); p.isFakeBoldText = false
+                        val ext = file.extension.uppercase()
+                        val sizeMB = file.length() / 1048576f
+                        val info = "$ext  %.1f MB".format(sizeMB)
+                        canvas.drawText(info, 50f, ry + 52f, p)
+                    }
+                    if (files.size > maxVis) {
+                        val pg = audioPickerScrollOffset / maxVis + 1
+                        val total = (files.size + maxVis - 1) / maxVis
+                        p.textSize = 20f; p.color = 0xFF505868.toInt()
+                        p.textAlign = android.graphics.Paint.Align.CENTER; p.isFakeBoldText = false
+                        canvas.drawText("Page $pg of $total  (${files.size} files)",
+                            uiW / 2f, startY + maxVis * rowH + 16f, p)
+                        p.textAlign = android.graphics.Paint.Align.LEFT
+                    }
+                }
+                // BACK button
+                val btnY = uiH - 80f
+                val isBack = hoveredAudioButton == 50
+                canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + 60f, 12f, 12f,
+                    android.graphics.Paint().apply { color = if (isBack) 0x608B5CF6.toInt() else 0x188B5CF6.toInt() })
+                p.textSize = 32f; p.textAlign = android.graphics.Paint.Align.CENTER
+                p.color = if (isBack) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+                canvas.drawText("\u25C0 BACK", uiW / 2f, btnY + 40f, p)
+                p.textAlign = android.graphics.Paint.Align.LEFT
+
+                pendingUiBitmap = bitmap
+                return
+            }
+
+            // ── Audio Player Main Panel ──
+            p.textSize = 38f; p.color = 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+            canvas.drawText("AUDIO PLAYER", 60f, 108f, p)
+            canvas.drawLine(60f, 116f, uiW - 60f, 116f,
+                android.graphics.Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f })
+
+            // Now playing
+            val fileName = ap?.currentFile?.nameWithoutExtension ?: "No track loaded"
+            val displayName = if (fileName.length > 36) fileName.take(34) + ".." else fileName
+            p.textSize = 30f; p.color = 0xFFD0D0E0.toInt(); p.isFakeBoldText = false
+            canvas.drawText(displayName, 60f, 160f, p)
+
+            // Time + progress bar
+            val posMs = ap?.currentPositionMs ?: 0
+            val durMs = ap?.durationMs ?: 0
+            fun fmtTime(ms: Long): String {
+                val s = ms / 1000; val m = s / 60
+                return "%d:%02d".format(m, s % 60)
+            }
+            p.textSize = 24f; p.color = 0xFF9CA3AF.toInt()
+            canvas.drawText("${fmtTime(posMs)} / ${fmtTime(durMs)}", 60f, 195f, p)
+
+            // Progress bar
+            val barLeft = 60f; val barRight = uiW - 60f; val barY = 210f; val barH = 10f
+            canvas.drawRoundRect(barLeft, barY, barRight, barY + barH, 5f, 5f,
+                android.graphics.Paint().apply { color = 0xFF0E0E1C.toInt() })
+            if (durMs > 0) {
+                val prog = (posMs.toFloat() / durMs).coerceIn(0f, 1f)
+                val fillR = barLeft + (barRight - barLeft) * prog
+                canvas.drawRoundRect(barLeft, barY, fillR, barY + barH, 5f, 5f,
+                    android.graphics.Paint().apply {
+                        shader = android.graphics.LinearGradient(barLeft, 0f, fillR, 0f,
+                            0xFF2A1048.toInt(), 0xFF8B5CF6.toInt(), android.graphics.Shader.TileMode.CLAMP)
+                    })
+                // A/B markers
+                if (ap != null && ap.hasLoop()) {
+                    val aX = barLeft + (barRight - barLeft) * (ap.loopA.toFloat() / durMs)
+                    val bX = barLeft + (barRight - barLeft) * (ap.loopB.toFloat() / durMs)
+                    canvas.drawRect(aX - 1f, barY - 4f, aX + 1f, barY + barH + 4f,
+                        android.graphics.Paint().apply { color = 0xFF10B981.toInt() })
+                    canvas.drawRect(bX - 1f, barY - 4f, bX + 1f, barY + barH + 4f,
+                        android.graphics.Paint().apply { color = 0xFFF04858.toInt() })
+                    canvas.drawRect(aX, barY, bX, barY + 2f,
+                        android.graphics.Paint().apply { color = 0x3010B981.toInt() })
+                }
+                // Thumb
+                canvas.drawCircle(fillR, barY + barH / 2f, 7f,
+                    android.graphics.Paint().apply { color = 0xFFFFFFFF.toInt(); isAntiAlias = true })
+            }
+
+            // Transport buttons
+            val txY = 245f; val btnW = 130f; val btnH = 55f; val gap = 12f
+            val transportBtns = arrayOf(
+                "|<<" to 0, (if (ap?.isPlaying == true) "PAUSE" else "PLAY") to 1, ">>|" to 2, "STOP" to 3
+            )
+            for ((i, btn) in transportBtns.withIndex()) {
+                val bx = 60f + i * (btnW + gap)
+                val isHov = hoveredAudioButton == btn.second
+                val col = when (i) {
+                    1 -> 0xFF8B5CF6.toInt()  // play/pause = purple
+                    3 -> 0xFFF04858.toInt()  // stop = red
+                    else -> 0xFF3B82F6.toInt() // skip = blue
+                }
+                canvas.drawRoundRect(bx, txY, bx + btnW, txY + btnH, 10f, 10f,
+                    android.graphics.Paint().apply {
+                        color = if (isHov) (col and 0x00FFFFFF) or 0x60000000
+                        else (col and 0x00FFFFFF) or 0x18000000
+                    })
+                canvas.drawRoundRect(bx, txY, bx + btnW, txY + btnH, 10f, 10f,
+                    android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isHov) 2f else 1f
+                        color = if (isHov) col else (col and 0x00FFFFFF) or 0x50000000; isAntiAlias = true
+                    })
+                p.textSize = 22f; p.textAlign = android.graphics.Paint.Align.CENTER
+                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = true
+                canvas.drawText(btn.first, bx + btnW / 2f, txY + 37f, p)
+            }
+
+            // Speed
+            val spY = 325f
+            p.textAlign = android.graphics.Paint.Align.LEFT
+            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
+            canvas.drawText("SPEED", 60f, spY, p)
+            val spLabel = AudioPlayer.SPEED_LABELS.getOrElse(ap?.speedIndex ?: 2) { "1.0x" }
+            p.color = 0xFF30D8D0.toInt(); p.isFakeBoldText = true
+            canvas.drawText(spLabel, 160f, spY, p)
+            // Speed buttons
+            val isSpDown = hoveredAudioButton == 10; val isSpUp = hoveredAudioButton == 11
+            p.textSize = 28f; p.textAlign = android.graphics.Paint.Align.CENTER
+            canvas.drawRoundRect(260f, spY - 22f, 320f, spY + 6f, 8f, 8f,
+                android.graphics.Paint().apply { color = if (isSpDown) 0x403B82F6.toInt() else 0x103B82F6.toInt() })
+            p.color = if (isSpDown) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt()
+            canvas.drawText("-", 290f, spY, p)
+            canvas.drawRoundRect(330f, spY - 22f, 390f, spY + 6f, 8f, 8f,
+                android.graphics.Paint().apply { color = if (isSpUp) 0x403B82F6.toInt() else 0x103B82F6.toInt() })
+            p.color = if (isSpUp) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt()
+            canvas.drawText("+", 360f, spY, p)
+
+            // A/B Loop
+            val abY = 375f
+            p.textAlign = android.graphics.Paint.Align.LEFT
+            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
+            canvas.drawText("A/B LOOP", 60f, abY, p)
+            val abBtns = arrayOf("Set A" to 20, "Set B" to 21, "Clear" to 22)
+            for ((i, ab) in abBtns.withIndex()) {
+                val bx = 220f + i * 100f
+                val isHov = hoveredAudioButton == ab.second
+                val col = when (i) { 0 -> 0xFF10B981.toInt(); 1 -> 0xFFF04858.toInt(); else -> 0xFF6B7280.toInt() }
+                canvas.drawRoundRect(bx, abY - 20f, bx + 90f, abY + 8f, 8f, 8f,
+                    android.graphics.Paint().apply { color = if (isHov) (col and 0x00FFFFFF) or 0x40000000 else 0x10404050.toInt() })
+                p.textSize = 20f; p.textAlign = android.graphics.Paint.Align.CENTER
+                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = isHov
+                canvas.drawText(ab.first, bx + 45f, abY, p)
+            }
+            if (ap != null && ap.hasLoop()) {
+                p.textSize = 18f; p.color = 0xFF505868.toInt(); p.textAlign = android.graphics.Paint.Align.LEFT; p.isFakeBoldText = false
+                canvas.drawText("A=${fmtTime(ap.loopA)}  B=${fmtTime(ap.loopB)}", 540f, abY, p)
+            }
+
+            // Repeat
+            val rpY = 425f
+            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false; p.textAlign = android.graphics.Paint.Align.LEFT
+            canvas.drawText("REPEAT", 60f, rpY, p)
+            val rpLabel = ap?.repeatMode?.label ?: "OFF"
+            val isRpHov = hoveredAudioButton == 30
+            canvas.drawRoundRect(180f, rpY - 20f, 280f, rpY + 8f, 8f, 8f,
+                android.graphics.Paint().apply { color = if (isRpHov) 0x40EC4899.toInt() else 0x10EC4899.toInt() })
+            p.textSize = 22f; p.textAlign = android.graphics.Paint.Align.CENTER
+            p.color = if (rpLabel != "OFF") 0xFFEC4899.toInt() else 0xFF505868.toInt(); p.isFakeBoldText = rpLabel != "OFF"
+            canvas.drawText(rpLabel, 230f, rpY, p)
+
+            // EQ
+            val eqY = 475f
+            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false; p.textAlign = android.graphics.Paint.Align.LEFT
+            canvas.drawText("EQ", 60f, eqY, p)
+            val eqPresets = AudioPlayer.EqPreset.entries
+            for ((i, eq) in eqPresets.withIndex()) {
+                val bx = 130f + i * 120f
+                val isHov = hoveredAudioButton == 40 + i
+                val isCurrent = ap?.eqPreset == eq
+                val col = if (isCurrent) 0xFFFF9500.toInt() else 0xFF505868.toInt()
+                canvas.drawRoundRect(bx, eqY - 20f, bx + 110f, eqY + 8f, 8f, 8f,
+                    android.graphics.Paint().apply {
+                        color = if (isHov) (col and 0x00FFFFFF) or 0x40000000
+                        else if (isCurrent) 0x20FF9500.toInt() else 0x10404050.toInt()
+                    })
+                p.textSize = 18f; p.textAlign = android.graphics.Paint.Align.CENTER
+                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = isCurrent
+                canvas.drawText(eq.label, bx + 55f, eqY, p)
+            }
+
+            // Bottom buttons: BROWSE / BACK
+            val bbY = uiH - 80f
+            val halfW = (uiW - 70f) / 2f
+            val isBrowse = hoveredAudioButton == 51; val isBack = hoveredAudioButton == 52
+            canvas.drawRoundRect(30f, bbY, 30f + halfW, bbY + 60f, 12f, 12f,
+                android.graphics.Paint().apply { color = if (isBrowse) 0x608B5CF6.toInt() else 0x188B5CF6.toInt() })
+            p.textSize = 28f; p.textAlign = android.graphics.Paint.Align.CENTER
+            p.color = if (isBrowse) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+            canvas.drawText("BROWSE", 30f + halfW / 2f, bbY + 40f, p)
+
+            canvas.drawRoundRect(40f + halfW, bbY, uiW - 30f, bbY + 60f, 12f, 12f,
+                android.graphics.Paint().apply { color = if (isBack) 0x60EC4899.toInt() else 0x18EC4899.toInt() })
+            p.color = if (isBack) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+            canvas.drawText("BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, bbY + 40f, p)
+            p.textAlign = android.graphics.Paint.Align.LEFT
+
+            pendingUiBitmap = bitmap
+            return
+        }
+
         // ═══ Save Name Editor ═══
         if (saveNameMode) {
             val headerPaint = android.graphics.Paint().apply {
@@ -2827,33 +3451,28 @@ class FilamentModelActivity : ComponentActivity() {
 
         // ═══ GLB Picker Sub-Menu ═══
         if (glbPickerMode) {
+            // Header with neon accent
             val headerPaint = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 38f; color = 0xFF10B981.toInt(); isFakeBoldText = true
+                isAntiAlias = true; textSize = 42f; color = 0xFF10B981.toInt(); isFakeBoldText = true
             }
-            canvas.drawText("Select a 3D Model", 50f, 115f, headerPaint)
+            canvas.drawText("Select a 3D Model", 70f, 112f, headerPaint)
+            // Subtle underline glow
+            val lineGlow = android.graphics.Paint().apply {
+                color = 0x4010B981.toInt(); strokeWidth = 2f; isAntiAlias = true
+                maskFilter = android.graphics.BlurMaskFilter(4f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            canvas.drawLine(70f, 120f, uiW - 70f, 120f, lineGlow)
 
             val files = availableGlbFiles
             if (files.isEmpty()) {
                 val emptyPaint = android.graphics.Paint().apply {
-                    isAntiAlias = true; textSize = 32f; color = 0xFF6B7280.toInt()
+                    isAntiAlias = true; textSize = 34f; color = 0xFF6B7280.toInt()
                 }
-                canvas.drawText("No .glb files found on device", 50f, 200f, emptyPaint)
+                canvas.drawText("No .glb files found on device", 70f, 200f, emptyPaint)
             } else {
-                val maxVisible = 13
-                val rowH = 60f
-                val startY = 130f
-                val normalPaint = android.graphics.Paint().apply {
-                    isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt()
-                }
-                val hoverPaint = android.graphics.Paint().apply {
-                    isAntiAlias = true; textSize = 36f; color = 0xFF10B981.toInt(); isFakeBoldText = true
-                }
-                val sizePaint = android.graphics.Paint().apply {
-                    isAntiAlias = true; textSize = 26f; color = 0xFF6B7280.toInt()
-                }
-                val hoverBg = android.graphics.Paint().apply { color = 0x2010B981.toInt() }
-                val loadedBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
-
+                val maxVisible = 10
+                val rowH = 76f
+                val startY = 140f
                 val loadedPaths = models.map { it.file.absolutePath }.toSet()
 
                 for (vi in 0 until maxVisible) {
@@ -2864,48 +3483,119 @@ class FilamentModelActivity : ComponentActivity() {
                     val isHovered = idx == hoveredGlbIndex
                     val isLoaded = file.absolutePath in loadedPaths
 
+                    // Row background
+                    val rowBg = android.graphics.Paint().apply {
+                        isAntiAlias = true
+                        color = when {
+                            isHovered && isLoaded -> 0x3010B981.toInt()
+                            isHovered -> 0x2010B981.toInt()
+                            isLoaded -> 0x14EC4899.toInt()
+                            vi % 2 == 0 -> 0x08FFFFFF.toInt()
+                            else -> 0x00000000.toInt()
+                        }
+                    }
+                    canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, rowBg)
+
+                    // Hover glow border
                     if (isHovered) {
-                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                        canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
+                            android.graphics.Paint().apply {
+                                style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f
+                                color = 0x6010B981.toInt(); isAntiAlias = true
+                                maskFilter = android.graphics.BlurMaskFilter(3f, android.graphics.BlurMaskFilter.Blur.OUTER)
+                            })
                     }
+
+                    // Loaded indicator dot
                     if (isLoaded) {
-                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, loadedBg)
+                        canvas.drawCircle(46f, ry + 30f, 4f,
+                            android.graphics.Paint().apply { color = 0xFFEC4899.toInt(); isAntiAlias = true })
+                        canvas.drawCircle(46f, ry + 30f, 6f,
+                            android.graphics.Paint().apply {
+                                color = 0x40EC4899.toInt(); isAntiAlias = true
+                                maskFilter = android.graphics.BlurMaskFilter(3f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                            })
                     }
 
+                    // File name
                     val label = file.nameWithoutExtension
-                    val displayName = if (label.length > 32) label.take(30) + ".." else label
-                    canvas.drawText(displayName, 50f, ry + 34f, if (isHovered) hoverPaint else normalPaint)
+                    val displayName = if (label.length > 26) label.take(24) + ".." else label
+                    val namePaint = android.graphics.Paint().apply {
+                        isAntiAlias = true
+                        textSize = if (isHovered) 38f else 36f
+                        color = when {
+                            isHovered -> 0xFF10B981.toInt()
+                            isLoaded -> 0xFFD0C0E0.toInt()
+                            else -> 0xFFE8EAF0.toInt()
+                        }
+                        isFakeBoldText = isHovered
+                    }
+                    canvas.drawText(displayName, if (isLoaded) 62f else 50f, ry + 34f, namePaint)
 
-                    val sizeStr = "%.1f MB".format(file.length() / 1048576f)
+                    // File size badge
+                    val sizeMB = file.length() / 1048576f
+                    val sizeStr = if (sizeMB >= 10f) "%.0f MB".format(sizeMB) else "%.1f MB".format(sizeMB)
+                    val badgeColor = when {
+                        sizeMB > 50f -> 0xFFF04858.toInt()   // red for huge
+                        sizeMB > 10f -> 0xFFFF9500.toInt()   // orange for large
+                        else -> 0xFF6B7280.toInt()            // gray for normal
+                    }
+                    val sizePaint = android.graphics.Paint().apply {
+                        isAntiAlias = true; textSize = 22f; color = badgeColor
+                    }
                     val sw = sizePaint.measureText(sizeStr)
-                    canvas.drawText(sizeStr, uiW - 60f - sw, ry + 34f, sizePaint)
+                    // Badge pill
+                    val bx = uiW - 60f - sw - 16f
+                    canvas.drawRoundRect(bx, ry + 18f, uiW - 50f, ry + 42f, 12f, 12f,
+                        android.graphics.Paint().apply { color = (badgeColor and 0x00FFFFFF) or 0x18000000; isAntiAlias = true })
+                    canvas.drawText(sizeStr, bx + 8f, ry + 37f, sizePaint)
+
+                    // Extension badge
+                    val ext = file.extension.uppercase()
+                    val extPaint = android.graphics.Paint().apply {
+                        isAntiAlias = true; textSize = 16f; color = 0xFF8B5CF6.toInt()
+                        letterSpacing = 0.05f
+                    }
+                    canvas.drawText(ext, if (isLoaded) 62f else 50f, ry + 54f, extPaint)
                 }
 
-                // Scroll indicator
+                // Page indicator
                 if (files.size > maxVisible) {
-                    val scrollPaint = android.graphics.Paint().apply {
-                        isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
+                    val page = glbPickerScrollOffset / maxVisible + 1
+                    val totalPages = (files.size + maxVisible - 1) / maxVisible
+                    val pagePaint = android.graphics.Paint().apply {
+                        isAntiAlias = true; textSize = 22f; color = 0xFF505868.toInt()
+                        textAlign = android.graphics.Paint.Align.CENTER
                     }
-                    val shown = "${glbPickerScrollOffset + 1}-${minOf(glbPickerScrollOffset + maxVisible, files.size)} of ${files.size}"
-                    canvas.drawText(shown, 50f, startY + maxVisible * rowH + 20f, scrollPaint)
+                    canvas.drawText("Page $page of $totalPages  (${files.size} files)", uiW / 2f,
+                        startY + maxVisible * rowH + 16f, pagePaint)
                 }
             }
 
-            // BACK button at bottom
+            // BACK button
             val btnY = uiH - 80f
             val btnH = 60f
             val isBackHovered = hoveredActionButton == 103
-            val backBg = android.graphics.Paint().apply {
-                color = if (isBackHovered) 0x70EC4899.toInt() else 0x20EC4899.toInt()
+            if (isBackHovered) {
+                canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f,
+                    android.graphics.Paint().apply {
+                        color = 0xFFEC4899.toInt(); isAntiAlias = true
+                        maskFilter = android.graphics.BlurMaskFilter(8f, android.graphics.BlurMaskFilter.Blur.OUTER)
+                        style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f
+                    })
             }
-            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBg)
-            val backBorder = android.graphics.Paint().apply {
-                style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isBackHovered) 3f else 1.5f
-                color = if (isBackHovered) 0xFFEC4899.toInt() else 0x60EC4899.toInt()
-                isAntiAlias = true
-            }
-            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f, backBorder)
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f,
+                android.graphics.Paint().apply {
+                    color = if (isBackHovered) 0x60EC4899.toInt() else 0x18EC4899.toInt(); isAntiAlias = true
+                })
+            canvas.drawRoundRect(30f, btnY, uiW - 30f, btnY + btnH, 12f, 12f,
+                android.graphics.Paint().apply {
+                    style = android.graphics.Paint.Style.STROKE; strokeWidth = if (isBackHovered) 2f else 1f
+                    color = if (isBackHovered) 0xFFEC4899.toInt() else 0x50EC4899.toInt()
+                    isAntiAlias = true
+                })
             val backText = android.graphics.Paint().apply {
-                isAntiAlias = true; textSize = 30f; textAlign = android.graphics.Paint.Align.CENTER
+                isAntiAlias = true; textSize = 32f; textAlign = android.graphics.Paint.Align.CENTER
                 color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
                 isFakeBoldText = true
             }
@@ -2990,7 +3680,7 @@ class FilamentModelActivity : ComponentActivity() {
         val dim = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF6B7280.toInt() }
         val teal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF10B981.toInt() }
 
-        var y = 118f
+        var y = 110f
         val luxStr = when {
             !autoAmbient -> "Manual"
             xrLightEstimateAvailable && xrSHAvailable -> "XR+SH"
@@ -2998,21 +3688,21 @@ class FilamentModelActivity : ComponentActivity() {
             else -> "%.0f lux".format(roomLux)
         }
         val gridStr = if (gridVisible) "ON" else "OFF"
-        canvas.drawText("${models.size} models  |  Grid: $gridStr  |  Light: $luxStr", 50f, y, dim)
-        y += 32f
+        canvas.drawText("${models.size} mdl  |  Grid: $gridStr  |  $luxStr", 50f, y, dim)
+        y += 28f
 
         val model = models.getOrNull(selectedModelIndex)
         val modelName = model?.file?.nameWithoutExtension ?: "No selection"
         val namePaint = android.graphics.Paint().apply {
-            isAntiAlias = true; textSize = 32f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+            isAntiAlias = true; textSize = 30f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
         }
         canvas.drawText(modelName, 50f, y, namePaint)
-        y += 16f
+        y += 12f
 
         // ── Separator ──
         val sepPaint = android.graphics.Paint().apply { color = 0x30EC4899.toInt(); strokeWidth = 1f }
         canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
-        y += 22f
+        y += 14f
 
         // ── Parameters (start ~260) ──
         val noModel = "---"
@@ -3036,58 +3726,215 @@ class FilamentModelActivity : ComponentActivity() {
             } else "OFF",
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
             "Tex Quality" to arrayOf("Auto", "4096", "2048", "1024")[textureQuality],
+            "Show Planes" to if (glesRenderer?.showPlaneVisualization == true) "ON" else "OFF",
         )
 
-        val rowH = 38f  // 15 params
-        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 32f; color = 0xFFF3F4F6.toInt() }
+        val rowH = 38f
+        val normal = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFFB0B8C4.toInt() }
         val highlight = android.graphics.Paint().apply {
-            isAntiAlias = true; textSize = 34f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+            isAntiAlias = true; textSize = 30f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
         }
-        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 32f; color = 0xFF3A3A42.toInt() }
-        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF9CA3AF.toInt() }
-        val hoverBg = android.graphics.Paint().apply { color = 0x20EC4899.toInt() }
-        val selectedBg = android.graphics.Paint().apply { color = 0x3030D8D0.toInt() }
-        val selectedBar = android.graphics.Paint().apply { color = 0xFFEC4899.toInt() }
+        val disabled = android.graphics.Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF2A2A32.toInt() }
+        val valuePaint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD0D0D0.toInt() }
+        val valueHighlight = android.graphics.Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFFFFFFF.toInt(); isFakeBoldText = true }
+
+        val paramRanges = PARAM_RANGES
+        fun getParamValue(idx: Int): Float = when (idx) {
+            0 -> model?.metallic ?: 0f
+            1 -> model?.roughness ?: 0.9f
+            2 -> model?.exposure ?: 0f
+            3 -> model?.contrast ?: 1f
+            4 -> model?.saturation ?: 1f
+            5 -> renderer?.lightIntensity ?: 2f
+            6 -> renderer?.fillLightIntensity ?: 0.5f
+            7 -> renderer?.ambientIntensity ?: 1f
+            8 -> renderer?.lightAngleDeg ?: 0f
+            9 -> renderer?.lightElevDeg ?: 60f
+            10 -> renderer?.shadowDarkness ?: 0.7f
+            11 -> renderer?.shadowSoftness ?: 2f
+            12 -> renderer?.shadowSpread ?: 8f
+            else -> 0f
+        }
+
+        // Section dividers
+        val sectionLabelPaint = android.graphics.Paint().apply {
+            isAntiAlias = true; textSize = 16f; color = 0xFF6B5080.toInt()
+            letterSpacing = 0.15f; isFakeBoldText = true
+        }
+        val sections = mapOf(0 to "MODEL", 5 to "LIGHTING", 13 to "SYSTEM")
 
         for ((i, param) in params.withIndex()) {
-            val rowTop = y - 10f
-            val rowBot = y + rowH - 16f
+            // Section header
+            if (i in sections) {
+                canvas.drawText(sections[i]!!, 56f, y + 2f, sectionLabelPaint)
+                canvas.drawLine(56f + sectionLabelPaint.measureText(sections[i]!!) + 8f, y - 2f,
+                    uiW - 40f, y - 2f, android.graphics.Paint().apply { color = 0x18EC4899.toInt(); strokeWidth = 1f })
+                y += 10f
+            }
 
-            if (i == selectedParam) {
-                canvas.drawRoundRect(24f, rowTop, uiW - 24f, rowBot, 8f, 8f, selectedBg)
-                canvas.drawRect(24f, rowTop, 30f, rowBot, selectedBar) // pink accent bar
-            }
-            if (i == hoveredMenuParam && hoveredMenuParam != selectedParam) {
-                canvas.drawRoundRect(24f, rowTop, uiW - 24f, rowBot, 8f, 8f, hoverBg)
-            }
+            val rowTop = y - 4f
+            val rowBot = y + rowH - 14f
 
             val isSelected = i == selectedParam
             val isHovered = i == hoveredMenuParam
+
+            // Row background
+            if (isSelected) {
+                // Neon glow bg for selected row
+                val glowPaint = android.graphics.Paint().apply {
+                    isAntiAlias = true; color = 0x2030D8D0.toInt()
+                    maskFilter = android.graphics.BlurMaskFilter(8f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, glowPaint)
+                // Solid bg
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f,
+                    android.graphics.Paint().apply { color = 0x2818C8C0.toInt() })
+                // Left accent — neon pink with glow
+                val accentGlow = android.graphics.Paint().apply {
+                    color = 0xFFEC4899.toInt(); isAntiAlias = true
+                    maskFilter = android.graphics.BlurMaskFilter(4f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                }
+                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, accentGlow)
+                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f,
+                    android.graphics.Paint().apply { color = 0xFFEC4899.toInt() })
+            } else if (isHovered) {
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f,
+                    android.graphics.Paint().apply { color = 0x14EC4899.toInt() })
+            }
+
             val isPerModel = i <= 4
+            val isDead = isPerModel && model == null
             val labelP = when {
-                isPerModel && model == null -> disabled
-                isSelected || isHovered -> highlight
+                isDead -> disabled
+                isSelected -> highlight
+                isHovered -> android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 29f; color = 0xFFD8D0E0.toInt()
+                }
                 else -> normal
             }
             val arrow = if (isSelected) "\u25B6 " else "  "
-            canvas.drawText("$arrow${param.first}", 50f, y + 30f, labelP)
+            canvas.drawText("$arrow${param.first}", 44f, y + 14f, labelP)
 
-            // Value right-aligned
-            val valStr = param.second
-            val valW = valuePaint.measureText(valStr)
-            canvas.drawText(valStr, uiW - 60f - valW, y + 30f, valuePaint)
+            // Slider bar for continuous params (0-12)
+            if (i <= 12) {
+                val sliderLeft = 240f
+                val sliderRight = uiW - 120f
+                val sliderY = y + 6f
+                val sliderH = 8f
+                val range = paramRanges[i]
+                val value = getParamValue(i)
+                val t = ((value - range.first) / (range.second - range.first)).coerceIn(0f, 1f)
+                val fillRight = sliderLeft + (sliderRight - sliderLeft) * t
+
+                // Track: subtle rounded groove
+                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f,
+                    android.graphics.Paint().apply { color = 0xFF0E0E1C.toInt(); isAntiAlias = true })
+                // Track inner border
+                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f,
+                    android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE; strokeWidth = 0.5f
+                        color = 0xFF202035.toInt(); isAntiAlias = true
+                    })
+
+                if (!isDead) {
+                    // Fill: gradient from dark to neon
+                    val fillPaint = android.graphics.Paint().apply { isAntiAlias = true }
+                    if (isSelected) {
+                        fillPaint.shader = android.graphics.LinearGradient(
+                            sliderLeft, 0f, fillRight, 0f,
+                            0xFF0A4040.toInt(), 0xFF30D8D0.toInt(),
+                            android.graphics.Shader.TileMode.CLAMP)
+                    } else if (isHovered) {
+                        fillPaint.shader = android.graphics.LinearGradient(
+                            sliderLeft, 0f, fillRight, 0f,
+                            0xFF1A1028.toInt(), 0xFF9060B0.toInt(),
+                            android.graphics.Shader.TileMode.CLAMP)
+                    } else {
+                        fillPaint.shader = android.graphics.LinearGradient(
+                            sliderLeft, 0f, fillRight, 0f,
+                            0xFF141424.toInt(), 0xFF3A4858.toInt(),
+                            android.graphics.Shader.TileMode.CLAMP)
+                    }
+                    canvas.drawRoundRect(sliderLeft, sliderY, fillRight, sliderY + sliderH, 4f, 4f, fillPaint)
+
+                    // Glow on fill end (selected only)
+                    if (isSelected && t > 0.02f) {
+                        val glowP = android.graphics.Paint().apply {
+                            isAntiAlias = true; color = 0x6030D8D0.toInt()
+                            maskFilter = android.graphics.BlurMaskFilter(6f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                        }
+                        canvas.drawCircle(fillRight, sliderY + sliderH / 2f, 6f, glowP)
+                    }
+
+                    // Thumb
+                    val thumbX = fillRight.coerceIn(sliderLeft + 4f, sliderRight - 4f)
+                    val thumbR = if (isSelected) 6f else 4f
+                    if (isSelected) {
+                        // Outer glow ring
+                        canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR + 3f,
+                            android.graphics.Paint().apply {
+                                isAntiAlias = true; color = 0x4030D8D0.toInt()
+                                maskFilter = android.graphics.BlurMaskFilter(3f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+                            })
+                    }
+                    // Solid thumb
+                    canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR,
+                        android.graphics.Paint().apply {
+                            isAntiAlias = true
+                            color = if (isSelected) 0xFFFFFFFF.toInt()
+                                else if (isHovered) 0xFFC0B0D0.toInt()
+                                else 0xFF707888.toInt()
+                        })
+
+                    // Value text right of slider
+                    val vp = if (isSelected) valueHighlight else valuePaint
+                    val valStr = param.second
+                    canvas.drawText(valStr, sliderRight + 10f, y + 16f, vp)
+                } else {
+                    // Disabled: just show dashes
+                    canvas.drawText("---", sliderRight + 10f, y + 16f, disabled)
+                }
+            } else {
+                // Toggle params (13-16): show value as a pill/badge
+                val valStr = param.second
+                val vp = if (isSelected) valueHighlight else valuePaint
+                val badgeLeft = uiW - 150f
+                val badgeW = vp.measureText(valStr) + 24f
+                val badgeY = y + 1f
+                val badgeH = 20f
+                val isOn = valStr.startsWith("ON") || valStr == "HIGH" || valStr == "MED" || valStr == "LOW"
+                        || valStr == "4096" || valStr == "2048" || valStr == "1024"
+                val badgeBg = if (isOn) {
+                    if (isSelected) 0x4030D8D0.toInt() else 0x2010B981.toInt()
+                } else {
+                    0x18404050.toInt()
+                }
+                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f,
+                    android.graphics.Paint().apply { color = badgeBg; isAntiAlias = true })
+                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f,
+                    android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE; strokeWidth = 0.8f
+                        color = if (isOn && isSelected) 0x6030D8D0.toInt()
+                            else if (isOn) 0x3010B981.toInt()
+                            else 0x20505060.toInt()
+                        isAntiAlias = true
+                    })
+                val textP = android.graphics.Paint().apply {
+                    isAntiAlias = true; textSize = 18f; textAlign = android.graphics.Paint.Align.CENTER
+                    color = if (isOn) {
+                        if (isSelected) 0xFF30D8D0.toInt() else 0xFF10B981.toInt()
+                    } else 0xFF606068.toInt()
+                    isFakeBoldText = isSelected
+                }
+                canvas.drawText(valStr, badgeLeft + badgeW / 2f, badgeY + 15f, textP)
+            }
 
             y += rowH
         }
 
-        // ── Separator ──
-        y += 8f
-        canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
-        y += 16f
-
-        // Controls hint (single compact line)
-        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 16f; color = 0xFF404048.toInt() }
-        canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y, hint)
+        // Controls hint (compact)
+        val hint = android.graphics.Paint().apply { isAntiAlias = true; textSize = 14f; color = 0xFF404048.toInt() }
+        canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y + 4f, hint)
 
         // ── Action buttons (2 rows) ──
         val btnGap = 8f
@@ -3121,7 +3968,7 @@ class FilamentModelActivity : ComponentActivity() {
         }
 
         // Row 1: SAVE / LOAD
-        val row1Y = uiH - 180f
+        val row1Y = uiH - 170f
         val btn2W = (uiW - 60f - btnGap) / 2f
         drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
         drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
@@ -3134,10 +3981,11 @@ class FilamentModelActivity : ComponentActivity() {
         drawButton(r2b2, r2b2 + btn3W, row2Y, "DELETE", hoveredActionButton == 107, 0xFFF04858.toInt())
         drawButton(r2b3, r2b3 + btn3W, row2Y, "RESET", hoveredActionButton == 108, 0xFFFF9500.toInt())
 
-        // Row 3: FILE MENU / EXIT
+        // Row 3: AUDIO / FILE MENU / EXIT
         val row3Y = row2Y + btnH + btnGap
-        drawButton(30f, 30f + btn2W, row3Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
-        drawButton(30f + btn2W + btnGap, uiW - 30f, row3Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
+        drawButton(r2b1, r2b1 + btn3W, row3Y, "AUDIO", hoveredActionButton == 109, 0xFF8B5CF6.toInt())
+        drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
+        drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
@@ -3642,6 +4490,7 @@ class FilamentModelActivity : ComponentActivity() {
         }
 
         hapticManager?.disconnect()
+        audioPlayer?.release(); audioPlayer = null
         audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()

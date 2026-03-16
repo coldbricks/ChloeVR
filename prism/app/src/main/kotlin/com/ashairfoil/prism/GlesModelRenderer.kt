@@ -136,6 +136,9 @@ class GlesModelRenderer {
 
     // Shadow plane resources
     private var shadowPlaneProgramId = 0
+    private var planeVisProgramId = 0
+    var showPlaneVisualization = false
+    private var planeVisStartTime = 0L
     private var spVao = 0
     private var spVbo = 0
 
@@ -279,6 +282,10 @@ class GlesModelRenderer {
         // Shadow planes
         shadowPlaneProgramId = createProgram(SP_VERTEX_SHADER, SP_FRAGMENT_SHADER)
         if (shadowPlaneProgramId == 0) { Log.e(TAG, "Failed to create shadow plane shader"); return false }
+
+        // Plane visualization (reuses SP_VERTEX_SHADER for the same quad geometry)
+        planeVisProgramId = createProgram(SP_VERTEX_SHADER, PLANE_VIS_FRAGMENT_SHADER)
+        if (planeVisProgramId == 0) Log.w(TAG, "Plane vis shader failed — non-fatal")
         run {
             val quadVerts = floatArrayOf(
                 -1f, 0f, -1f, 0f, 0f,
@@ -1247,6 +1254,67 @@ class GlesModelRenderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
+    // ── Plane Visualization ──
+
+    fun renderPlaneVisualization(projection: FloatArray, viewMatrix: FloatArray) {
+        if (!initialized || planeVisProgramId == 0 || shadowPlanes.isEmpty() || !showPlaneVisualization) return
+
+        if (planeVisStartTime == 0L) planeVisStartTime = System.nanoTime()
+        val time = (System.nanoTime() - planeVisStartTime) / 1_000_000_000f
+
+        GLES30.glUseProgram(planeVisProgramId)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFuncSeparate(
+            GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA,
+            GLES30.GL_ZERO, GLES30.GL_ONE) // preserve dest alpha for passthrough
+        GLES30.glDepthMask(false)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
+
+        val uMVP = GLES30.glGetUniformLocation(planeVisProgramId, "uMVP")
+        val uModel = GLES30.glGetUniformLocation(planeVisProgramId, "uModel")
+        val uColor = GLES30.glGetUniformLocation(planeVisProgramId, "uPlaneColor")
+        val uTime = GLES30.glGetUniformLocation(planeVisProgramId, "uTime")
+
+        GLES30.glUniform1f(uTime, time)
+
+        for (plane in shadowPlanes) {
+            // Neon colors by label — saturated, high-contrast for VR
+            val color = when (plane.label) {
+                1 -> floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)  // floor - electric green
+                2 -> floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f) // ceiling - steel gray
+                3 -> floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)  // wall - neon blue
+                4 -> floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)  // table - hot orange
+                else -> floatArrayOf(0.7f, 0.4f, 0.9f, 0.35f) // unknown - purple
+            }
+
+            val q = plane
+            val sx = q.extentX; val sz = q.extentY
+            val x2 = q.rotX*2; val y2 = q.rotY*2; val z2 = q.rotZ*2
+            val xx = q.rotX*x2; val xy = q.rotX*y2; val xz = q.rotX*z2
+            val yy = q.rotY*y2; val yz = q.rotY*z2; val zz = q.rotZ*z2
+            val wx = q.rotW*x2; val wy = q.rotW*y2; val wz = q.rotW*z2
+
+            val model = floatArrayOf(
+                (1f-(yy+zz))*sx, (xy+wz)*sx, (xz-wy)*sx, 0f,
+                (xy-wz), (1f-(xx+zz)), (yz+wx), 0f,
+                (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
+                q.posX, q.posY, q.posZ, 1f
+            )
+            val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
+
+            GLES30.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
+            GLES30.glUniformMatrix4fv(uModel, 1, false, model, 0)
+            GLES30.glUniform4fv(uColor, 1, color, 0)
+
+            GLES30.glBindVertexArray(spVao)
+            GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
+        }
+
+        GLES30.glBindVertexArray(0)
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
     // ── Gizmo ──
 
     fun renderGizmo(projection: FloatArray, viewMatrix: FloatArray,
@@ -1362,7 +1430,7 @@ class GlesModelRenderer {
 
     // Panel position — settable for drag
     var panelX = 0f; var panelY = 0f; var panelZ = -1f
-    var panelW = 1.1f; var panelH = 1.2f
+    var panelW = 0.9f; var panelH = 1.0f
 
     fun renderUiOverlay(swapchainTexId: Int, width: Int, height: Int, uiTexId: Int,
                         projection: FloatArray, viewMatrix: FloatArray) {
@@ -1554,6 +1622,7 @@ class GlesModelRenderer {
         if (gizmoVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoVbo), 0)
         if (gizmoEbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoEbo), 0)
         if (shadowPlaneProgramId != 0) GLES30.glDeleteProgram(shadowPlaneProgramId)
+        if (planeVisProgramId != 0) GLES30.glDeleteProgram(planeVisProgramId)
         if (spVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(spVao), 0)
         if (spVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(spVbo), 0)
         if (uiProgramId != 0) GLES30.glDeleteProgram(uiProgramId)
@@ -2152,6 +2221,59 @@ void main() {
     float a = shadow * ef * uShadowDarkness;
     if (a < 0.005) discard;
     fragColor = vec4(0.0, 0.0, 0.0, a);
+}
+"""
+
+// Plane visualization — sci-fi spatial mapping aesthetic
+private const val PLANE_VIS_FRAGMENT_SHADER = """#version 300 es
+precision mediump float;
+in vec3 vWorldPos;
+in vec2 vUV;
+uniform vec4 uPlaneColor;
+uniform float uTime;
+out vec4 fragColor;
+void main() {
+    vec3 col = uPlaneColor.rgb;
+
+    // Edge glow: bright neon border that fades inward
+    float edgeDist = min(min(vUV.x, 1.0 - vUV.x), min(vUV.y, 1.0 - vUV.y));
+    float edgeGlow = smoothstep(0.0, 0.02, edgeDist) * (1.0 - smoothstep(0.02, 0.08, edgeDist));
+    float innerFade = smoothstep(0.0, 0.015, edgeDist);
+
+    // World-space grid (10cm cells) — stable regardless of plane size
+    vec2 worldGrid = abs(fract(vWorldPos.xz * 10.0) - 0.5);
+    float gridLine = 1.0 - smoothstep(0.0, 0.04, min(worldGrid.x, worldGrid.y));
+
+    // Coarse grid (50cm cells) — structural lines, slightly brighter
+    vec2 coarseGrid = abs(fract(vWorldPos.xz * 2.0) - 0.5);
+    float coarseLine = 1.0 - smoothstep(0.0, 0.03, min(coarseGrid.x, coarseGrid.y));
+
+    // Scanning pulse — sweeps across the plane in world space
+    float scanPhase = fract(uTime * 0.3);
+    float scanPos = mix(-0.2, 1.2, scanPhase);
+    float scanLine = smoothstep(0.0, 0.01, abs(vUV.x - scanPos))
+                   * smoothstep(0.0, 0.15, abs(vUV.x - scanPos));
+    float scanGlow = 1.0 - scanLine;
+
+    // Combine layers
+    float fillAlpha = uPlaneColor.a * 0.06 * innerFade;             // very subtle fill
+    float gridAlpha = uPlaneColor.a * gridLine * 0.25 * innerFade;  // fine grid
+    float coarseAlpha = uPlaneColor.a * coarseLine * 0.4 * innerFade; // structural grid
+    float edgeAlpha = edgeGlow * 0.8;                                // bright neon edge
+    float scanAlpha = scanGlow * 0.3 * innerFade;                   // scan sweep
+
+    float totalAlpha = fillAlpha + gridAlpha + coarseAlpha + edgeAlpha + scanAlpha;
+
+    // Edge is pure white-hot, inner grid uses plane color
+    vec3 finalColor = col;
+    if (edgeAlpha > gridAlpha + coarseAlpha) {
+        finalColor = mix(col, vec3(1.0), 0.6); // white-hot edge
+    }
+    if (scanGlow > 0.1) {
+        finalColor = mix(finalColor, vec3(1.0), scanGlow * 0.3);
+    }
+
+    fragColor = vec4(finalColor, clamp(totalAlpha, 0.0, 0.85));
 }
 """
 

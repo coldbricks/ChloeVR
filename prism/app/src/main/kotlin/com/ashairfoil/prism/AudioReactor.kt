@@ -107,11 +107,14 @@ class AudioReactor {
     @Volatile private var rawMid = 0f
     @Volatile private var rawHigh = 0f
 
-    fun start(): Boolean {
+    private var currentSessionId = 0
+
+    fun start(audioSessionId: Int = 0): Boolean {
         if (started) return true
+        currentSessionId = audioSessionId
         try {
-            Log.i(TAG, "Creating Visualizer(0) for system audio...")
-            val vis = Visualizer(0)
+            Log.i(TAG, "Creating Visualizer($audioSessionId) for ${if (audioSessionId == 0) "system audio" else "session"}...")
+            val vis = Visualizer(audioSessionId)
             vis.captureSize = CAPTURE_SIZE
 
             val maxRate = Visualizer.getMaxCaptureRate()
@@ -153,6 +156,13 @@ class AudioReactor {
         started = false
         bass = 0f; mid = 0f; high = 0f
         boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
+    }
+
+    /** Restart with a different audio session (e.g., switch to app audio player) */
+    fun restart(newSessionId: Int) {
+        if (newSessionId == currentSessionId && started) return
+        stop()
+        start(newSessionId)
     }
 
     /**

@@ -443,38 +443,38 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 32, 40, 40)
+            setPadding(48, 40, 48, 48)
         }
 
         layout.addView(TextView(this).apply {
             text = "ChloeVR"
-            textSize = 36f
+            textSize = 48f
             setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 8)
+            setPadding(0, 0, 0, 12)
             gravity = Gravity.CENTER
         })
 
         filePickerCountLabel = TextView(this).apply {
-            textSize = 18f
+            textSize = 24f
             setTextColor(0xFF666666.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 12)
+            setPadding(0, 0, 0, 16)
         }
         layout.addView(filePickerCountLabel)
 
         filePickerStatusLabel = TextView(this).apply {
-            textSize = 18f
+            textSize = 24f
             setTextColor(0xFFAAAAAA.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 12)
+            setPadding(0, 0, 0, 16)
         }
         layout.addView(filePickerStatusLabel)
 
         layout.addView(TextView(this).apply {
             text = "Search"
-            textSize = 18f
+            textSize = 24f
             setTextColor(0xFFCCCCCC.toInt())
-            setPadding(0, 0, 0, 6)
+            setPadding(0, 0, 0, 8)
         })
         layout.addView(EditText(this).apply {
             setText(filePickerSearchQuery)
@@ -735,9 +735,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             container.addView(TextView(this).apply {
                 text = dirName
-                textSize = 17f
+                textSize = 22f
                 setTextColor(0xFF4FC3F7.toInt())
-                setPadding(8, 20, 0, 10)
+                setPadding(8, 28, 0, 14)
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -762,7 +762,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 container.addView(LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
                     setBackgroundColor(if (isFavorite) 0xFF1A2A1A.toInt() else 0xFF1E1E1E.toInt())
-                    setPadding(32, 28, 32, 28)
+                    setPadding(36, 36, 36, 36)
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
@@ -789,15 +789,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         if (isFavorite) {
                             addView(TextView(this@MainActivity).apply {
                                 text = "*"
-                                textSize = 22f
+                                textSize = 28f
                                 setTextColor(0xFFFFD600.toInt())
-                                setPadding(0, 0, 8, 0)
+                                setPadding(0, 0, 10, 0)
                             })
                         }
 
                         addView(TextView(this@MainActivity).apply {
                             text = file.nameWithoutExtension
-                            textSize = 20f
+                            textSize = 26f
                             setTextColor(0xFFE0E0E0.toInt())
                             maxLines = 2
                             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -894,10 +894,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private fun makeTag(text: String, bgColor: Int): TextView {
         return TextView(this).apply {
             this.text = text
-            textSize = 14f
+            textSize = 18f
             setTextColor(0xFFFFFFFF.toInt())
             setBackgroundColor(bgColor)
-            setPadding(16, 6, 16, 6)
+            setPadding(20, 8, 20, 8)
             val lp = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
