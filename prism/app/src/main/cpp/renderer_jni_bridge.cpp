@@ -410,4 +410,18 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetFoveationLevel(
     return g_renderer ? g_renderer->getFoveationLevel() : 0;
 }
 
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsFocused(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return (g_renderer && g_renderer->isFocused()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsUsingStageSpace(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return (g_renderer && g_renderer->isUsingStageSpace()) ? JNI_TRUE : JNI_FALSE;
+}
+
 } // extern "C"

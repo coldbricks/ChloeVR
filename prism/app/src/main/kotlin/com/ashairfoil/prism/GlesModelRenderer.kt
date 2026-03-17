@@ -57,7 +57,7 @@ class GlesModelRenderer {
         val posX: Float, val posY: Float, val posZ: Float,
         val rotX: Float, val rotY: Float, val rotZ: Float, val rotW: Float,
         val extentX: Float, val extentY: Float,
-        val label: Int  // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
+        val label: Int  // 0=unknown, 1=wall, 2=floor, 3=ceiling, 4=table
     )
 
     private val models = mutableListOf<GpuModel>()
@@ -931,8 +931,8 @@ class GlesModelRenderer {
 
         for (plane in shadowPlanes) {
             // Only occlude with large planes above the floor (bed, table, furniture)
-            // Skip floor, ceiling, and small/noisy planes
-            if (plane.label == 2) continue  // skip ceiling
+            // Skip floor, ceiling, and small/noisy planes (C++: 2=floor, 3=ceiling)
+            if (plane.label == 2 || plane.label == 3) continue  // skip floor and ceiling
             if (plane.posY < gridHeight + 0.15f) continue  // skip floor-level planes
             if (plane.extentX < 0.25f || plane.extentY < 0.25f) continue  // skip small planes
 
@@ -1223,7 +1223,7 @@ class GlesModelRenderer {
         GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uLightSize"), lightSize)
 
         for (plane in shadowPlanes) {
-            if (plane.label == 2) continue  // skip ceilings
+            if (plane.label == 3) continue  // skip ceilings (C++: 3=ceiling)
 
             // Build model matrix: translate + rotate(quat) + scale(extents)
             val q = plane
@@ -1280,11 +1280,11 @@ class GlesModelRenderer {
         for (plane in shadowPlanes) {
             // Neon colors by label — saturated, high-contrast for VR
             val color = when (plane.label) {
-                1 -> floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)  // floor - electric green
-                2 -> floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f) // ceiling - steel gray
-                3 -> floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)  // wall - neon blue
-                4 -> floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)  // table - hot orange
-                else -> floatArrayOf(0.7f, 0.4f, 0.9f, 0.35f) // unknown - purple
+                1 -> floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)  // wall - neon blue
+                2 -> floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)   // floor - electric green
+                3 -> floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)  // ceiling - steel gray
+                4 -> floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)   // table - hot orange
+                else -> floatArrayOf(0.7f, 0.4f, 0.9f, 0.35f)  // unknown - purple
             }
 
             val q = plane

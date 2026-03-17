@@ -7,6 +7,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.ashairfoil.prism.scene.InputHandler
 import com.ashairfoil.prism.scene.SceneManager
@@ -188,6 +189,7 @@ class FilamentModelActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Log.i(TAG, "onCreate: initializing Filament model viewer")
 
         showMessage("Initializing 3D renderer...")
@@ -256,15 +258,25 @@ class FilamentModelActivity : ComponentActivity() {
                 if (gr != null) {
                     gr.shadowPlanes = planes
                     if (lowestHorizY < Float.MAX_VALUE) {
+                        // If using LOCAL space (fallback), the origin is at the head.
+                        // Floor planes will be reported relative to head position.
+                        // Detect this: if the lowest horizontal plane Y is above the
+                        // camera (which makes no physical sense for a floor), it means
+                        // the runtime put Y=0 somewhere below, so use the raw value.
+                        // If Y is suspiciously close to head height (within 0.5m of camPosY),
+                        // the runtime likely returned STAGE-like coords but with a bad origin.
+                        // Use the raw plane Y — it's the best data we have from the runtime.
+                        val floorY = lowestHorizY
                         if (!floorSnappedOnce) {
-                            gr.gridHeight = lowestHorizY
-                            detectedFloorY = lowestHorizY
+                            gr.gridHeight = floorY
+                            detectedFloorY = floorY
                             floorSnappedOnce = true
-                            Log.i(TAG, "Grid snap to lowest horizontal surface: $lowestHorizY")
-                        } else if (lowestHorizY < detectedFloorY - 0.05f) {
-                            gr.gridHeight = lowestHorizY
-                            detectedFloorY = lowestHorizY
-                            Log.i(TAG, "Grid re-snap to lower surface: $lowestHorizY")
+                            val spaceType = if (nativeIsUsingStageSpace()) "STAGE" else "LOCAL"
+                            Log.i(TAG, "Grid snap to lowest horizontal surface: $floorY (space=$spaceType, camY=$camPosY)")
+                        } else if (floorY < detectedFloorY - 0.05f) {
+                            gr.gridHeight = floorY
+                            detectedFloorY = floorY
+                            Log.i(TAG, "Grid re-snap to lower surface: $floorY")
                         }
                     }
                 }
@@ -853,6 +865,31 @@ class FilamentModelActivity : ComponentActivity() {
 
     // ── Lifecycle ──
 
+    override fun onResume() {
+        super.onResume()
+        Log.i(TAG, "onResume")
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        sensorHub?.start()
+        if (lightSensor != null) {
+            sensorManager?.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
+    override fun onPause() {
+        Log.i(TAG, "onPause")
+        sensorManager?.unregisterListener(lightListener)
+        sensorHub?.stop()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        Log.i(TAG, "onWindowFocusChanged: hasFocus=$hasFocus")
+        if (hasFocus) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     private val lightListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             roomLux = event.values[0]
@@ -928,4 +965,6 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeHasFoveation(): Boolean
     internal external fun nativeSetFoveationLevel(level: Int)
     private external fun nativeGetFoveationLevel(): Int
+    private external fun nativeIsFocused(): Boolean
+    internal external fun nativeIsUsingStageSpace(): Boolean
 }

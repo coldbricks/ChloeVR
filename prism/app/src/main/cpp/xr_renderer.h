@@ -167,6 +167,9 @@ public:
     uint32_t getSwapchainWidth() const { return swapchainWidth_; }
     uint32_t getSwapchainHeight() const { return swapchainHeight_; }
     bool isRunning() const { return running_; }
+    bool isFocused() const { return focused_; }
+    bool isVisible() const { return visible_; }
+    bool isUsingStageSpace() const { return usingStageSpace_; }
 
 private:
     bool createInstance(JNIEnv* env, jobject activity);
@@ -189,6 +192,9 @@ private:
     XrSpace appSpace_ = XR_NULL_HANDLE;
     bool sessionReady_ = false;
     bool running_ = false;
+    bool focused_ = false;
+    bool visible_ = false;
+    bool usingStageSpace_ = false;
 
     // View configuration
     XrViewConfigurationView viewConfigs_[2] = {};

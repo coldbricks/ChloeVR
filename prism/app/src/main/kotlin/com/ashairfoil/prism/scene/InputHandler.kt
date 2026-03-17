@@ -1513,7 +1513,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     if (planes.isNotEmpty()) {
                         var bestDist = Float.MAX_VALUE
                         for (p in planes) {
-                            if (p.label != 1 && p.label != 4) continue
+                            if (p.label != 2 && p.label != 4) continue
                             val dx = model.posX - p.posX
                             val dz = model.posZ - p.posZ
                             val hDist = kotlin.math.sqrt(dx*dx + dz*dz)

@@ -70,8 +70,11 @@
         <!-- Filament + OpenXR direct renderer for 3D models (UNMANAGED mode) -->
         <activity
             android:name=".FilamentModelActivity"
-            android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.ashairfoil.prism.xr"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:screenOrientation="landscape">
 
             <property
                 android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"

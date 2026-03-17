@@ -351,7 +351,9 @@ bool XrRenderer::createSession() {
         XR_LOGE("STAGE space not supported (%d), falling back to LOCAL", (int)spaceResult);
         spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
         XR_CHK(xrCreateReferenceSpace(session_, &spaceInfo, &appSpace_));
+        usingStageSpace_ = false;
     } else {
+        usingStageSpace_ = true;
         XR_LOGI("Using STAGE reference space (Y=0 at floor)");
     }
 
@@ -539,6 +541,8 @@ void XrRenderer::handleSessionStateChange(XrSessionState newState) {
     switch (newState) {
         case XR_SESSION_STATE_IDLE:
             XR_LOGI("Session IDLE — waiting for READY");
+            focused_ = false;
+            visible_ = false;
             break;
         case XR_SESSION_STATE_READY: {
             XR_LOGI("Session READY — calling xrBeginSession");
@@ -551,13 +555,33 @@ void XrRenderer::handleSessionStateChange(XrSessionState newState) {
             XR_LOGI("Session begun and ready for frames");
             break;
         }
+        case XR_SESSION_STATE_SYNCHRONIZED:
+            XR_LOGI("Session SYNCHRONIZED — rendering but not visible");
+            visible_ = false;
+            focused_ = false;
+            break;
+        case XR_SESSION_STATE_VISIBLE:
+            XR_LOGI("Session VISIBLE — rendering, not focused (system overlay?)");
+            visible_ = true;
+            focused_ = false;
+            break;
+        case XR_SESSION_STATE_FOCUSED:
+            XR_LOGI("Session FOCUSED — fully active, input enabled");
+            visible_ = true;
+            focused_ = true;
+            break;
         case XR_SESSION_STATE_STOPPING:
+            XR_LOGI("Session STOPPING — ending session");
+            focused_ = false;
+            visible_ = false;
             xrEndSession(session_);
             sessionReady_ = false;
             running_ = false;
             break;
         case XR_SESSION_STATE_EXITING:
         case XR_SESSION_STATE_LOSS_PENDING:
+            focused_ = false;
+            visible_ = false;
             running_ = false;
             sessionReady_ = false;
             break;

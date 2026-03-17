@@ -237,7 +237,7 @@ class XrSensorPoller(
             val count = minOf(detectedPlaneCount, 5)
             for (i in 0 until count) {
                 val off = 2 + i * 10
-                val labels = arrayOf("unknown", "floor", "ceiling", "wall", "table")
+                val labels = arrayOf("unknown", "wall", "floor", "ceiling", "table")
                 val lbl = planeBuffer[off + 9].toInt().coerceIn(0, 4)
                 sb.appendLine("  ${labels[lbl]}: (%.1f,%.1f,%.1f) %.1fx%.1f m".format(
                     planeBuffer[off], planeBuffer[off+1], planeBuffer[off+2],
