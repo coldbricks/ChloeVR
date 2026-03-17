@@ -43,7 +43,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
     fun renderUiToBitmap() {
         val uiW = 1024
-        val uiH = 1024
+        val uiH = 1280
         val bitmap = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
 
@@ -1162,7 +1162,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             "Show Planes" to if (activity.glesRenderer?.showPlaneVisualization == true) "ON" else "OFF",
         )
 
-        val rowH = 38f
+        val rowH = 56f
         val normal = Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFFB0B8C4.toInt() }
         val highlight = Paint().apply {
             isAntiAlias = true; textSize = 30f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
@@ -1199,6 +1199,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         for ((i, param) in params.withIndex()) {
             // Section header
             if (i in sections) {
+                y += 8f  // extra padding before section header
                 canvas.drawText(sections[i]!!, 56f, y + 2f, sectionLabelPaint)
                 canvas.drawLine(56f + sectionLabelPaint.measureText(sections[i]!!) + 8f, y - 2f,
                     uiW - 40f, y - 2f, Paint().apply { color = 0x18EC4899.toInt(); strokeWidth = 1f })

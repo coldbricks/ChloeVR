@@ -18,46 +18,56 @@
 
 // ═══════════════════════════════════════════════════════════════════════
 // XR_ANDROID_eye_tracking — gaze pose for each eye + combined
-// Not in SDK as of openxr_loader 1.1.49
+// Spec: extension 457, base type 1000456000
 // ═══════════════════════════════════════════════════════════════════════
 
 #define XR_ANDROID_EYE_TRACKING_EXTENSION_NAME "XR_ANDROID_eye_tracking"
 
-#define XR_TYPE_EYE_TRACKER_CREATE_INFO_ANDROID          ((XrStructureType)1000800000)
-#define XR_TYPE_EYE_TRACKER_GET_INFO_ANDROID              ((XrStructureType)1000800001)
-#define XR_TYPE_EYE_STATE_ANDROID                         ((XrStructureType)1000800002)
-#define XR_TYPE_SYSTEM_EYE_TRACKING_PROPERTIES_ANDROID    ((XrStructureType)1000800003)
+#define XR_TYPE_EYE_TRACKER_CREATE_INFO_ANDROID   ((XrStructureType)1000456000)
+#define XR_TYPE_EYES_GET_INFO_ANDROID             ((XrStructureType)1000456001)
+#define XR_TYPE_EYES_ANDROID                      ((XrStructureType)1000456002)
+
+#define XR_EYE_MAX_ANDROID 3  // left, right, combined
 
 XR_DEFINE_HANDLE(XrEyeTrackerANDROID)
 
-typedef enum XrEyeValidityANDROID {
-    XR_EYE_VALIDITY_VALID_ANDROID = 0,
-    XR_EYE_VALIDITY_INVALID_ANDROID = 1,
-    XR_EYE_VALIDITY_MAX_ENUM_ANDROID = 0x7FFFFFFF
-} XrEyeValidityANDROID;
+typedef enum XrEyeStateANDROID {
+    XR_EYE_STATE_INVALID_ANDROID = 0,
+    XR_EYE_STATE_GAZING_ANDROID = 1,
+    XR_EYE_STATE_SHUT_ANDROID = 2,
+    XR_EYE_STATE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrEyeStateANDROID;
+
+typedef enum XrEyeTrackingModeANDROID {
+    XR_EYE_TRACKING_MODE_NOT_TRACKING_ANDROID = 0,
+    XR_EYE_TRACKING_MODE_COARSE_ANDROID = 1,
+    XR_EYE_TRACKING_MODE_FINE_ANDROID = 2,
+    XR_EYE_TRACKING_MODE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrEyeTrackingModeANDROID;
 
 typedef struct XrEyeTrackerCreateInfoANDROID {
     XrStructureType type;
     const void* next;
 } XrEyeTrackerCreateInfoANDROID;
 
-typedef struct XrEyeTrackerGetInfoANDROID {
+typedef struct XrEyesGetInfoANDROID {
     XrStructureType type;
     const void* next;
-    XrSpace baseSpace;
     XrTime time;
-} XrEyeTrackerGetInfoANDROID;
+    XrSpace baseSpace;
+} XrEyesGetInfoANDROID;
 
-typedef struct XrEyeStateDataANDROID {
+typedef struct XrEyeANDROID {
+    XrEyeStateANDROID eyeState;
+    XrPosef eyePose;
+} XrEyeANDROID;
+
+typedef struct XrEyesANDROID {
     XrStructureType type;
     void* next;
-    XrEyeValidityANDROID leftEyeState;
-    XrPosef leftEyePose;
-    XrEyeValidityANDROID rightEyeState;
-    XrPosef rightEyePose;
-    XrEyeValidityANDROID combinedEyeState;
-    XrPosef combinedEyePose;
-} XrEyeStateDataANDROID;
+    XrEyeANDROID eyes[XR_EYE_MAX_ANDROID]; // [0]=left, [1]=right, [2]=combined
+    XrEyeTrackingModeANDROID mode;
+} XrEyesANDROID;
 
 typedef XrResult (XRAPI_PTR *PFN_xrCreateEyeTrackerANDROID)(
     XrSession session,
@@ -67,31 +77,36 @@ typedef XrResult (XRAPI_PTR *PFN_xrCreateEyeTrackerANDROID)(
 typedef XrResult (XRAPI_PTR *PFN_xrDestroyEyeTrackerANDROID)(
     XrEyeTrackerANDROID eyeTracker);
 
-typedef XrResult (XRAPI_PTR *PFN_xrGetEyeStateANDROID)(
+// Note: the spec has separate coarse/fine functions, but the Samsung runtime
+// may use a single xrGetEyesANDROID. Try loading both names.
+typedef XrResult (XRAPI_PTR *PFN_xrGetEyesANDROID)(
     XrEyeTrackerANDROID eyeTracker,
-    const XrEyeTrackerGetInfoANDROID* getInfo,
-    XrEyeStateDataANDROID* eyeState);
+    const XrEyesGetInfoANDROID* getInfo,
+    XrEyesANDROID* eyes);
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// XR_ANDROID_face_tracking — 68 blend shape weights
+// XR_ANDROID_face_tracking — blend shape weights
+// Spec: extension 459, base type 1000458000
 // ═══════════════════════════════════════════════════════════════════════
 
 #define XR_ANDROID_FACE_TRACKING_EXTENSION_NAME "XR_ANDROID_face_tracking"
 
-#define XR_FACE_BLEND_SHAPE_COUNT_ANDROID 68
+#define XR_TYPE_FACE_TRACKER_CREATE_INFO_ANDROID   ((XrStructureType)1000458000)
+#define XR_TYPE_FACE_STATE_GET_INFO_ANDROID         ((XrStructureType)1000458001)
+#define XR_TYPE_FACE_STATE_ANDROID                  ((XrStructureType)1000458002)
 
-#define XR_TYPE_FACE_TRACKER_CREATE_INFO_ANDROID          ((XrStructureType)1000810000)
-#define XR_TYPE_FACE_STATE_GET_INFO_ANDROID                ((XrStructureType)1000810001)
-#define XR_TYPE_FACE_STATE_ANDROID                         ((XrStructureType)1000810002)
-#define XR_TYPE_SYSTEM_FACE_TRACKING_PROPERTIES_ANDROID    ((XrStructureType)1000810003)
+// Max blend shape count — spec uses dynamic count but Samsung runtime returns 68
+#define XR_FACE_BLEND_SHAPE_COUNT_ANDROID 68
 
 XR_DEFINE_HANDLE(XrFaceTrackerANDROID)
 
-typedef enum XrFaceStateValidFlagsANDROID {
-    XR_FACE_STATE_BLEND_SHAPES_VALID_BIT_ANDROID = 0x00000001,
-    XR_FACE_STATE_VALID_FLAGS_MAX_ENUM_ANDROID = 0x7FFFFFFF
-} XrFaceStateValidFlagsANDROID;
+typedef enum XrFaceTrackingStateANDROID {
+    XR_FACE_TRACKING_STATE_PAUSED_ANDROID = 0,
+    XR_FACE_TRACKING_STATE_STOPPED_ANDROID = 1,
+    XR_FACE_TRACKING_STATE_TRACKING_ANDROID = 2,
+    XR_FACE_TRACKING_STATE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrFaceTrackingStateANDROID;
 
 typedef struct XrFaceTrackerCreateInfoANDROID {
     XrStructureType type;
@@ -107,10 +122,15 @@ typedef struct XrFaceStateGetInfoANDROID {
 typedef struct XrFaceStateANDROID {
     XrStructureType type;
     void* next;
-    XrFaceStateValidFlagsANDROID validFlags;
-    uint32_t blendShapeCount;
-    float* blendShapeWeights;
+    uint32_t parametersCapacityInput;
+    uint32_t parametersCountOutput;
+    float* parameters;
+    XrFaceTrackingStateANDROID faceTrackingState;
     XrTime sampleTime;
+    XrBool32 isValid;
+    uint32_t regionConfidencesCapacityInput;
+    uint32_t regionConfidencesCountOutput;
+    float* regionConfidences;
 } XrFaceStateANDROID;
 
 typedef XrResult (XRAPI_PTR *PFN_xrCreateFaceTrackerANDROID)(
@@ -129,9 +149,12 @@ typedef XrResult (XRAPI_PTR *PFN_xrGetFaceStateANDROID)(
 
 // ═══════════════════════════════════════════════════════════════════════
 // XR_ANDROID_passthrough_camera_state
+// Spec: extension 474, base type 1000473000
 // ═══════════════════════════════════════════════════════════════════════
 
 #define XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME "XR_ANDROID_passthrough_camera_state"
+
+#define XR_TYPE_PASSTHROUGH_CAMERA_STATE_ANDROID ((XrStructureType)1000473000)
 
 typedef enum XrPassthroughCameraStateValueANDROID {
     XR_PASSTHROUGH_CAMERA_STATE_DISABLED_ANDROID = 0,
@@ -152,16 +175,14 @@ typedef enum XrPassthroughCameraStateValueANDROID {
 
 // ═══════════════════════════════════════════════════════════════════════
 // XR_ANDROID_trackables — plane detection
+// Spec: extension 456, base type 1000455000
 // ═══════════════════════════════════════════════════════════════════════
 
 #define XR_ANDROID_TRACKABLES_EXTENSION_NAME "XR_ANDROID_trackables"
 
-// Values from Khronos registry (NOT the Android docs — those were wrong)
 #define XR_TYPE_TRACKABLE_GET_INFO_ANDROID              ((XrStructureType)1000455000)
 #define XR_TYPE_TRACKABLE_PLANE_ANDROID                 ((XrStructureType)1000455003)
 #define XR_TYPE_TRACKABLE_TRACKER_CREATE_INFO_ANDROID   ((XrStructureType)1000455004)
-// Not in registry — try the next sequential value
-#define XR_TYPE_ALL_TRACKABLES_GET_INFO_ANDROID         ((XrStructureType)1000455001)
 
 XR_DEFINE_ATOM(XrTrackableANDROID)
 
@@ -171,11 +192,26 @@ typedef enum XrTrackableTypeANDROID {
     XR_TRACKABLE_TYPE_MAX_ENUM_ANDROID = 0x7FFFFFFF
 } XrTrackableTypeANDROID;
 
+typedef enum XrTrackingStateANDROID {
+    XR_TRACKING_STATE_PAUSED_ANDROID = 0,
+    XR_TRACKING_STATE_STOPPED_ANDROID = 1,
+    XR_TRACKING_STATE_TRACKING_ANDROID = 2,
+    XR_TRACKING_STATE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrTrackingStateANDROID;
+
+typedef enum XrPlaneTypeANDROID {
+    XR_PLANE_TYPE_HORIZONTAL_DOWNWARD_FACING_ANDROID = 0,
+    XR_PLANE_TYPE_HORIZONTAL_UPWARD_FACING_ANDROID = 1,
+    XR_PLANE_TYPE_VERTICAL_ANDROID = 2,
+    XR_PLANE_TYPE_ARBITRARY_ANDROID = 3,
+    XR_PLANE_TYPE_MAX_ENUM_ANDROID = 0x7FFFFFFF
+} XrPlaneTypeANDROID;
+
 typedef enum XrPlaneLabelANDROID {
     XR_PLANE_LABEL_UNKNOWN_ANDROID = 0,
-    XR_PLANE_LABEL_FLOOR_ANDROID = 1,
-    XR_PLANE_LABEL_CEILING_ANDROID = 2,
-    XR_PLANE_LABEL_WALL_ANDROID = 3,
+    XR_PLANE_LABEL_WALL_ANDROID = 1,
+    XR_PLANE_LABEL_FLOOR_ANDROID = 2,
+    XR_PLANE_LABEL_CEILING_ANDROID = 3,
     XR_PLANE_LABEL_TABLE_ANDROID = 4,
     XR_PLANE_LABEL_MAX_ENUM_ANDROID = 0x7FFFFFFF
 } XrPlaneLabelANDROID;
@@ -185,11 +221,6 @@ typedef struct XrTrackableTrackerCreateInfoANDROID {
     const void* next;
     XrTrackableTypeANDROID trackableType;
 } XrTrackableTrackerCreateInfoANDROID;
-
-typedef struct XrAllTrackablesGetInfoANDROID {
-    XrStructureType type;
-    const void* next;
-} XrAllTrackablesGetInfoANDROID;
 
 typedef struct XrTrackableGetInfoANDROID {
     XrStructureType type;
@@ -202,13 +233,15 @@ typedef struct XrTrackableGetInfoANDROID {
 typedef struct XrTrackablePlaneANDROID {
     XrStructureType type;
     void* next;
-    XrTrackableTypeANDROID trackableType;
+    XrTrackingStateANDROID trackingState;
     XrPosef centerPose;
     XrExtent2Df extents;
+    XrPlaneTypeANDROID planeType;
     XrPlaneLabelANDROID planeLabel;
     XrTrackableANDROID subsumedByPlane;
+    XrTime lastUpdatedTime;
     uint32_t vertexCapacityInput;
-    uint32_t vertexCountOutput;
+    uint32_t* vertexCountOutput;
     XrVector2f* vertices;
 } XrTrackablePlaneANDROID;
 
@@ -222,9 +255,9 @@ typedef XrResult (XRAPI_PTR *PFN_xrCreateTrackableTrackerANDROID)(
 typedef XrResult (XRAPI_PTR *PFN_xrDestroyTrackableTrackerANDROID)(
     XrTrackableTrackerANDROID tracker);
 
+// Samsung Galaxy XR runtime: 4-parameter signature (no getInfo struct)
 typedef XrResult (XRAPI_PTR *PFN_xrGetAllTrackablesANDROID)(
     XrTrackableTrackerANDROID tracker,
-    const XrAllTrackablesGetInfoANDROID* getInfo,
     uint32_t trackableCapacityInput,
     uint32_t* trackableCountOutput,
     XrTrackableANDROID* trackables);
@@ -241,8 +274,8 @@ typedef XrResult (XRAPI_PTR *PFN_xrGetTrackablePlaneANDROID)(
 
 #define XR_ANDROID_PERFORMANCE_METRICS_EXTENSION_NAME "XR_ANDROID_performance_metrics"
 
-#define XR_TYPE_PERFORMANCE_METRICS_STATE_ANDROID         ((XrStructureType)1000710000)
-#define XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID       ((XrStructureType)1000710001)
+#define XR_TYPE_PERFORMANCE_METRICS_STATE_ANDROID         ((XrStructureType)1000465000)
+#define XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID       ((XrStructureType)1000465001)
 
 typedef enum XrPerformanceMetricsCounterUnitANDROID {
     XR_PERFORMANCE_METRICS_COUNTER_UNIT_GENERIC_ANDROID = 0,

@@ -106,7 +106,7 @@ public:
         float posX = 0, posY = 0, posZ = 0;
         float rotX = 0, rotY = 0, rotZ = 0, rotW = 1;
         float extentX = 0, extentY = 0; // half-extents
-        int label = 0; // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
+        int label = 0; // 0=unknown, 1=wall, 2=floor, 3=ceiling, 4=table
     };
     struct PlaneData {
         bool valid = false;
@@ -250,7 +250,7 @@ private:
     XrEyeTrackerANDROID eyeTracker_ = XR_NULL_HANDLE;
     PFN_xrCreateEyeTrackerANDROID xrCreateEyeTracker_ = nullptr;
     PFN_xrDestroyEyeTrackerANDROID xrDestroyEyeTracker_ = nullptr;
-    PFN_xrGetEyeStateANDROID xrGetEyeState_ = nullptr;
+    PFN_xrGetEyesANDROID xrGetEyes_ = nullptr;
     bool initEyeTracking();
 
     // ── Face tracking ──

@@ -379,8 +379,8 @@ class FilamentModelActivity : ComponentActivity() {
             nativeMakeGLContextCurrent()
 
             // Init XR compositor quad for stereo-correct menu panel
-            if (nativeInitUiQuad(1024, 1024)) {
-                Log.i(TAG, "Compositor UI quad initialized (1024x1024)")
+            if (nativeInitUiQuad(1024, 1280)) {
+                Log.i(TAG, "Compositor UI quad initialized (1024x1280)")
             }
 
             while (running) {
