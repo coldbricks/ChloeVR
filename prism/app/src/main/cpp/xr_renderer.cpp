@@ -157,30 +157,15 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         XR_LOGI("  + Trackables (planes)");
     }
 
-    // Spatial extensions (anchors, entities, persistence)
-    if (hasExt("XR_EXT_spatial_anchor")) {
-        extensions.push_back("XR_EXT_spatial_anchor");
-        XR_LOGI("  + Spatial anchors");
-    }
-    if (hasExt("XR_EXT_spatial_entity")) {
-        extensions.push_back("XR_EXT_spatial_entity");
-        XR_LOGI("  + Spatial entities");
-    }
-    if (hasExt("XR_EXT_spatial_marker_tracking")) {
-        extensions.push_back("XR_EXT_spatial_marker_tracking");
-        XR_LOGI("  + Spatial marker tracking");
-    }
-    if (hasExt("XR_EXT_spatial_persistence")) {
-        extensions.push_back("XR_EXT_spatial_persistence");
-        XR_LOGI("  + Spatial persistence");
-    }
-    if (hasExt("XR_EXT_spatial_persistence_operations")) {
-        extensions.push_back("XR_EXT_spatial_persistence_operations");
-        XR_LOGI("  + Spatial persistence operations");
-    }
-    if (hasExt("XR_EXT_spatial_plane_tracking")) {
-        extensions.push_back("XR_EXT_spatial_plane_tracking");
-        XR_LOGI("  + Spatial plane tracking (Khronos standard)");
+    // Spatial extensions — Samsung Galaxy XR runtime advertises these but rejects them
+    // at xrCreateInstance with XR_ERROR_VALIDATION_FAILURE. Log availability but don't enable.
+    const char* spatialExts[] = {
+        "XR_EXT_spatial_anchor", "XR_EXT_spatial_entity", "XR_EXT_spatial_marker_tracking",
+        "XR_EXT_spatial_persistence", "XR_EXT_spatial_persistence_operations",
+        "XR_EXT_spatial_plane_tracking"
+    };
+    for (auto ext : spatialExts) {
+        if (hasExt(ext)) XR_LOGI("  ~ %s (available but not enabled — Samsung rejects at instance creation)", ext);
     }
 
     // Display refresh rate
