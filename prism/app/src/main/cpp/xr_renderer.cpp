@@ -211,9 +211,24 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
 
     // Get foveation function pointers
     if (foveationSupported_) {
-        xrGetInstanceProcAddr(instance_, "xrCreateFoveationProfileFB", (PFN_xrVoidFunction*)&xrCreateFoveationProfileFB_);
-        xrGetInstanceProcAddr(instance_, "xrDestroyFoveationProfileFB", (PFN_xrVoidFunction*)&xrDestroyFoveationProfileFB_);
-        xrGetInstanceProcAddr(instance_, "xrUpdateSwapchainFB", (PFN_xrVoidFunction*)&xrUpdateSwapchainFB_);
+        bool fpOk = true;
+        if (XR_FAILED(xrGetInstanceProcAddr(instance_, "xrCreateFoveationProfileFB",
+                (PFN_xrVoidFunction*)&xrCreateFoveationProfileFB_)) || !xrCreateFoveationProfileFB_) {
+            fpOk = false;
+        }
+        if (XR_FAILED(xrGetInstanceProcAddr(instance_, "xrDestroyFoveationProfileFB",
+                (PFN_xrVoidFunction*)&xrDestroyFoveationProfileFB_)) || !xrDestroyFoveationProfileFB_) {
+            fpOk = false;
+        }
+        if (XR_FAILED(xrGetInstanceProcAddr(instance_, "xrUpdateSwapchainFB",
+                (PFN_xrVoidFunction*)&xrUpdateSwapchainFB_)) || !xrUpdateSwapchainFB_) {
+            fpOk = false;
+        }
+        if (!fpOk) {
+            XR_LOGE("Foveation extensions present but required function pointers are unavailable; disabling foveation");
+            foveationSupported_ = false;
+            foveationSwapchainConfigured_ = false;
+        }
     }
 
     XR_LOGI("OpenXR rendering instance created");
@@ -404,39 +419,97 @@ bool XrRenderer::createSwapchains() {
     }
     XR_LOGI("Selected swapchain format: 0x%llx", (unsigned long long)selectedFormat);
 
-    // Create one swapchain per eye
-    for (int eye = 0; eye < 2; eye++) {
-        XrSwapchainCreateInfo swapchainCI{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        swapchainCI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
-                                 XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        swapchainCI.format = selectedFormat;
-        swapchainCI.width = swapchainWidth_;
-        swapchainCI.height = swapchainHeight_;
-        swapchainCI.sampleCount = 1;
-        swapchainCI.faceCount = 1;
-        swapchainCI.arraySize = 1;
-        swapchainCI.mipCount = 1;
-
-        XR_CHK(xrCreateSwapchain(session_, &swapchainCI, &swapchains_[eye]));
-
-        // Enumerate swapchain images (GL textures)
-        uint32_t imgCount = 0;
-        xrEnumerateSwapchainImages(swapchains_[eye], 0, &imgCount, nullptr);
-        std::vector<XrSwapchainImageOpenGLESKHR> images(
-            imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
-        xrEnumerateSwapchainImages(swapchains_[eye], imgCount, &imgCount,
-            (XrSwapchainImageBaseHeader*)images.data());
-
-        swapchainImages_[eye].resize(imgCount);
-        for (uint32_t i = 0; i < imgCount; i++) {
-            swapchainImages_[eye][i] = images[i].image;
-            XR_LOGI("Eye %d swapchain image %u: GL texture %u", eye, i, images[i].image);
+    auto destroyEyeSwapchains = [this]() {
+        for (int i = 0; i < 2; i++) {
+            if (swapchains_[i] != XR_NULL_HANDLE) {
+                xrDestroySwapchain(swapchains_[i]);
+                swapchains_[i] = XR_NULL_HANDLE;
+            }
+            swapchainImages_[i].clear();
         }
+    };
+
+    const bool attemptFoveatedSwapchainCreate = foveationSupported_;
+    const int maxAttempts = attemptFoveatedSwapchainCreate ? 2 : 1;
+
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+        const bool useFoveatedSwapchainCreateInfo =
+            attemptFoveatedSwapchainCreate && attempt == 0;
+        bool anyFailed = false;
+
+        destroyEyeSwapchains();
+
+        // Create one swapchain per eye
+        for (int eye = 0; eye < 2; eye++) {
+            XrSwapchainCreateInfo swapchainCI{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+            swapchainCI.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                                     XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+            swapchainCI.format = selectedFormat;
+            swapchainCI.width = swapchainWidth_;
+            swapchainCI.height = swapchainHeight_;
+            swapchainCI.sampleCount = 1;
+            swapchainCI.faceCount = 1;
+            swapchainCI.arraySize = 1;
+            swapchainCI.mipCount = 1;
+
+            XrSwapchainCreateInfoFoveationFB foveationCreateInfo{
+                XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB};
+            if (useFoveatedSwapchainCreateInfo) {
+                foveationCreateInfo.flags = XR_SWAPCHAIN_CREATE_FOVEATION_SCALED_BIN_BIT_FB;
+                swapchainCI.next = &foveationCreateInfo;
+            }
+
+            XrResult createResult = xrCreateSwapchain(session_, &swapchainCI, &swapchains_[eye]);
+            if (XR_FAILED(createResult)) {
+                XR_LOGE("xrCreateSwapchain eye %d failed: %d (foveatedCreateInfo=%d)",
+                        eye, (int)createResult, useFoveatedSwapchainCreateInfo ? 1 : 0);
+                anyFailed = true;
+                break;
+            }
+
+            // Enumerate swapchain images (GL textures)
+            uint32_t imgCount = 0;
+            xrEnumerateSwapchainImages(swapchains_[eye], 0, &imgCount, nullptr);
+            std::vector<XrSwapchainImageOpenGLESKHR> images(
+                imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+            xrEnumerateSwapchainImages(swapchains_[eye], imgCount, &imgCount,
+                (XrSwapchainImageBaseHeader*)images.data());
+
+            swapchainImages_[eye].resize(imgCount);
+            for (uint32_t i = 0; i < imgCount; i++) {
+                swapchainImages_[eye][i] = images[i].image;
+                XR_LOGI("Eye %d swapchain image %u: GL texture %u", eye, i, images[i].image);
+            }
+        }
+
+        if (!anyFailed) {
+            foveationSwapchainConfigured_ = useFoveatedSwapchainCreateInfo;
+            if (attemptFoveatedSwapchainCreate && !foveationSwapchainConfigured_) {
+                // Runtime could not create foveation-configured swapchains, so keep app stable
+                // by disabling the feature instead of calling into buggy update paths later.
+                foveationSupported_ = false;
+                foveationLevel_ = 0;
+                XR_LOGE("Foveation disabled: swapchains created without foveation configuration");
+            }
+            XR_LOGI("Swapchains created: %ux%u, %zu images per eye",
+                    swapchainWidth_, swapchainHeight_, swapchainImages_[0].size());
+            return true;
+        }
+
+        if (useFoveatedSwapchainCreateInfo) {
+            XR_LOGE("Foveated swapchain create path failed; retrying without foveation");
+            foveationSupported_ = false;
+            foveationSwapchainConfigured_ = false;
+            foveationLevel_ = 0;
+            continue;
+        }
+
+        destroyEyeSwapchains();
+        return false;
     }
 
-    XR_LOGI("Swapchains created: %ux%u, %zu images per eye",
-             swapchainWidth_, swapchainHeight_, swapchainImages_[0].size());
-    return true;
+    destroyEyeSwapchains();
+    return false;
 }
 
 bool XrRenderer::createActions() {
@@ -685,6 +758,8 @@ bool XrRenderer::waitFrame(FrameData& frame) {
 
         frame.eyes[eye].textureId = swapchainImages_[eye][imageIndex];
         frame.eyes[eye].imageIndex = imageIndex;
+        frame.eyes[eye].pose = views[eye].pose;
+        frame.eyes[eye].fov = views[eye].fov;
         frame.eyes[eye].width = swapchainWidth_;
         frame.eyes[eye].height = swapchainHeight_;
 
@@ -712,20 +787,10 @@ void XrRenderer::submitFrame(const FrameData& frame) {
     XrCompositionLayerProjection projLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
 
     if (frame.shouldRender) {
-        // Locate views again for the sub-image info
-        XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
-        XrViewState viewState{XR_TYPE_VIEW_STATE};
-        XrViewLocateInfo locateInfo{XR_TYPE_VIEW_LOCATE_INFO};
-        locateInfo.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-        locateInfo.displayTime = frame.predictedDisplayTime;
-        locateInfo.space = appSpace_;
-        uint32_t viewCount = 0;
-        xrLocateViews(session_, &locateInfo, &viewState, 2, &viewCount, views);
-
         for (int eye = 0; eye < 2; eye++) {
             projViews[eye] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-            projViews[eye].pose = views[eye].pose;
-            projViews[eye].fov = views[eye].fov;
+            projViews[eye].pose = frame.eyes[eye].pose;
+            projViews[eye].fov = frame.eyes[eye].fov;
             projViews[eye].subImage.swapchain = swapchains_[eye];
             projViews[eye].subImage.imageRect.offset = {0, 0};
             projViews[eye].subImage.imageRect.extent = {
@@ -1068,6 +1133,7 @@ void XrRenderer::shutdown() {
         xrDestroyFoveationProfileFB_(foveationProfile_);
         foveationProfile_ = XR_NULL_HANDLE;
     }
+    foveationSwapchainConfigured_ = false;
     // Disable perf metrics
     if (perfMetricsSupported_ && xrSetPerfState_ && session_) {
         XrPerformanceMetricsStateANDROID state = {};
@@ -1807,28 +1873,52 @@ int XrRenderer::getPassthroughState() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void XrRenderer::setFoveationLevel(int level) {
-    if (!foveationSupported_ || !xrCreateFoveationProfileFB_ || !xrUpdateSwapchainFB_) {
-        XR_LOGE("Foveation not supported");
+    if (level < 0) level = 0;
+    if (level > 3) level = 3;
+
+    if (!foveationSupported_ || !foveationSwapchainConfigured_ ||
+        !xrCreateFoveationProfileFB_ || !xrDestroyFoveationProfileFB_ || !xrUpdateSwapchainFB_) {
+        XR_LOGE("Foveation not supported or not safely configured");
         return;
     }
-    foveationLevel_ = level;
-
-    // Destroy old profile if exists
-    if (foveationProfile_ != XR_NULL_HANDLE) {
-        xrDestroyFoveationProfileFB_(foveationProfile_);
-        foveationProfile_ = XR_NULL_HANDLE;
+    if (!session_ || !sessionReady_ || !running_) {
+        XR_LOGE("Foveation request ignored: session not ready");
+        return;
+    }
+    if (level == foveationLevel_) {
+        return;
     }
 
-    if (level == 0) {
-        XR_LOGI("Foveation disabled");
-        // Apply no-foveation to swapchains
+    auto applyProfileToSwapchains = [&](XrFoveationProfileFB profile) -> bool {
         for (int eye = 0; eye < 2; eye++) {
             if (swapchains_[eye] == XR_NULL_HANDLE) continue;
             XrSwapchainStateFoveationFB fovState{};
             fovState.type = XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB;
-            fovState.profile = XR_NULL_HANDLE;
-            xrUpdateSwapchainFB_(swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
+            fovState.flags = 0;
+            fovState.profile = profile;
+            XrResult ur = xrUpdateSwapchainFB_(
+                swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
+            if (XR_FAILED(ur)) {
+                XR_LOGE("xrUpdateSwapchainFB eye %d failed: %d", eye, (int)ur);
+                return false;
+            }
         }
+        return true;
+    };
+
+    XrFoveationProfileFB oldProfile = foveationProfile_;
+
+    if (level == 0) {
+        if (!applyProfileToSwapchains(XR_NULL_HANDLE)) {
+            XR_LOGE("Failed to disable foveation; preserving previous state");
+            return;
+        }
+        if (oldProfile != XR_NULL_HANDLE) {
+            xrDestroyFoveationProfileFB_(oldProfile);
+        }
+        foveationProfile_ = XR_NULL_HANDLE;
+        foveationLevel_ = 0;
+        XR_LOGI("Foveation disabled");
         return;
     }
 
@@ -1859,36 +1949,37 @@ void XrRenderer::setFoveationLevel(int level) {
     profileCI.type = XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB;
     profileCI.next = &levelCI;
 
-    XrResult r = xrCreateFoveationProfileFB_(session_, &profileCI, &foveationProfile_);
+    XrFoveationProfileFB newProfile = XR_NULL_HANDLE;
+    XrResult r = xrCreateFoveationProfileFB_(session_, &profileCI, &newProfile);
     if (XR_FAILED(r)) {
-        XR_LOGE("Failed to create foveation profile: %d — disabling foveation permanently", (int)r);
-        foveationSupported_ = false;
-        foveationLevel_ = 0;
-        return;
-    }
-
-    // Apply to both eye swapchains
-    bool anyFailed = false;
-    for (int eye = 0; eye < 2; eye++) {
-        if (swapchains_[eye] == XR_NULL_HANDLE) continue;
-        XrSwapchainStateFoveationFB fovState{};
-        fovState.type = XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB;
-        fovState.profile = foveationProfile_;
-        XrResult ur = xrUpdateSwapchainFB_(swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
-        if (XR_FAILED(ur)) {
-            XR_LOGE("Failed to apply foveation to eye %d: %d", eye, (int)ur);
-            anyFailed = true;
+        XR_LOGE("Failed to create foveation profile: %d", (int)r);
+        if (oldProfile == XR_NULL_HANDLE) {
+            foveationSupported_ = false;
+            foveationSwapchainConfigured_ = false;
         }
-    }
-
-    if (anyFailed) {
-        XR_LOGE("Foveation application failed — disabling permanently");
-        xrDestroyFoveationProfileFB_(foveationProfile_);
-        foveationProfile_ = XR_NULL_HANDLE;
-        foveationSupported_ = false;
-        foveationLevel_ = 0;
         return;
     }
+
+    if (!applyProfileToSwapchains(newProfile)) {
+        XR_LOGE("Failed to apply new foveation profile; rolling back");
+        if (!applyProfileToSwapchains(oldProfile)) {
+            XR_LOGE("Foveation rollback failed");
+            foveationSupported_ = false;
+            foveationSwapchainConfigured_ = false;
+        }
+        xrDestroyFoveationProfileFB_(newProfile);
+        if (oldProfile == XR_NULL_HANDLE) {
+            foveationSupported_ = false;
+            foveationSwapchainConfigured_ = false;
+        }
+        return;
+    }
+
+    if (oldProfile != XR_NULL_HANDLE) {
+        xrDestroyFoveationProfileFB_(oldProfile);
+    }
+    foveationProfile_ = newProfile;
+    foveationLevel_ = level;
 
     XR_LOGI("Foveation set to level %d%s", level, eyeTrackedFoveation_ ? " (eye-tracked)" : "");
 }

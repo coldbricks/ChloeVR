@@ -56,6 +56,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val beatReactorEnabled = activity.beatReactorEnabled
         val beatSliders = activity.inputHandler.beatSliders
         val foveationLevel = activity.foveationLevel
+        val foveationAvailable = activity.foveationAvailable
         val textureQuality = activity.textureQuality
         val autoAmbient = activity.autoAmbient
         val gridVisible = activity.gridVisible
@@ -1157,7 +1158,11 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val r2 = audioReactor
                 if (r2 != null) "ON %.0f%%".format((r2.boxFillPct) * 100) else "ON"
             } else "OFF",
-            "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
+            "Foveation" to if (foveationAvailable) {
+                arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel]
+            } else {
+                "N/A"
+            },
             "Tex Quality" to arrayOf("Auto", "4096", "2048", "1024")[textureQuality],
             "Show Planes" to if (activity.glesRenderer?.showPlaneVisualization == true) "ON" else "OFF",
             "Room Track" to if (activity.roomTrackingEnabled) "ON" else "OFF",

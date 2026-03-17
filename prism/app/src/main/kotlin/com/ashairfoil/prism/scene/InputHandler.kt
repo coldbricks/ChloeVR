@@ -1008,9 +1008,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         Log.i(TAG, "BeatReactor settings opened")
                     }
                 } else if (hoveredMenuParam == 14) {
-                    activity.foveationLevel = (activity.foveationLevel + 1) % 4
-                    activity.nativeSetFoveationLevel(activity.foveationLevel)
-                    Log.i(TAG, "Foveation: ${activity.foveationLevel}")
+                    val nextLevel = (activity.foveationLevel + 1) % 4
+                    if (activity.setFoveationLevelSafe(nextLevel)) {
+                        Log.i(TAG, "Foveation: ${activity.foveationLevel}")
+                    } else {
+                        Log.i(TAG, "Foveation unavailable on this runtime")
+                    }
                 } else if (hoveredMenuParam == 15) {
                     activity.textureQuality = (activity.textureQuality + 1) % 4
                     Log.i(TAG, "Tex quality: ${activity.textureQuality} (${arrayOf("Auto","4096","2048","1024")[activity.textureQuality]})")
@@ -1299,12 +1302,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     14 -> {
                         if (!activity.foveationToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.foveationToggleLatch = true
-                            activity.foveationLevel = if (rightThumbX > 0) {
+                            val nextLevel = if (rightThumbX > 0) {
                                 (activity.foveationLevel + 1).coerceAtMost(3)
                             } else {
                                 (activity.foveationLevel - 1).coerceAtLeast(0)
                             }
-                            activity.nativeSetFoveationLevel(activity.foveationLevel)
+                            activity.setFoveationLevelSafe(nextLevel)
                         }
                         if (kotlin.math.abs(rightThumbX) < 0.3f) activity.foveationToggleLatch = false
                     }
@@ -1369,7 +1372,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.beatReactorEnabled = false
                         activity.audioReactor?.enabled = false
                     }
-                    14 -> { activity.foveationLevel = 0; activity.nativeSetFoveationLevel(0) }
+                    14 -> { activity.setFoveationLevelSafe(0) }
                     15 -> { activity.textureQuality = 0; activity.reloadAllModels() }
                     16 -> { activity.glesRenderer?.showPlaneVisualization = false }
                     17 -> {

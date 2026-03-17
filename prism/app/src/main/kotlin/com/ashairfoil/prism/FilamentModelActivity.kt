@@ -68,6 +68,8 @@ class FilamentModelActivity : ComponentActivity() {
     private val rightViewBuf = FloatArray(16)
     private val rawSHBuf = FloatArray(27)
     private val tccBuf = FloatArray(3)
+    private val gizmoPosBuf = FloatArray(3)
+    private val gizmoRotBuf = FloatArray(4)
 
     @Volatile internal var xrLightEstimateAvailable = false
     @Volatile internal var xrSHAvailable = false
@@ -81,6 +83,13 @@ class FilamentModelActivity : ComponentActivity() {
     private var smoothLightColor = floatArrayOf(1f, 1f, 1f)
     private var smoothSH = FloatArray(27)
     private var lightSmoothed = false  // first frame gets instant values
+
+    private fun setRgb(dst: FloatArray, r: Float, g: Float, b: Float) {
+        if (dst.size < 3) return
+        dst[0] = r
+        dst[1] = g
+        dst[2] = b
+    }
 
     // ── XR Sensor Poller (hand/eye/face tracking, planes, perf, passthrough) ──
     internal lateinit var sensorPoller: XrSensorPoller
@@ -168,6 +177,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var beatBaseShadow = 0.7f
     private var beatWashAlpha = 0f
     @Volatile internal var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
+    @Volatile internal var foveationAvailable = false
     internal var beatToggleLatch = false
     internal var foveationToggleLatch = false
     internal var planeVisToggleLatch = false
@@ -294,12 +304,9 @@ class FilamentModelActivity : ComponentActivity() {
                 }
             }
 
-            // Foveated rendering disabled for now (investigating crash)
-            // if (nativeHasFoveation()) {
-            //     nativeSetFoveationLevel(2)
-            //     foveationLevel = 2
-            //     Log.i(TAG, "Foveated rendering enabled (medium)")
-            // }
+            foveationAvailable = nativeHasFoveation()
+            foveationLevel = 0
+            Log.i(TAG, "Foveation available: $foveationAvailable")
 
             val renderer = GlesModelRenderer()
             if (!renderer.init()) {
@@ -372,6 +379,23 @@ class FilamentModelActivity : ComponentActivity() {
 
     internal fun reloadAllModels() {
         sceneManager.reloadAllModels(textureQuality)
+    }
+
+    internal fun setFoveationLevelSafe(level: Int): Boolean {
+        val clamped = level.coerceIn(0, 3)
+        foveationAvailable = nativeHasFoveation()
+        if (!foveationAvailable) {
+            foveationLevel = 0
+            return false
+        }
+        foveationLevel = clamped
+        nativeSetFoveationLevel(clamped)
+        foveationAvailable = nativeHasFoveation()
+        if (!foveationAvailable) {
+            foveationLevel = 0
+            return false
+        }
+        return true
     }
 
     private fun getScenesDir(): File = sceneManager.getScenesDir()
@@ -480,7 +504,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                                     tccBuf[0] = ccR.coerceIn(0.5f, 1.5f); tccBuf[1] = ccG.coerceIn(0.5f, 1.5f); tccBuf[2] = ccB.coerceIn(0.5f, 1.5f)
                                     for (i in 0..2) smoothAmbientColor[i] += (tccBuf[i] - smoothAmbientColor[i]) * aI
-                                    gr.ambientColor = smoothAmbientColor.copyOf()
+                                    setRgb(gr.ambientColor, smoothAmbientColor[0], smoothAmbientColor[1], smoothAmbientColor[2])
 
                                     // Light direction: use manual azimuth/elevation (menu sliders)
                                     // XR direction estimation is unreliable — don't override user's setting
@@ -494,7 +518,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
                                         tccBuf[0] = dirR / maxDir; tccBuf[1] = dirG / maxDir; tccBuf[2] = dirB / maxDir
                                         for (i in 0..2) smoothLightColor[i] += (tccBuf[i] - smoothLightColor[i]) * aI
-                                        gr.lightColor = smoothLightColor.copyOf()
+                                        setRgb(gr.lightColor, smoothLightColor[0], smoothLightColor[1], smoothLightColor[2])
                                     }
                                     // Direction set by azimuth/elevation sliders (params 8/9)
                                     gr.updateLightDirFromAngles()
@@ -504,7 +528,7 @@ class FilamentModelActivity : ComponentActivity() {
                                     if (shValid) {
                                         System.arraycopy(lightEstimateBuffer, 14, rawSHBuf, 0, 27)
                                         for (i in 0 until 27) smoothSH[i] += (rawSHBuf[i] - smoothSH[i]) * aS
-                                        gr.shCoefficients = smoothSH.copyOf()
+                                        System.arraycopy(smoothSH, 0, gr.shCoefficients, 0, 27)
                                         gr.useSH = true
                                     }
 
@@ -524,8 +548,14 @@ class FilamentModelActivity : ComponentActivity() {
                                         else -> (1.8f + kotlin.math.ln(lux / 1500f) * 0.3f).coerceAtMost(2.5f)
                                     }
                                     val warmth = (1f - (lux / 800f).coerceIn(0f, 1f))
-                                    gr.ambientColor = floatArrayOf(1f + warmth * 0.15f, 1f - warmth * 0.02f, 1f - warmth * 0.12f)
-                                    gr.lightColor = floatArrayOf(1f + warmth * 0.08f, 0.95f + warmth * 0.02f, 0.9f - warmth * 0.05f)
+                                    setRgb(gr.ambientColor,
+                                        1f + warmth * 0.15f,
+                                        1f - warmth * 0.02f,
+                                        1f - warmth * 0.12f)
+                                    setRgb(gr.lightColor,
+                                        1f + warmth * 0.08f,
+                                        0.95f + warmth * 0.02f,
+                                        0.9f - warmth * 0.05f)
                                 }
                             }
 
@@ -613,7 +643,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (affectsModels) {
                                     // Ambient: warm glow that builds with climax
                                     gr.ambientIntensity = beatBaseAmbient + intensity * 2.5f + breathVal * 0.5f
-                                    gr.ambientColor = floatArrayOf(
+                                    setRgb(gr.ambientColor,
                                         c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.2f,
                                         c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.1f,
                                         c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
@@ -621,7 +651,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                                     // Main light: punches hard on slam, builds with climax
                                     gr.lightIntensity = beatBaseLight + intensity * 4f + slamBoost * 5f
-                                    gr.lightColor = floatArrayOf(
+                                    setRgb(gr.lightColor,
                                         c[0] * pct + (1f - pct) * 1f + bassSlam * 0.3f,
                                         c[1] * pct + (1f - pct) * 0.95f + bassSlam * 0.1f,
                                         c[2] * pct + (1f - pct) * 0.9f
@@ -629,7 +659,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                                     // Fill: contrast light follows
                                     gr.fillLightIntensity = beatBaseFill + intensity * 2f + slamBoost * 2f
-                                    gr.fillLightColor = floatArrayOf(
+                                    setRgb(gr.fillLightColor,
                                         c[2] * pct + (1f - pct) * 0.85f,
                                         c[0] * pct + (1f - pct) * 0.9f,
                                         c[1] * pct + (1f - pct) * 1f
@@ -644,7 +674,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             // Emissive glow: models radiate light on beats
                                             // Stronger as climax builds, spikes on slam
                                             val emGlow = pct * bi * (0.5f + climaxAccum * 1.5f) + bassSlam * 2f + breathVal
-                                            gpuModel.emissiveFactor = floatArrayOf(
+                                            setRgb(gpuModel.emissiveFactor,
                                                 c[0] * emGlow + breathVal * 0.5f,
                                                 c[1] * emGlow + breathVal * 0.3f,
                                                 c[2] * emGlow + breathVal * 0.2f
@@ -701,7 +731,7 @@ class FilamentModelActivity : ComponentActivity() {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
                                         gpuModel.exposure = placed.exposure
-                                        gpuModel.emissiveFactor = floatArrayOf(1f, 1f, 1f)
+                                        setRgb(gpuModel.emissiveFactor, 1f, 1f, 1f)
                                         gpuModel.saturation = placed.saturation
                                     }
                                 }
@@ -762,12 +792,20 @@ class FilamentModelActivity : ComponentActivity() {
                                     val angle = Math.toRadians(ym.spin.toDouble())
                                     val cy = kotlin.math.cos(angle).toFloat()
                                     val sy = kotlin.math.sin(angle).toFloat()
-                                    gpuModel.modelMatrix = floatArrayOf(
-                                        cy * s, 0f, -sy * s, 0f,
-                                        0f, s, 0f, 0f,
-                                        sy * s, 0f, cy * s, 0f,
-                                        ym.posX, ym.posY, ym.posZ, 1f
-                                    )
+                                    val mm = gpuModel.modelMatrix
+                                    if (mm.size >= 16) {
+                                        mm[0] = cy * s;  mm[1] = 0f;    mm[2] = -sy * s; mm[3] = 0f
+                                        mm[4] = 0f;      mm[5] = s;     mm[6] = 0f;      mm[7] = 0f
+                                        mm[8] = sy * s;  mm[9] = 0f;    mm[10] = cy * s; mm[11] = 0f
+                                        mm[12] = ym.posX; mm[13] = ym.posY; mm[14] = ym.posZ; mm[15] = 1f
+                                    } else {
+                                        gpuModel.modelMatrix = floatArrayOf(
+                                            cy * s, 0f, -sy * s, 0f,
+                                            0f, s, 0f, 0f,
+                                            sy * s, 0f, cy * s, 0f,
+                                            ym.posX, ym.posY, ym.posZ, 1f
+                                        )
+                                    }
                                 }
 
                                 if (ym.timer > 1.5f || ym.scale < 0.01f) {
@@ -781,10 +819,25 @@ class FilamentModelActivity : ComponentActivity() {
 
                             // Gizmo state for rendering
                             val selModel = models.getOrNull(selectedModelIndex)
-                            val gizmoPos = selModel?.let { floatArrayOf(it.posX, it.posY, it.posZ) }
-                            val gizmoRot = selModel?.let { floatArrayOf(it.rotX, it.rotY, it.rotZ, it.rotW) }
+                            val hasGizmoPose = selModel != null
+                            if (selModel != null) {
+                                gizmoPosBuf[0] = selModel.posX
+                                gizmoPosBuf[1] = selModel.posY
+                                gizmoPosBuf[2] = selModel.posZ
+                                gizmoRotBuf[0] = selModel.rotX
+                                gizmoRotBuf[1] = selModel.rotY
+                                gizmoRotBuf[2] = selModel.rotZ
+                                gizmoRotBuf[3] = selModel.rotW
+                            }
 
                             val ih = inputHandler  // local ref for render state
+                            val washActive = beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f
+                            var washR = 0f; var washG = 0f; var washB = 0f; var washMode = 0
+                            if (washActive) {
+                                val wc = reactor!!.getBeatColor()
+                                washR = wc[0]; washG = wc[1]; washB = wc[2]
+                                washMode = reactor.blendMode.ordinal
+                            }
 
                             // Left eye: models -> ground/shadow -> gizmo -> laser
                             gr.renderEye(leftTexId, width, height, leftProj, leftView)
@@ -792,17 +845,13 @@ class FilamentModelActivity : ComponentActivity() {
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(leftProj, leftView)
                             gr.renderPlaneVisualization(leftProj, leftView)
-                            if (gizmoVisible && gizmoPos != null && gizmoRot != null)
-                                gr.renderGizmo(leftProj, leftView, gizmoPos, gizmoRot, ih.hoveredGizmoAxis)
+                            if (gizmoVisible && hasGizmoPose)
+                                gr.renderGizmo(leftProj, leftView, gizmoPosBuf, gizmoRotBuf, ih.hoveredGizmoAxis)
                             gr.renderEmitter(leftProj, leftView, ih.emitterHovered)
                             if (ih.laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 ih.laserHandPos, ih.laserAimRot, ih.hitDistance)
                             // Color wash: tints ENTIRE view (passthrough + scene)
-                            if (beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f) {
-                                val wc = reactor.getBeatColor()
-                                val bm = reactor.blendMode.ordinal
-                                gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
-                            }
+                            if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(leftTexId, width, height)
                             gr.finishEyePass()
 
@@ -812,16 +861,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(rightProj, rightView)
                             gr.renderPlaneVisualization(rightProj, rightView)
-                            if (gizmoVisible && gizmoPos != null && gizmoRot != null)
-                                gr.renderGizmo(rightProj, rightView, gizmoPos, gizmoRot, ih.hoveredGizmoAxis)
+                            if (gizmoVisible && hasGizmoPose)
+                                gr.renderGizmo(rightProj, rightView, gizmoPosBuf, gizmoRotBuf, ih.hoveredGizmoAxis)
                             gr.renderEmitter(rightProj, rightView, ih.emitterHovered)
                             if (ih.laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
                                 ih.laserHandPos, ih.laserAimRot, ih.hitDistance)
-                            if (beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f) {
-                                val wc = reactor.getBeatColor()
-                                val bm = reactor.blendMode.ordinal
-                                gr.renderColorWash(wc[0], wc[1], wc[2], beatWashAlpha, bm)
-                            }
+                            if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(rightTexId, width, height)
                             gr.finishEyePass()
                             // Menu rendered via compositor quad layer (stereo-correct)
@@ -996,7 +1041,7 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeGetSensorCapabilities(): Int
     private external fun nativeGetPassthroughState(): Int
     private external fun nativeHasFoveation(): Boolean
-    internal external fun nativeSetFoveationLevel(level: Int)
+    private external fun nativeSetFoveationLevel(level: Int)
     private external fun nativeGetFoveationLevel(): Int
     private external fun nativeIsFocused(): Boolean
     private external fun nativeIsUsingStageSpace(): Boolean

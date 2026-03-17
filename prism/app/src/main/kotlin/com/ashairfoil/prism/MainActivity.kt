@@ -103,6 +103,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var screenRoll = 0f
     private var screenYaw = 0f
     private var screenPitch = 0f
+    private var screenCurvature = 0f  // 0 = flat, 1 = full hemisphere wrap
 
     // Trigger tap detection
     private var triggerDownTime = 0L
@@ -1082,6 +1083,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             updateScreenPose()
         })
 
+        layout.addView(makeAdjustRow("Curve", "+", "\u2212") { delta ->
+            screenCurvature = (screenCurvature + delta * 0.1f).coerceIn(0f, 1f)
+            // Recreate surface entity with new shape
+            restartCurrentVideo()
+        })
+
         layout.addView(makeSpacer(16))
 
         // Reset + Back buttons
@@ -1772,7 +1779,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun shapeForScreenType(type: ScreenType): SurfaceEntity.Shape {
         return when (type) {
-            ScreenType.FLAT -> SurfaceEntity.Shape.Quad(FloatSize2d(8f, 4.5f))
+            ScreenType.FLAT -> {
+                if (screenCurvature > 0.01f) {
+                    // Curved flat screen: use hemisphere with large radius.
+                    // curvature 0.1 = gentle curve (r=20), 0.5 = medium (r=6), 1.0 = full wrap (r=3)
+                    val radius = (3f + (1f - screenCurvature) * 17f).coerceIn(3f, 20f)
+                    SurfaceEntity.Shape.Hemisphere(radius)
+                } else {
+                    SurfaceEntity.Shape.Quad(FloatSize2d(8f, 4.5f))
+                }
+            }
             ScreenType.DOME_180 -> SurfaceEntity.Shape.Hemisphere(50f)
             ScreenType.SPHERE_360 -> SurfaceEntity.Shape.Sphere(50f)
             // Fisheye variants: use Hemisphere as approximation (correct mesh needs CustomMesh)
@@ -1971,12 +1987,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun updateScreenPose() {
         val entity = surfaceEntity ?: return
-        val rotation = Quaternion.fromEulerAngles(screenPitch, screenYaw, screenRoll)
         if (currentScreenType == ScreenType.FLAT) {
-            // Flat screen: placed at world position
+            // Billboard: screen always faces the viewer (head at origin)
+            // Compute yaw to face origin from screen position, then apply user roll/pitch on top
+            val dx = -screenX  // direction from screen toward head
+            val dz = -screenZ
+            val autoYaw = Math.toDegrees(kotlin.math.atan2(dx.toDouble(), dz.toDouble())).toFloat()
+            val rotation = Quaternion.fromEulerAngles(screenPitch, autoYaw + screenYaw, screenRoll)
             entity.setPose(Pose(Vector3(screenX, screenY, screenZ), rotation))
         } else {
             // Immersive: centered on user, only rotation matters
+            val rotation = Quaternion.fromEulerAngles(screenPitch, screenYaw, screenRoll)
             entity.setPose(Pose(Vector3(0f, screenHeight, screenDepth), rotation))
         }
     }
@@ -1996,6 +2017,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         screenX = 0f
         screenY = 0f
         screenZ = if (currentScreenType == ScreenType.FLAT) -8f else 0f
+        screenCurvature = 0f
         abRepeatA = null
         abRepeatB = null
         abRepeatBoomerang = false
@@ -3740,9 +3762,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         val now = SystemClock.uptimeMillis()
 
-        // Determine which hand is grabbing (grip+trigger both held)
-        val leftGrab = input.leftSqueeze > 0.5f && input.leftTrigger > 0.5f && input.leftHandValid
-        val rightGrab = input.rightSqueeze > 0.5f && input.rightTrigger > 0.5f && input.rightHandValid
+        // Determine which hand is grabbing (grip held — no trigger required for screen move)
+        val leftGrab = input.leftSqueeze > 0.5f && input.leftHandValid
+        val rightGrab = input.rightSqueeze > 0.5f && input.rightHandValid
         val grabbing = leftGrab || rightGrab
 
         // Trigger-only (no grip) = zoom mode
@@ -3767,70 +3789,73 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                              else null
 
         if (grabbing && grabHandPos != null) {
-            // Aim direction drives screen movement, wrist twist drives roll
+            // Screen follows hand 1:1 in 3D — like grabbing a TV and placing it anywhere
             isTriggerZooming = false
 
-            val useAim = grabAimValid && grabAimRot != null
-            val rollRot = if (useAim) grabAimRot!! else (if (rightGrab) input.rightHandRot else input.leftHandRot)
+            val rollRot = if (grabAimValid && grabAimRot != null) grabAimRot!!
+                          else (if (rightGrab) input.rightHandRot else input.leftHandRot)
 
             if (!isGrabbing) {
                 isGrabbing = true
-                grabStartAimDir = if (useAim) quatForward(grabAimRot!!) else floatArrayOf(0f, 0f, -1f)
                 grabStartAimRot = rollRot.copyOf()
                 grabStartScreenRoll = screenRoll
-                grabStartScreenYaw = screenYaw
-                grabStartScreenPitch = screenPitch
                 grabStartScreenX = screenX
                 grabStartScreenY = screenY
                 grabStartScreenZ = screenZ
                 grabStartHandPos = grabHandPos.copyOf()
             } else {
-                val smooth = 0.5f
+                // Hand delta drives screen position 1:1
+                val dX = grabHandPos[0] - grabStartHandPos[0]
+                val dY = grabHandPos[1] - grabStartHandPos[1]
+                val dZ = grabHandPos[2] - grabStartHandPos[2]
 
-                // Roll via twist-swing decomposition (immune to pitch/yaw changes)
+                if (currentScreenType == ScreenType.FLAT) {
+                    screenX = grabStartScreenX + dX
+                    screenY = grabStartScreenY + dY
+                    screenZ = grabStartScreenZ + dZ
+                } else {
+                    // Immersive: map hand delta to yaw/pitch
+                    val smooth = 0.5f
+                    val targetYaw = grabStartScreenYaw - dX * 120f
+                    val targetPitch = grabStartScreenPitch + dY * 120f
+                    screenYaw += (targetYaw - screenYaw) * smooth
+                    screenPitch += (targetPitch - screenPitch) * smooth
+                }
+
+                // Thumbstick fwd/back while grabbing = push/pull
+                val grabThumbY = if (rightGrab) input.rightThumbY
+                                 else if (leftGrab) input.leftThumbY else 0f
+                if (kotlin.math.abs(grabThumbY) > 0.15f) {
+                    // Push along the direction from head to screen
+                    val toScreenX = screenX; val toScreenY = screenY; val toScreenZ = screenZ
+                    val dist = kotlin.math.sqrt(toScreenX*toScreenX + toScreenY*toScreenY + toScreenZ*toScreenZ).coerceAtLeast(0.1f)
+                    val nx = toScreenX / dist; val ny = toScreenY / dist; val nz = toScreenZ / dist
+                    val push = grabThumbY * 0.15f
+                    screenX += nx * push
+                    screenY += ny * push
+                    screenZ += nz * push
+                    // Update grab start so it doesn't snap back
+                    grabStartScreenX = screenX - dX
+                    grabStartScreenY = screenY - dY
+                    grabStartScreenZ = screenZ - dZ
+                }
+
+                // Thumbstick L/R while grabbing = scale
+                val grabThumbX = if (rightGrab) input.rightThumbX
+                                 else if (leftGrab) input.leftThumbX else 0f
+                if (kotlin.math.abs(grabThumbX) > 0.15f) {
+                    screenZoom = (screenZoom + grabThumbX * 0.02f).coerceIn(0.3f, 3f)
+                    updateScreenScale()
+                }
+
+                // Roll via wrist twist
                 var rollDelta = relativeRollDeg(grabStartAimRot, rollRot)
                 while (rollDelta > 180f) rollDelta -= 360f
                 while (rollDelta < -180f) rollDelta += 360f
                 if (!rollDelta.isNaN()) {
-                    val targetRoll = grabStartScreenRoll - rollDelta
-                    screenRoll += (targetRoll - screenRoll) * smooth
+                    screenRoll = grabStartScreenRoll - rollDelta
                 }
 
-                if (useAim) {
-                    // Aim direction delta for screen movement (laser pointer tracking)
-                    val aimDir = quatForward(grabAimRot!!)
-                    val dAimX = aimDir[0] - grabStartAimDir[0]
-                    val dAimY = aimDir[1] - grabStartAimDir[1]
-
-                    if (currentScreenType == ScreenType.FLAT) {
-                        val dist = kotlin.math.abs(grabStartScreenZ)
-                        val targetX = grabStartScreenX + dAimX * dist
-                        val targetY = grabStartScreenY + dAimY * dist
-                        screenX += (targetX - screenX) * smooth
-                        screenY += (targetY - screenY) * smooth
-                    } else {
-                        val targetYaw = grabStartScreenYaw - Math.toDegrees(dAimX.toDouble()).toFloat()
-                        val targetPitch = grabStartScreenPitch + Math.toDegrees(dAimY.toDouble()).toFloat()
-                        screenYaw += (targetYaw - screenYaw) * smooth
-                        screenPitch += (targetPitch - screenPitch) * smooth
-                    }
-                } else {
-                    // Fallback: hand position delta (no aim pose available)
-                    val dx = grabHandPos[0] - grabStartHandPos[0]
-                    val dy = grabHandPos[1] - grabStartHandPos[1]
-                    if (currentScreenType == ScreenType.FLAT) {
-                        val scale = kotlin.math.abs(grabStartScreenZ) * 3f
-                        val targetX = grabStartScreenX + dx * scale
-                        val targetY = grabStartScreenY + dy * scale
-                        screenX += (targetX - screenX) * smooth
-                        screenY += (targetY - screenY) * smooth
-                    } else {
-                        val targetYaw = grabStartScreenYaw - dx * 120f
-                        val targetPitch = grabStartScreenPitch + dy * 120f
-                        screenYaw += (targetYaw - screenYaw) * smooth
-                        screenPitch += (targetPitch - screenPitch) * smooth
-                    }
-                }
                 updateScreenPose()
             }
         } else if (triggerOnly && triggerHandPos != null) {

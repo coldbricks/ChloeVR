@@ -20,6 +20,8 @@
 struct EyeRenderInfo {
     uint32_t textureId;      // GL texture from swapchain
     uint32_t imageIndex;     // swapchain image index
+    XrPosef pose;            // eye pose for layer submission
+    XrFovf fov;              // eye fov for layer submission
     float projection[16];    // 4x4 column-major projection matrix
     float viewMatrix[16];    // 4x4 column-major view matrix
     uint32_t width;
@@ -296,6 +298,7 @@ private:
     // ── Foveated rendering ──
     bool foveationSupported_ = false;
     bool eyeTrackedFoveation_ = false;
+    bool foveationSwapchainConfigured_ = false;
     int foveationLevel_ = 0; // 0=off, 1=low, 2=med, 3=high
     XrFoveationProfileFB foveationProfile_ = XR_NULL_HANDLE;
     PFN_xrCreateFoveationProfileFB xrCreateFoveationProfileFB_ = nullptr;

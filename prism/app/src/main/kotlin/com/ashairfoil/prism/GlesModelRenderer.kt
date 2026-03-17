@@ -200,7 +200,10 @@ class GlesModelRenderer {
         val sinEl = kotlin.math.sin(elRad).toFloat()
         val sinAz = kotlin.math.sin(azRad).toFloat()
         val cosAz = kotlin.math.cos(azRad).toFloat()
-        lightDir = floatArrayOf(cosEl * sinAz, sinEl, cosEl * cosAz)
+        if (lightDir.size < 3) lightDir = FloatArray(3)
+        lightDir[0] = cosEl * sinAz
+        lightDir[1] = sinEl
+        lightDir[2] = cosEl * cosAz
     }
 
     private var initialized = false
