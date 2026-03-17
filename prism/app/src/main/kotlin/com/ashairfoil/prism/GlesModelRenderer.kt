@@ -1278,13 +1278,20 @@ class GlesModelRenderer {
         GLES30.glUniform1f(uTime, time)
 
         for (plane in shadowPlanes) {
-            // Neon colors by label — saturated, high-contrast for VR
-            val color = when (plane.label) {
-                1 -> floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)  // wall - neon blue
-                2 -> floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)   // floor - electric green
-                3 -> floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)  // ceiling - steel gray
-                4 -> floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)   // table - hot orange
-                else -> floatArrayOf(0.7f, 0.4f, 0.9f, 0.35f)  // unknown - purple
+            // Use geometric normal to classify horizontal planes that Samsung
+            // labels as "unknown" — normalY > 0.7 means it's a floor/ceiling/table
+            val normalY = 1f - 2f * (plane.rotX * plane.rotX + plane.rotZ * plane.rotZ)
+            val isHorizontal = normalY > 0.7f
+            val color = when {
+                plane.label == 2 || (plane.label == 0 && isHorizontal && plane.posY < gridHeight + 0.3f) ->
+                    floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)   // floor - electric green
+                plane.label == 3 || (plane.label == 0 && isHorizontal && plane.posY > gridHeight + 1.5f) ->
+                    floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)  // ceiling - steel gray
+                plane.label == 1 || (plane.label == 0 && !isHorizontal) ->
+                    floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)   // wall - neon blue
+                plane.label == 4 || (plane.label == 0 && isHorizontal) ->
+                    floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)   // table/surface - hot orange
+                else -> floatArrayOf(0.7f, 0.4f, 0.9f, 0.35f) // truly unknown - purple
             }
 
             val q = plane
