@@ -1861,11 +1861,14 @@ void XrRenderer::setFoveationLevel(int level) {
 
     XrResult r = xrCreateFoveationProfileFB_(session_, &profileCI, &foveationProfile_);
     if (XR_FAILED(r)) {
-        XR_LOGE("Failed to create foveation profile: %d", (int)r);
+        XR_LOGE("Failed to create foveation profile: %d — disabling foveation permanently", (int)r);
+        foveationSupported_ = false;
+        foveationLevel_ = 0;
         return;
     }
 
     // Apply to both eye swapchains
+    bool anyFailed = false;
     for (int eye = 0; eye < 2; eye++) {
         if (swapchains_[eye] == XR_NULL_HANDLE) continue;
         XrSwapchainStateFoveationFB fovState{};
@@ -1874,7 +1877,17 @@ void XrRenderer::setFoveationLevel(int level) {
         XrResult ur = xrUpdateSwapchainFB_(swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
         if (XR_FAILED(ur)) {
             XR_LOGE("Failed to apply foveation to eye %d: %d", eye, (int)ur);
+            anyFailed = true;
         }
+    }
+
+    if (anyFailed) {
+        XR_LOGE("Foveation application failed — disabling permanently");
+        xrDestroyFoveationProfileFB_(foveationProfile_);
+        foveationProfile_ = XR_NULL_HANDLE;
+        foveationSupported_ = false;
+        foveationLevel_ = 0;
+        return;
     }
 
     XR_LOGI("Foveation set to level %d%s", level, eyeTrackedFoveation_ ? " (eye-tracked)" : "");

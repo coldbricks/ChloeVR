@@ -53,11 +53,12 @@ class VideoPlayer(private val context: Context) {
         // SurfaceEntity defaults to tiny/zero buffer; without this, video frames are dropped.
         OpenXRInput.nativeSetSurfaceSize(surface, 1920, 1080)
 
+        android.util.Log.i("ChloeVR-Video", "Starting video: ${file.name}, surface=$surface valid=${surface.isValid}")
+
         player = ExoPlayer.Builder(context).build().apply {
-            // Galaxy XR: MediaCodec can't output directly to SurfaceEntity surfaces.
-            // Always route through the GL effects pipeline (DefaultVideoFrameProcessor)
-            // using at least a passthrough effect. GL rendering works because images
-            // use the same path successfully.
+            // Build GL effects chain — only use the pipeline when effects are actually needed.
+            // On Galaxy XR, the DefaultVideoFrameProcessor causes EglImage dataspace thrashing
+            // which prevents frames from reaching the SurfaceEntity surface.
             val effects = mutableListOf<androidx.media3.common.Effect>()
 
             // 1. Alpha unpacking — must be first, restructures pixel layout
@@ -85,11 +86,14 @@ class VideoPlayer(private val context: Context) {
                 effects.add(StereoAdjustmentEffect(stereoAdjustmentState))
             }
 
-            // Always use GL pipeline — passthrough if no other effects
-            if (effects.isEmpty()) {
-                effects.add(PassthroughEffect())
+            // Only use GL pipeline if effects are actually needed.
+            // Direct MediaCodec → Surface output avoids the EglImage dataspace issue on Galaxy XR.
+            if (effects.isNotEmpty()) {
+                setVideoEffects(effects)
+                android.util.Log.i("ChloeVR-Video", "Using GL effects pipeline (${effects.size} effects)")
+            } else {
+                android.util.Log.i("ChloeVR-Video", "Direct MediaCodec output (no effects)")
             }
-            setVideoEffects(effects)
 
             // Resize surface buffer to actual video resolution once known
             addListener(object : androidx.media3.common.Player.Listener {
@@ -102,6 +106,22 @@ class VideoPlayer(private val context: Context) {
 
             setVideoSurface(surface)
             setMediaItem(MediaItem.fromUri(file.toURI().toString()))
+
+            addListener(object : androidx.media3.common.Player.Listener {
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    val stateStr = when (playbackState) {
+                        1 -> "IDLE"; 2 -> "BUFFERING"; 3 -> "READY"; 4 -> "ENDED"; else -> "UNKNOWN($playbackState)"
+                    }
+                    android.util.Log.i("ChloeVR-Video", "Playback state: $stateStr")
+                }
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    android.util.Log.e("ChloeVR-Video", "Player error: ${error.message}", error)
+                }
+                override fun onRenderedFirstFrame() {
+                    android.util.Log.i("ChloeVR-Video", "=== FIRST FRAME RENDERED ===")
+                }
+            })
+
             prepare()
             playWhenReady = true
         }

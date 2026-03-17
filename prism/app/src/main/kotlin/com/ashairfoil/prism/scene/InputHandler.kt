@@ -1237,9 +1237,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             }
 
-            // Right thumbstick up/down = adjust selected parameter
-            if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE && renderer != null) {
-                val delta = rightThumbY * 0.015f
+            // Right thumbstick left/right = adjust selected parameter (horizontal sliders)
+            if (kotlin.math.abs(rightThumbX) > STICK_DEADZONE && renderer != null) {
+                val delta = rightThumbX * 0.015f
                 val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
                 when (activity.selectedParam) {
                     0 -> if (model != null) {
@@ -1281,7 +1281,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     11 -> renderer.shadowSoftness = (renderer.shadowSoftness + delta * 5f).coerceIn(0.5f, 5f)
                     12 -> renderer.shadowSpread = (renderer.shadowSpread + delta * 10f).coerceIn(2f, 30f)
                     13 -> {
-                        if (!activity.beatToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                        if (!activity.beatToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.beatToggleLatch = true
                             activity.beatReactorEnabled = !activity.beatReactorEnabled
                             Log.i(TAG, "BeatReactor toggled: ${activity.beatReactorEnabled}")
@@ -1294,34 +1294,34 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 reactor?.enabled = false
                             }
                         }
-                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.beatToggleLatch = false
+                        if (kotlin.math.abs(rightThumbX) < 0.3f) activity.beatToggleLatch = false
                     }
                     14 -> {
-                        if (!activity.foveationToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                        if (!activity.foveationToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.foveationToggleLatch = true
-                            activity.foveationLevel = if (rightThumbY > 0) {
+                            activity.foveationLevel = if (rightThumbX > 0) {
                                 (activity.foveationLevel + 1).coerceAtMost(3)
                             } else {
                                 (activity.foveationLevel - 1).coerceAtLeast(0)
                             }
                             activity.nativeSetFoveationLevel(activity.foveationLevel)
                         }
-                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.foveationToggleLatch = false
+                        if (kotlin.math.abs(rightThumbX) < 0.3f) activity.foveationToggleLatch = false
                     }
                     15 -> {
-                        if (!activity.foveationToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                        if (!activity.foveationToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.foveationToggleLatch = true
-                            activity.textureQuality = if (rightThumbY > 0) {
+                            activity.textureQuality = if (rightThumbX > 0) {
                                 (activity.textureQuality + 1) % 4
                             } else {
                                 (activity.textureQuality - 1 + 4) % 4
                             }
                             activity.reloadAllModels()
                         }
-                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.foveationToggleLatch = false
+                        if (kotlin.math.abs(rightThumbX) < 0.3f) activity.foveationToggleLatch = false
                     }
                     16 -> {
-                        if (!activity.planeVisToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                        if (!activity.planeVisToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.planeVisToggleLatch = true
                             val gr = activity.glesRenderer
                             if (gr != null) {
@@ -1329,10 +1329,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 Log.i(TAG, "Plane visualization: ${gr.showPlaneVisualization}")
                             }
                         }
-                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.planeVisToggleLatch = false
+                        if (kotlin.math.abs(rightThumbX) < 0.3f) activity.planeVisToggleLatch = false
                     }
                     17 -> {
-                        if (!activity.roomTrackToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                        if (!activity.roomTrackToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
                             activity.roomTrackToggleLatch = true
                             activity.roomTrackingEnabled = !activity.roomTrackingEnabled
                             activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
@@ -1342,7 +1342,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             }
                             Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
                         }
-                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.roomTrackToggleLatch = false
+                        if (kotlin.math.abs(rightThumbX) < 0.3f) activity.roomTrackToggleLatch = false
                     }
                 }
                 activity.uiNeedsRefresh = true
