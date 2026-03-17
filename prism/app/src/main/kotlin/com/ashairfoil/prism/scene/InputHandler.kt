@@ -324,16 +324,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             val u = (hx + panelHW) / (panelHW * 2f)
                             val v = 1f - (hy + panelHH) / (panelHH * 2f)
                             val bx = u * 1024f
-                            val by = v * 1024f
+                            val by = v * 1280f
 
-                            // Title bar drag zone: top ~80px
+                            // Title bar hover indicator
                             if (by < 85f) {
                                 hoveredActionButton = 200 // title bar hover
-                                val rg = inputBuffer[7]
-                                if (rg > 0.7f && !draggingPanel) {
-                                    draggingPanel = true
-                                    panelGrabDist = t
-                                }
+                            }
+                            // Grip anywhere on panel = drag panel
+                            val rg = inputBuffer[7]
+                            if (rg > 0.7f && !draggingPanel) {
+                                draggingPanel = true
+                                panelGrabDist = t
                             }
 
                             if (activity.audioPlayerMode) {
@@ -687,7 +688,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hitDistance = if (nearestIdx >= 0) nearestDist else -1f
             } else {
                 hoveredModelIndex = -1
-                hitDistance = -1f
+                // Don't reset hitDistance if laser hit the menu panel
+                if (!laserOnPanel) hitDistance = -1f
             }
 
             // Highlight
