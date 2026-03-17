@@ -39,28 +39,32 @@ private class ChromaKeyShaderProgram(
     private val state: ChromaKeyState
 ) : BaseGlShaderProgram(false, 1) {
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
     private val identityMatrix = GlUtil.create4x4IdentityMatrix()
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         return Size(inputWidth, inputHeight)
     }
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
-        glProgram.setFloatsUniform("uKeyColor", floatArrayOf(state.keyR, state.keyG, state.keyB))
-        glProgram.setFloatUniform("uTolerance", state.tolerance)
-        glProgram.setFloatUniform("uSoftness", state.softness)
-        glProgram.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
-        glProgram.setBufferAttribute(
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        program.setFloatsUniform("uKeyColor", floatArrayOf(state.keyR, state.keyG, state.keyB))
+        program.setFloatUniform("uTolerance", state.tolerance)
+        program.setFloatUniform("uSoftness", state.softness)
+        program.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
+        program.setBufferAttribute(
             "aFramePosition",
             GlUtil.getNormalizedCoordinateBounds(),
             GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE
         )
-        glProgram.setFloatsUniform("uTransformationMatrix", identityMatrix)
-        glProgram.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
-        glProgram.bindAttributesAndUniforms()
+        program.setFloatsUniform("uTransformationMatrix", identityMatrix)
+        program.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
+        program.bindAttributesAndUniforms()
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GlUtil.checkGlError()
@@ -68,7 +72,8 @@ private class ChromaKeyShaderProgram(
 
     override fun release() {
         try {
-            glProgram.delete()
+            glProgram?.delete()
+            glProgram = null
         } finally {
             super.release()
         }

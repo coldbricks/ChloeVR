@@ -76,10 +76,13 @@ private class LensDistortionShaderProgram(
     private val state: LensDistortionState
 ) : BaseGlShaderProgram(false, 1) {
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
     private val identityMatrix = GlUtil.create4x4IdentityMatrix()
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         cachedAspect = inputWidth.toFloat() / inputHeight.toFloat()
         return Size(inputWidth, inputHeight)
     }
@@ -87,24 +90,25 @@ private class LensDistortionShaderProgram(
     private var cachedAspect = 16f / 9f
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
 
-        glProgram.setFloatUniform("uK1", state.k1)
-        glProgram.setFloatUniform("uK2", state.k2)
-        glProgram.setFloatUniform("uFov", state.fov)
-        glProgram.setFloatsUniform("uCenter", floatArrayOf(state.centerX, state.centerY))
-        glProgram.setFloatUniform("uAspect", cachedAspect)
-        glProgram.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
+        program.setFloatUniform("uK1", state.k1)
+        program.setFloatUniform("uK2", state.k2)
+        program.setFloatUniform("uFov", state.fov)
+        program.setFloatsUniform("uCenter", floatArrayOf(state.centerX, state.centerY))
+        program.setFloatUniform("uAspect", cachedAspect)
+        program.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
 
-        glProgram.setBufferAttribute(
+        program.setBufferAttribute(
             "aFramePosition",
             GlUtil.getNormalizedCoordinateBounds(),
             GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE
         )
-        glProgram.setFloatsUniform("uTransformationMatrix", identityMatrix)
-        glProgram.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
-        glProgram.bindAttributesAndUniforms()
+        program.setFloatsUniform("uTransformationMatrix", identityMatrix)
+        program.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
+        program.bindAttributesAndUniforms()
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GlUtil.checkGlError()
@@ -112,7 +116,8 @@ private class LensDistortionShaderProgram(
 
     override fun release() {
         try {
-            glProgram.delete()
+            glProgram?.delete()
+            glProgram = null
         } finally {
             super.release()
         }
@@ -158,7 +163,7 @@ private class LensDistortionShaderProgram(
                 "  uv.x *= uAspect;\n" +
                 "\n" +
                 // Scale by FOV: wider FOV = larger coordinate range before distortion
-                "  float fovScale = tan(radians(uFov * 0.5)) / tan(radians(90.0));\n" +
+                "  float fovScale = tan(radians(clamp(uFov, 1.0, 179.0) * 0.5)) / tan(radians(90.0));\n" +
                 "  uv /= fovScale;\n" +
                 "\n" +
                 // Compute radial distance from center

@@ -2,7 +2,11 @@ package com.ashairfoil.prism.data
 
 import android.content.Context
 import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.*
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * StreamingBrowser — DeoVR-compatible streaming site browser.
@@ -47,7 +51,21 @@ class StreamingBrowser(private val context: Context) {
     )
 
     private val api = DeoVrApi()
-    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val prefs = try {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            PREFS_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    } catch (e: Exception) {
+        Log.w(TAG, "EncryptedSharedPreferences failed, falling back to standard prefs", e)
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
     private var endpoints: MutableList<StreamingEndpoint> = mutableListOf()
     private var cachedScenes: List<StreamingScene> = emptyList()
     private var lastFetchTime: Long = 0
@@ -152,15 +170,44 @@ class StreamingBrowser(private val context: Context) {
     // -----------------------------------------------------------------------
 
     private fun saveEndpoints() {
-        val json = endpoints.joinToString("\n") { ep ->
-            "${ep.id}\t${ep.name}\t${ep.apiUrl}\t${ep.authToken ?: ""}\t${ep.isEnabled}"
+        val arr = JSONArray()
+        for (ep in endpoints) {
+            arr.put(JSONObject().apply {
+                put("id", ep.id)
+                put("name", ep.name)
+                put("apiUrl", ep.apiUrl)
+                if (ep.authToken != null) put("authToken", ep.authToken)
+                put("isEnabled", ep.isEnabled)
+            })
         }
-        prefs.edit().putString("endpoints", json).apply()
+        prefs.edit().putString("endpoints_v2", arr.toString()).apply()
     }
 
     private fun loadEndpoints() {
-        val json = prefs.getString("endpoints", "") ?: ""
-        endpoints = json.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
+        // Try v2 JSON format first, fall back to legacy tab-delimited
+        val jsonStr = prefs.getString("endpoints_v2", null)
+        if (jsonStr != null) {
+            try {
+                val arr = JSONArray(jsonStr)
+                endpoints = (0 until arr.length()).mapNotNull { i ->
+                    val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                    StreamingEndpoint(
+                        id = obj.optString("id", "ep_${System.currentTimeMillis()}"),
+                        name = obj.optString("name", "Unknown"),
+                        apiUrl = obj.optString("apiUrl", ""),
+                        authToken = if (obj.has("authToken")) obj.getString("authToken") else null,
+                        isEnabled = obj.optBoolean("isEnabled", true)
+                    )
+                }.toMutableList()
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse v2 endpoints, trying legacy", e)
+            }
+        }
+
+        // Legacy tab-delimited format (migrate on next save)
+        val legacy = prefs.getString("endpoints", "") ?: ""
+        endpoints = legacy.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
             val parts = line.split("\t")
             if (parts.size >= 3) {
                 StreamingEndpoint(
@@ -172,5 +219,7 @@ class StreamingBrowser(private val context: Context) {
                 )
             } else null
         }.toMutableList()
+        // Migrate to v2 format
+        if (endpoints.isNotEmpty()) saveEndpoints()
     }
 }

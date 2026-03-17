@@ -113,18 +113,35 @@ class DeoVrApi {
                     conn.setRequestProperty("Authorization", "Bearer $authToken")
                 }
 
-                val responseCode = conn.responseCode
-                if (responseCode != 200) {
-                    return@withContext ApiResponse(
-                        scenes = emptyList(), totalCount = 0,
-                        error = "HTTP $responseCode"
-                    )
+                try {
+                    val responseCode = conn.responseCode
+                    if (responseCode != 200) {
+                        return@withContext ApiResponse(
+                            scenes = emptyList(), totalCount = 0,
+                            error = "HTTP $responseCode"
+                        )
+                    }
+
+                    val maxSize = 10 * 1024 * 1024 // 10 MB limit
+                    val body = conn.inputStream.bufferedReader().use { reader ->
+                        val sb = StringBuilder()
+                        val buf = CharArray(8192)
+                        var totalRead = 0
+                        var n: Int
+                        while (reader.read(buf).also { n = it } != -1) {
+                            totalRead += n
+                            if (totalRead > maxSize) {
+                                throw IllegalStateException("Response exceeds 10 MB limit")
+                            }
+                            sb.append(buf, 0, n)
+                        }
+                        sb.toString()
+                    }
+
+                    parseResponse(body)
+                } finally {
+                    conn.disconnect()
                 }
-
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-
-                parseResponse(body)
             } catch (e: Exception) {
                 Log.e(TAG, "API fetch error: ${e.message}")
                 ApiResponse(scenes = emptyList(), totalCount = 0, error = e.message)

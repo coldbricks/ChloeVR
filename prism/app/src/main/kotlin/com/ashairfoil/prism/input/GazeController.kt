@@ -67,8 +67,8 @@ class GazeController(private val context: Context) {
     @Volatile var autofocusStrength: Float = 0.5f  // How aggressively to shift convergence
 
     // Smoothing
-    private var smoothUvX: Float = 0.5f
-    private var smoothUvY: Float = 0.5f
+    @Volatile private var smoothUvX: Float = 0.5f
+    @Volatile private var smoothUvY: Float = 0.5f
     private val smoothFactor: Float = 0.1f // Low-pass filter for gaze stability
 
     /**

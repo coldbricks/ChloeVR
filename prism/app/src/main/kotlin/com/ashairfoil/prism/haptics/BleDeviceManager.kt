@@ -12,8 +12,11 @@ import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import java.util.*
 
 // ---------------------------------------------------------------------------
@@ -46,6 +49,34 @@ class BleDeviceManager(private val context: Context) {
     private val bluetoothAdapter: BluetoothAdapter? = bluetoothManager?.adapter
     private val scanner: BluetoothLeScanner? = bluetoothAdapter?.bluetoothLeScanner
 
+    /** Check if BLE permissions are granted (required on Android 12+). */
+    fun hasBlePermissions(): Boolean {
+        return if (Build.VERSION.SDK_INT >= 31) {
+            ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") ==
+                PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, "android.permission.ACCESS_FINE_LOCATION") ==
+                PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /** Returns the list of required BLE permissions that are not yet granted. */
+    fun getMissingPermissions(): List<String> {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) {
+            if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED)
+                needed.add("android.permission.BLUETOOTH_CONNECT")
+            if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") != PackageManager.PERMISSION_GRANTED)
+                needed.add("android.permission.BLUETOOTH_SCAN")
+        } else {
+            if (ContextCompat.checkSelfPermission(context, "android.permission.ACCESS_FINE_LOCATION") != PackageManager.PERMISSION_GRANTED)
+                needed.add("android.permission.ACCESS_FINE_LOCATION")
+        }
+        return needed
+    }
+
     private var gatt: BluetoothGatt? = null
     private var writeCharacteristic: BluetoothGattCharacteristic? = null
     private var notifyCharacteristic: BluetoothGattCharacteristic? = null
@@ -66,8 +97,8 @@ class BleDeviceManager(private val context: Context) {
     private var lastWriteMs: Long = 0
     private val minWriteIntervalMs = 50L  // 20Hz max command rate
 
-    // Scan results
-    private val discoveredDevices = mutableMapOf<String, BleDeviceInfo>()
+    // Scan results (synchronized — accessed from Binder scan callback + UI thread)
+    private val discoveredDevices = Collections.synchronizedMap(mutableMapOf<String, BleDeviceInfo>())
     private var isScanning = false
     private val handler = Handler(Looper.getMainLooper())
 
@@ -127,6 +158,10 @@ class BleDeviceManager(private val context: Context) {
      */
     fun startScan(context: Context? = null): Boolean {
         android.util.Log.i(TAG, "startScan: scanner=$scanner isScanning=$isScanning adapter=${bluetoothAdapter?.isEnabled}")
+        if (!hasBlePermissions()) {
+            android.util.Log.e(TAG, "BLE permissions not granted! Missing: ${getMissingPermissions()}")
+            return false
+        }
         if (scanner == null) { android.util.Log.e(TAG, "No BLE scanner available!"); return false }
         if (isScanning) return false
         discoveredDevices.clear()
@@ -153,7 +188,7 @@ class BleDeviceManager(private val context: Context) {
         isScanning = false
     }
 
-    fun getDiscoveredDevices(): List<BleDeviceInfo> = discoveredDevices.values.toList()
+    fun getDiscoveredDevices(): List<BleDeviceInfo> = synchronized(discoveredDevices) { discoveredDevices.values.toList() }
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -201,6 +236,10 @@ class BleDeviceManager(private val context: Context) {
 
     /** Connect to a device by address. */
     fun connect(address: String): Boolean {
+        if (!hasBlePermissions()) {
+            android.util.Log.e(TAG, "BLE permissions not granted for connect!")
+            return false
+        }
         val device = bluetoothAdapter?.getRemoteDevice(address) ?: return false
         connectionState = ConnectionState.Connecting
         onConnectionStateChanged?.invoke(connectionState)
@@ -212,9 +251,14 @@ class BleDeviceManager(private val context: Context) {
     /** Disconnect from the current device. */
     fun disconnect() {
         stopScan()
-        gatt?.disconnect()
-        gatt?.close()
+        val g = gatt
         gatt = null
+        // disconnect() is async — close() should ideally wait for onConnectionStateChange,
+        // but we close on a delay to avoid undefined behavior on some BLE stacks
+        g?.disconnect()
+        if (g != null) {
+            handler.postDelayed({ g.close() }, 300)
+        }
         writeCharacteristic = null
         notifyCharacteristic = null
         connectionState = ConnectionState.Disconnected

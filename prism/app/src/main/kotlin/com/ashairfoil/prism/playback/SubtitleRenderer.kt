@@ -2,6 +2,7 @@ package com.ashairfoil.prism.playback
 
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Looper
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -347,8 +348,15 @@ class SubtitleRenderer(private val parent: ViewGroup) {
             bottomMargin = (bottomMarginDp * parent.context.resources.displayMetrics.density).toInt()
         }
 
-        parent.addView(tv, lp)
-        subtitleView = tv
+        val addAction = Runnable {
+            parent.addView(tv, lp)
+            subtitleView = tv
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            addAction.run()
+        } else {
+            parent.post(addAction)
+        }
     }
 
     private fun showText(text: String) {

@@ -1,14 +1,17 @@
 #include "xr_renderer.h"
 #include <jni.h>
+#include <mutex>
 
 static XrRenderer* g_renderer = nullptr;
 static FrameData g_frameData;
+static std::mutex g_mutex;
 
 extern "C" {
 
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeRendererInit(
         JNIEnv* env, jobject thiz, jobject activity) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) {
         XR_LOGE("Renderer already initialized, shutting down first");
         g_renderer->shutdown();
@@ -27,6 +30,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeRendererInit(
 JNIEXPORT jlong JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetEglContext(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return 0;
     return (jlong)g_renderer->getEglContext();
 }
@@ -34,6 +38,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetEglContext(
 JNIEXPORT jlong JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetEglDisplay(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return 0;
     return (jlong)g_renderer->getEglDisplay();
 }
@@ -41,6 +46,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetEglDisplay(
 JNIEXPORT jintArray JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetSwapchainSize(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     jintArray result = env->NewIntArray(2);
     if (!g_renderer) return result;
     jint size[2] = {(jint)g_renderer->getSwapchainWidth(),
@@ -64,6 +70,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetSwapchainSize(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeWaitFrame(
         JNIEnv* env, jobject thiz, jfloatArray outFrameData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer || !g_renderer->isRunning()) return JNI_FALSE;
 
     if (!g_renderer->waitFrame(g_frameData)) return JNI_FALSE;
@@ -86,6 +93,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeWaitFrame(
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeSubmitFrame(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return;
     g_renderer->submitFrame(g_frameData);
 }
@@ -93,6 +101,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeSubmitFrame(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollInput(
         JNIEnv* env, jobject thiz, jfloatArray outState) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     ControllerState state;
     if (!g_renderer->pollInput(state)) return JNI_FALSE;
@@ -103,6 +112,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollInput(
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeRendererShutdown(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) {
         g_renderer->shutdown();
         delete g_renderer;
@@ -113,6 +123,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeRendererShutdown(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeMakeGLContextCurrent(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     EGLDisplay display = g_renderer->getEglDisplay();
     EGLContext context = g_renderer->getEglContext();
@@ -128,6 +139,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeMakeGLContextCurrent(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeInitUiQuad(
         JNIEnv* env, jobject thiz, jint width, jint height) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     return g_renderer->initUiQuad(width, height) ? JNI_TRUE : JNI_FALSE;
 }
@@ -135,6 +147,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeInitUiQuad(
 JNIEXPORT jint JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeAcquireUiImage(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return 0;
     return (jint)g_renderer->acquireUiImage();
 }
@@ -142,12 +155,14 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeAcquireUiImage(
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeReleaseUiImage(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->releaseUiImage();
 }
 
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetUiVisible(
         JNIEnv* env, jobject thiz, jboolean visible) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->setUiVisible(visible);
 }
 
@@ -156,18 +171,21 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetUiPose(
         JNIEnv* env, jobject thiz,
         jfloat px, jfloat py, jfloat pz,
         jfloat rx, jfloat ry, jfloat rz, jfloat rw) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->setUiPose(px, py, pz, rx, ry, rz, rw);
 }
 
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetUiSize(
         JNIEnv* env, jobject thiz, jfloat w, jfloat h) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->setUiSize(w, h);
 }
 
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsRunning(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     return (g_renderer && g_renderer->isRunning()) ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -183,6 +201,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsRunning(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::LightEstimate est;
     if (!g_renderer->pollLightEstimate(est)) return JNI_FALSE;
@@ -207,6 +226,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollHandTracking(
         JNIEnv* env, jobject thiz, jint hand, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::HandJointData hjd;
     if (!g_renderer->pollHandTracking(hand, hjd)) return JNI_FALSE;
@@ -236,6 +256,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollHandTracking(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollEyeTracking(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::EyeTrackingData etd;
     if (!g_renderer->pollEyeTracking(etd)) return JNI_FALSE;
@@ -265,6 +286,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollEyeTracking(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollFaceTracking(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::FaceTrackingData ftd;
     if (!g_renderer->pollFaceTracking(ftd)) return JNI_FALSE;
@@ -284,6 +306,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollFaceTracking(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::PlaneData pd;
     if (!g_renderer->pollPlanes(pd)) return JNI_FALSE;
@@ -317,6 +340,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPerfMetrics(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
     XrRenderer::PerfMetrics pm;
     if (!g_renderer->pollPerfMetrics(pm)) return JNI_FALSE;
@@ -339,6 +363,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPerfMetrics(
 JNIEXPORT jint JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetSensorCapabilities(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return 0;
     int caps = 0;
     if (g_renderer->hasHandTracking())     caps |= (1 << 0);
@@ -355,6 +380,7 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetSensorCapabilities(
 JNIEXPORT jint JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetPassthroughState(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return 0;
     return g_renderer->getPassthroughState();
 }
@@ -366,18 +392,21 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetPassthroughState(
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeHasFoveation(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     return (g_renderer && g_renderer->hasFoveation()) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetFoveationLevel(
         JNIEnv* env, jobject thiz, jint level) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->setFoveationLevel(level);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetFoveationLevel(
         JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
     return g_renderer ? g_renderer->getFoveationLevel() : 0;
 }
 

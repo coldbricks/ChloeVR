@@ -3,6 +3,7 @@ package com.ashairfoil.prism.billing
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import com.ashairfoil.prism.BuildConfig
 
 /**
  * ProUpgrade — Freemium gating for ChloeVR Pro features.
@@ -33,7 +34,7 @@ object ProUpgrade {
     private const val PRODUCT_ID = "chloe_pro_unlock"
 
     // Set to true during development to bypass billing
-    var DEBUG_PRO_UNLOCKED = true
+    var DEBUG_PRO_UNLOCKED = BuildConfig.DEBUG
 
     private var cachedIsPro: Boolean? = null
 

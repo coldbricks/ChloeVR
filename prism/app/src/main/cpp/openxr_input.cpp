@@ -20,7 +20,9 @@ static bool createAction(XrActionSet actionSet, XrAction& action,
     ci.countSubactionPaths = numSubactions;
     ci.subactionPaths = subactions;
     strncpy(ci.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+    ci.actionName[XR_MAX_ACTION_NAME_SIZE - 1] = '\0';
     strncpy(ci.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    ci.localizedActionName[XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1] = '\0';
     XrResult r = xrCreateAction(actionSet, &ci, &action);
     if (XR_FAILED(r)) {
         LOGE("xrCreateAction(%s) failed: %d", name, (int)r);
@@ -105,6 +107,7 @@ bool OpenXRInput::createInstance(JNIEnv* env, jobject activity) {
     createInfo.enabledExtensionNames = extensions.data();
     strncpy(createInfo.applicationInfo.applicationName, "ChloeVR",
             XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.applicationName[XR_MAX_APPLICATION_NAME_SIZE - 1] = '\0';
     createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_0;
 
     XR_CHECK(xrCreateInstance(&createInfo, &instance_));
@@ -236,8 +239,10 @@ bool OpenXRInput::createActions() {
     // Create action set
     XrActionSetCreateInfo asci{XR_TYPE_ACTION_SET_CREATE_INFO};
     strncpy(asci.actionSetName, "controller-input", XR_MAX_ACTION_SET_NAME_SIZE);
+    asci.actionSetName[XR_MAX_ACTION_SET_NAME_SIZE - 1] = '\0';
     strncpy(asci.localizedActionSetName, "Controller Input",
             XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    asci.localizedActionSetName[XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE - 1] = '\0';
     asci.priority = 0;
     XR_CHECK(xrCreateActionSet(instance_, &asci, &actionSet_));
 

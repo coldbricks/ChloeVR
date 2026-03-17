@@ -50,10 +50,13 @@ private class ColorGradingShaderProgram(
     private val state: ColorGradingState
 ) : BaseGlShaderProgram(false, 1) {
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
     private val identityMatrix = GlUtil.create4x4IdentityMatrix()
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         // Store dimensions for texel size calculation in sharpening
         cachedWidth = inputWidth
         cachedHeight = inputHeight
@@ -64,30 +67,31 @@ private class ColorGradingShaderProgram(
     private var cachedHeight = 1080
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
 
-        glProgram.setFloatUniform("uBrightness", state.brightness)
-        glProgram.setFloatUniform("uContrast", state.contrast)
-        glProgram.setFloatUniform("uSaturation", state.saturation)
-        glProgram.setFloatUniform("uSharpening", state.sharpening)
-        glProgram.setFloatUniform("uGamma", state.gamma)
-        glProgram.setFloatUniform("uHueShift", state.hueShift)
-        glProgram.setFloatUniform("uToneMapMode", state.toneMapMode.toFloat())
-        glProgram.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
-        glProgram.setFloatsUniform("uTexelSize", floatArrayOf(
+        program.setFloatUniform("uBrightness", state.brightness)
+        program.setFloatUniform("uContrast", state.contrast)
+        program.setFloatUniform("uSaturation", state.saturation)
+        program.setFloatUniform("uSharpening", state.sharpening)
+        program.setFloatUniform("uGamma", state.gamma)
+        program.setFloatUniform("uHueShift", state.hueShift)
+        program.setFloatUniform("uToneMapMode", state.toneMapMode.toFloat())
+        program.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
+        program.setFloatsUniform("uTexelSize", floatArrayOf(
             1f / cachedWidth.toFloat(),
             1f / cachedHeight.toFloat()
         ))
 
-        glProgram.setBufferAttribute(
+        program.setBufferAttribute(
             "aFramePosition",
             GlUtil.getNormalizedCoordinateBounds(),
             GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE
         )
-        glProgram.setFloatsUniform("uTransformationMatrix", identityMatrix)
-        glProgram.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
-        glProgram.bindAttributesAndUniforms()
+        program.setFloatsUniform("uTransformationMatrix", identityMatrix)
+        program.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
+        program.bindAttributesAndUniforms()
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GlUtil.checkGlError()
@@ -95,7 +99,8 @@ private class ColorGradingShaderProgram(
 
     override fun release() {
         try {
-            glProgram.delete()
+            glProgram?.delete()
+            glProgram = null
         } finally {
             super.release()
         }

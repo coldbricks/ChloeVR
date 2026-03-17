@@ -40,15 +40,15 @@ class DepthSimulation {
     @Volatile var enabled: Boolean = false
 
     // Head tracking reference point (set when video starts or recenter is pressed)
-    private var refX: Float = 0f
-    private var refY: Float = 0f
-    private var refZ: Float = 0f
-    private var isCalibrated: Boolean = false
+    @Volatile private var refX: Float = 0f
+    @Volatile private var refY: Float = 0f
+    @Volatile private var refZ: Float = 0f
+    @Volatile private var isCalibrated: Boolean = false
 
     // Smoothed output
-    private var smoothX: Float = 0f
-    private var smoothY: Float = 0f
-    private var smoothZ: Float = 0f
+    @Volatile private var smoothX: Float = 0f
+    @Volatile private var smoothY: Float = 0f
+    @Volatile private var smoothZ: Float = 0f
     private val smoothFactor = 0.15f // Low-pass filter (higher = more responsive)
 
     data class DepthAdjustment(

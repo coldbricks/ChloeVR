@@ -34,12 +34,11 @@ private class SharpeningShaderProgram(
 
     companion object {
         private const val VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec2 aTexCoords;
+            attribute vec4 aFramePosition;
             varying vec2 vTexCoords;
             void main() {
-                gl_Position = aPosition;
-                vTexCoords = aTexCoords;
+                gl_Position = vec4(aFramePosition.xy, 0.0, 1.0);
+                vTexCoords = aFramePosition.zw;
             }
         """
         private const val FRAGMENT_SHADER = """
@@ -48,7 +47,6 @@ private class SharpeningShaderProgram(
             varying vec2 vTexCoords;
             uniform float uSharpness;
             uniform float uClarity;
-            uniform float uDetail;
             uniform float uRadius;
             uniform vec2 uTexelSize;
 
@@ -58,7 +56,7 @@ private class SharpeningShaderProgram(
 
             void main() {
                 vec4 center = texture2D(uTexSampler, vTexCoords);
-                if (uSharpness < 0.01 && abs(uClarity) < 0.01 && uDetail < 0.01) {
+                if (uSharpness < 0.01 && abs(uClarity) < 0.01) {
                     gl_FragColor = center;
                     return;
                 }
@@ -67,7 +65,7 @@ private class SharpeningShaderProgram(
                 vec4 right = texture2D(uTexSampler, vTexCoords + vec2(off.x, 0.0));
                 vec4 up = texture2D(uTexSampler, vTexCoords + vec2(0.0, off.y));
                 vec4 down = texture2D(uTexSampler, vTexCoords + vec2(0.0, -off.y));
-                vec4 blur = (left + right + up + down) * 0.2 + center * 0.2;
+                vec4 blur = (left + right + up + down) * 0.25;
                 vec3 sharpened = center.rgb + (center.rgb - blur.rgb) * uSharpness;
                 if (abs(uClarity) > 0.01) {
                     float l = luma(sharpened);
@@ -80,29 +78,37 @@ private class SharpeningShaderProgram(
         """
     }
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
     private var inputWidth = 1
     private var inputHeight = 1
 
     override fun configure(inputWidth: Int, inputHeight: Int): androidx.media3.common.util.Size {
         this.inputWidth = inputWidth
         this.inputHeight = inputHeight
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         return androidx.media3.common.util.Size(inputWidth, inputHeight)
     }
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
-        glProgram.setFloatUniform("uSharpness", state.sharpness)
-        glProgram.setFloatUniform("uClarity", state.clarity)
-        glProgram.setFloatUniform("uDetail", state.detail)
-        glProgram.setFloatUniform("uRadius", state.radius)
-        glProgram.setFloatsUniform("uTexelSize", floatArrayOf(1f / inputWidth, 1f / inputHeight))
-        glProgram.bindAttributesAndUniforms()
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        program.setFloatUniform("uSharpness", state.sharpness)
+        program.setFloatUniform("uClarity", state.clarity)
+        program.setFloatUniform("uRadius", state.radius)
+        program.setFloatsUniform("uTexelSize", floatArrayOf(1f / inputWidth, 1f / inputHeight))
+        program.bindAttributesAndUniforms()
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     override fun release() {
-        glProgram.delete()
+        try {
+            glProgram?.delete()
+            glProgram = null
+        } finally {
+            super.release()
+        }
     }
 }

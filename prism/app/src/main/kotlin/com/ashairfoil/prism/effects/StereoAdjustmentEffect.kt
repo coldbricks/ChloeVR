@@ -50,30 +50,34 @@ private class StereoAdjustmentShaderProgram(
     private val state: StereoAdjustmentState
 ) : BaseGlShaderProgram(false, 1) {
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
     private val identityMatrix = GlUtil.create4x4IdentityMatrix()
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         return Size(inputWidth, inputHeight)
     }
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
 
-        glProgram.setFloatUniform("uHorizontalOffset", state.horizontalOffset)
-        glProgram.setFloatUniform("uVerticalOffset", state.verticalOffset)
-        glProgram.setFloatUniform("uStereoLayout", state.stereoLayout.toFloat())
-        glProgram.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
+        program.setFloatUniform("uHorizontalOffset", state.horizontalOffset)
+        program.setFloatUniform("uVerticalOffset", state.verticalOffset)
+        program.setFloatUniform("uStereoLayout", state.stereoLayout.toFloat())
+        program.setFloatUniform("uEnabled", if (state.enabled) 1f else 0f)
 
-        glProgram.setBufferAttribute(
+        program.setBufferAttribute(
             "aFramePosition",
             GlUtil.getNormalizedCoordinateBounds(),
             GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE
         )
-        glProgram.setFloatsUniform("uTransformationMatrix", identityMatrix)
-        glProgram.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
-        glProgram.bindAttributesAndUniforms()
+        program.setFloatsUniform("uTransformationMatrix", identityMatrix)
+        program.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
+        program.bindAttributesAndUniforms()
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         GlUtil.checkGlError()
@@ -81,7 +85,8 @@ private class StereoAdjustmentShaderProgram(
 
     override fun release() {
         try {
-            glProgram.delete()
+            glProgram?.delete()
+            glProgram = null
         } finally {
             super.release()
         }

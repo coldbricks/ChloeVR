@@ -41,8 +41,12 @@ private class PassthroughShaderProgram(useHdr: Boolean) : BaseGlShaderProgram(us
     }
 
     override fun release() {
-        glProgram?.delete()
-        glProgram = null
+        try {
+            glProgram?.delete()
+            glProgram = null
+        } finally {
+            super.release()
+        }
     }
 
     companion object {

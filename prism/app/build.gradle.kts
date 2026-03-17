@@ -6,11 +6,12 @@ plugins {
 android {
     namespace = "com.ashairfoil.prism"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.ashairfoil.prism"
         minSdk = 34
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -26,9 +27,31 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // Configure via environment variables or local.properties:
+            //   KEYSTORE_PATH, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
+            val ksPath = System.getenv("KEYSTORE_PATH") ?: findProperty("KEYSTORE_PATH")?.toString()
+            if (ksPath != null) {
+                storeFile = file(ksPath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: findProperty("KEYSTORE_PASSWORD")?.toString() ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: findProperty("KEY_ALIAS")?.toString() ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: findProperty("KEY_PASSWORD")?.toString() ?: ""
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            val releaseConfig = signingConfigs.findByName("release")
+            if (releaseConfig?.storeFile?.exists() == true) {
+                signingConfig = releaseConfig
+            }
         }
     }
 
@@ -49,6 +72,7 @@ android {
 
     buildFeatures {
         prefab = true
+        buildConfig = true
     }
 }
 
@@ -77,6 +101,9 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
+
+    // Security (encrypted shared preferences for auth tokens)
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")

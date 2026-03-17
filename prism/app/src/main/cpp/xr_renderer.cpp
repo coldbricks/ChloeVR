@@ -21,7 +21,9 @@ static bool makeAction(XrActionSet actionSet, XrAction& action,
     ci.countSubactionPaths = numSub;
     ci.subactionPaths = subs;
     strncpy(ci.actionName, name, XR_MAX_ACTION_NAME_SIZE);
+    ci.actionName[XR_MAX_ACTION_NAME_SIZE - 1] = '\0';
     strncpy(ci.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE);
+    ci.localizedActionName[XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1] = '\0';
     XrResult r = xrCreateAction(actionSet, &ci, &action);
     if (XR_FAILED(r)) {
         XR_LOGE("xrCreateAction(%s) failed: %d", name, (int)r);
@@ -79,16 +81,18 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
 }
 
 bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
+    // Save JNI references for cleanup in shutdown()
+    env->GetJavaVM(&javaVM_);
+
     // Initialize the Android OpenXR loader
     PFN_xrInitializeLoaderKHR initLoader = nullptr;
     xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR",
                           (PFN_xrVoidFunction*)&initLoader);
     if (initLoader) {
         XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
-        JavaVM* vm;
-        env->GetJavaVM(&vm);
-        loaderInfo.applicationVM = vm;
-        loaderInfo.applicationContext = env->NewGlobalRef(activity);
+        loaderInfo.applicationVM = javaVM_;
+        loaderGlobalRef_ = env->NewGlobalRef(activity);
+        loaderInfo.applicationContext = loaderGlobalRef_;
         initLoader((const XrLoaderInitInfoBaseHeaderKHR*)&loaderInfo);
     }
 
@@ -186,10 +190,9 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
 
     // Create instance
     XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
-    JavaVM* vm;
-    env->GetJavaVM(&vm);
-    androidInfo.applicationVM = vm;
-    androidInfo.applicationActivity = env->NewGlobalRef(activity);
+    androidInfo.applicationVM = javaVM_;
+    activityGlobalRef_ = env->NewGlobalRef(activity);
+    androidInfo.applicationActivity = activityGlobalRef_;
 
     XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
     createInfo.next = &androidInfo;
@@ -197,6 +200,7 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
     createInfo.enabledExtensionNames = extensions.data();
     strncpy(createInfo.applicationInfo.applicationName, "ChloeVR-Renderer",
             XR_MAX_APPLICATION_NAME_SIZE);
+    createInfo.applicationInfo.applicationName[XR_MAX_APPLICATION_NAME_SIZE - 1] = '\0';
     createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_0;
 
     XR_CHK(xrCreateInstance(&createInfo, &instance_));
@@ -437,8 +441,10 @@ bool XrRenderer::createActions() {
     // Create action set
     XrActionSetCreateInfo asci{XR_TYPE_ACTION_SET_CREATE_INFO};
     strncpy(asci.actionSetName, "renderer-input", XR_MAX_ACTION_SET_NAME_SIZE);
+    asci.actionSetName[XR_MAX_ACTION_SET_NAME_SIZE - 1] = '\0';
     strncpy(asci.localizedActionSetName, "Renderer Input",
             XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE);
+    asci.localizedActionSetName[XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE - 1] = '\0';
     asci.priority = 0;
     XR_CHK(xrCreateActionSet(instance_, &asci, &actionSet_));
 
@@ -619,6 +625,7 @@ bool XrRenderer::waitFrame(FrameData& frame) {
     r = xrLocateViews(session_, &locateInfo, &viewState, 2, &viewCount, views);
     if (XR_FAILED(r) || viewCount != 2) {
         XR_LOGE("xrLocateViews failed: %d, count=%u", (int)r, viewCount);
+        frame.shouldRender = false;
         return true; // still submit empty frame
     }
 
@@ -629,6 +636,12 @@ bool XrRenderer::waitFrame(FrameData& frame) {
         r = xrAcquireSwapchainImage(swapchains_[eye], &acqInfo, &imageIndex);
         if (XR_FAILED(r)) {
             XR_LOGE("xrAcquireSwapchainImage eye %d failed: %d", eye, (int)r);
+            // Release any already-acquired images from previous eyes
+            for (int prev = 0; prev < eye; prev++) {
+                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(swapchains_[prev], &ri);
+            }
+            frame.shouldRender = false;
             return true;
         }
 
@@ -637,6 +650,12 @@ bool XrRenderer::waitFrame(FrameData& frame) {
         r = xrWaitSwapchainImage(swapchains_[eye], &waitImageInfo);
         if (XR_FAILED(r)) {
             XR_LOGE("xrWaitSwapchainImage eye %d failed: %d", eye, (int)r);
+            // Release this eye's acquired image and any previous eyes
+            for (int prev = 0; prev <= eye; prev++) {
+                XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                xrReleaseSwapchainImage(swapchains_[prev], &ri);
+            }
+            frame.shouldRender = false;
             return true;
         }
 
@@ -962,7 +981,12 @@ uint32_t XrRenderer::acquireUiImage() {
     if (XR_FAILED(xrAcquireSwapchainImage(uiSwapchain_, &acqInfo, &idx))) return 0;
     XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     waitInfo.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(xrWaitSwapchainImage(uiSwapchain_, &waitInfo))) return 0;
+    if (XR_FAILED(xrWaitSwapchainImage(uiSwapchain_, &waitInfo))) {
+        // Release the acquired image to avoid permanently stuck swapchain
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(uiSwapchain_, &ri);
+        return 0;
+    }
     return uiSwapchainImages_[idx];
 }
 
@@ -1027,6 +1051,11 @@ void XrRenderer::shutdown() {
         state.enabled = XR_FALSE;
         xrSetPerfState_(session_, &state);
     }
+    // Destroy action set (children are destroyed with it per spec)
+    if (actionSet_ != XR_NULL_HANDLE) {
+        xrDestroyActionSet(actionSet_);
+        actionSet_ = XR_NULL_HANDLE;
+    }
     if (appSpace_ != XR_NULL_HANDLE) xrDestroySpace(appSpace_);
     if (session_ != XR_NULL_HANDLE) xrDestroySession(session_);
     if (instance_ != XR_NULL_HANDLE) xrDestroyInstance(instance_);
@@ -1036,6 +1065,23 @@ void XrRenderer::shutdown() {
     sessionReady_ = false;
     running_ = false;
     shutdownEGL();
+
+    // Free JNI global refs to prevent leak accumulation across init/shutdown cycles
+    if (javaVM_) {
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (javaVM_->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+            javaVM_->AttachCurrentThread(&env, nullptr);
+            attached = true;
+        }
+        if (env) {
+            if (loaderGlobalRef_) { env->DeleteGlobalRef(loaderGlobalRef_); loaderGlobalRef_ = nullptr; }
+            if (activityGlobalRef_) { env->DeleteGlobalRef(activityGlobalRef_); activityGlobalRef_ = nullptr; }
+        }
+        if (attached) javaVM_->DetachCurrentThread();
+    }
+    javaVM_ = nullptr;
+
     XR_LOGI("XrRenderer shut down");
 }
 

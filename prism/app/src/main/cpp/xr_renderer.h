@@ -95,7 +95,7 @@ public:
     // ── Face tracking ──
     struct FaceTrackingData {
         bool valid = false;
-        float blendShapes[XR_FACE_BLEND_SHAPE_COUNT_ANDROID]; // 68 weights
+        float blendShapes[XR_FACE_BLEND_SHAPE_COUNT_ANDROID] = {}; // 68 weights
         // JNI: 1 + 68 = 69 floats
         static constexpr int SIZE = 1 + XR_FACE_BLEND_SHAPE_COUNT_ANDROID;
     };
@@ -103,10 +103,10 @@ public:
 
     // ── Plane detection ──
     struct DetectedPlane {
-        float posX, posY, posZ;
-        float rotX, rotY, rotZ, rotW;
-        float extentX, extentY; // half-extents
-        int label; // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
+        float posX = 0, posY = 0, posZ = 0;
+        float rotX = 0, rotY = 0, rotZ = 0, rotW = 1;
+        float extentX = 0, extentY = 0; // half-extents
+        int label = 0; // 0=unknown, 1=floor, 2=ceiling, 3=wall, 4=table
     };
     struct PlaneData {
         bool valid = false;
@@ -217,6 +217,11 @@ private:
     EGLContext eglContext_ = EGL_NO_CONTEXT;
     EGLSurface eglSurface_ = EGL_NO_SURFACE;
     EGLConfig eglConfig_ = nullptr;
+
+    // JNI refs (must be freed in shutdown to prevent GlobalRef leak)
+    JavaVM* javaVM_ = nullptr;
+    jobject loaderGlobalRef_ = nullptr;
+    jobject activityGlobalRef_ = nullptr;
 
     // Time conversion
     PFN_xrVoidFunction convertTimeToXr_ = nullptr;

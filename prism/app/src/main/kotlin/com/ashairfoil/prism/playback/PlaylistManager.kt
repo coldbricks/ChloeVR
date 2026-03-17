@@ -49,6 +49,7 @@ class PlaylistManager {
     /**
      * Set the file list. Optionally set the current file.
      */
+    @Synchronized
     fun setFiles(fileList: List<File>, startFile: File? = null) {
         files = fileList
         currentIndex = if (startFile != null) files.indexOf(startFile).coerceAtLeast(0) else 0
@@ -59,6 +60,7 @@ class PlaylistManager {
     /**
      * Go to a specific file by reference.
      */
+    @Synchronized
     fun goTo(file: File): File? {
         val idx = files.indexOf(file)
         if (idx < 0) return null
@@ -70,6 +72,7 @@ class PlaylistManager {
     /**
      * Get next file in sequence (or shuffled order).
      */
+    @Synchronized
     fun next(): File? {
         if (files.isEmpty()) return null
 
@@ -109,6 +112,7 @@ class PlaylistManager {
     /**
      * Get previous file. Uses history stack if available (for shuffle mode).
      */
+    @Synchronized
     fun previous(): File? {
         if (files.isEmpty()) return null
 
@@ -150,6 +154,7 @@ class PlaylistManager {
     /**
      * Peek at next file without advancing.
      */
+    @Synchronized
     fun peekNext(): File? {
         if (files.isEmpty()) return null
         if (shuffleEnabled) {
@@ -188,8 +193,9 @@ class PlaylistManager {
     }
 
     /**
-     * Cycle repeat mode: OFF → ALL → ONE → OFF
+     * Cycle repeat mode: OFF -> ALL -> ONE -> OFF
      */
+    @Synchronized
     fun cycleRepeatMode(): RepeatMode {
         repeatMode = when (repeatMode) {
             RepeatMode.OFF -> RepeatMode.ALL

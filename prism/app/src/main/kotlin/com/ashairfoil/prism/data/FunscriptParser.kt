@@ -148,10 +148,11 @@ class FunscriptParser {
      * Load funscript for a video file. Looks for .funscript alongside the video.
      */
     fun loadForVideo(videoFile: File): Funscript? {
-        val fsFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.funscript")
+        val dir = videoFile.parentFile ?: return null
+        val fsFile = File(dir, "${videoFile.nameWithoutExtension}.funscript")
         if (!fsFile.exists()) {
             // Also try without spaces/special chars
-            val altFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.json")
+            val altFile = File(dir, "${videoFile.nameWithoutExtension}.json")
             if (altFile.exists()) return parse(altFile)
             return null
         }

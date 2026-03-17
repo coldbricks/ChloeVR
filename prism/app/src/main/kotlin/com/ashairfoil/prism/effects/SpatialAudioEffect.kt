@@ -42,7 +42,7 @@ class SpatialAudioEffect {
     @Volatile var strength: Float = 0.7f // 0.0 to 1.0
     @Volatile var is360: Boolean = false  // true = full wrap, false = front-facing
 
-    private var virtualizer: Virtualizer? = null
+    @Volatile private var virtualizer: Virtualizer? = null
     private var audioSessionId: Int = 0
     private var lastYaw: Float = 0f
 
@@ -61,6 +61,8 @@ class SpatialAudioEffect {
         audioSessionId = sessionId
 
         try {
+            // Release previous Virtualizer if one exists
+            virtualizer?.release()
             // Try to use Android's built-in Virtualizer for spatial audio
             virtualizer = Virtualizer(0, sessionId).apply {
                 if (strengthSupported) {

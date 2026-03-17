@@ -71,7 +71,7 @@ class KeyframeSettings(private val context: Context) {
         private set
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private var keyframes: MutableList<Keyframe> = mutableListOf()
+    private var keyframes: MutableList<Keyframe> = java.util.concurrent.CopyOnWriteArrayList<Keyframe>()
     private var currentFileId: String = ""
 
     /**
@@ -104,7 +104,9 @@ class KeyframeSettings(private val context: Context) {
                         height = obj.optDouble("height", 0.0).toFloat(),
                     ))
                 }
-                keyframes.sortBy { it.timeMs }
+                val sorted = keyframes.sortedBy { it.timeMs }
+                keyframes.clear()
+                keyframes.addAll(sorted)
                 Log.i(TAG, "Loaded ${keyframes.size} keyframes for $fileId")
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading keyframes: ${e.message}")
@@ -153,7 +155,9 @@ class KeyframeSettings(private val context: Context) {
             keyframes[existing] = kf
         } else {
             keyframes.add(kf)
-            keyframes.sortBy { it.timeMs }
+            val sorted = keyframes.sortedBy { it.timeMs }
+            keyframes.clear()
+            keyframes.addAll(sorted)
         }
         save()
     }

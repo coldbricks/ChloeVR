@@ -151,10 +151,12 @@ class ThumbnailCache(private val context: Context) {
                 }
 
                 // Scale to thumbnail size
-                Bitmap.createScaledBitmap(cropped, THUMB_WIDTH, THUMB_HEIGHT, true).also {
-                    if (cropped !== bitmap) cropped.recycle()
-                    if (it !== bitmap) bitmap.recycle()
-                }
+                val scaled = Bitmap.createScaledBitmap(cropped, THUMB_WIDTH, THUMB_HEIGHT, true)
+                // Recycle original if we created a crop (crop is a different object)
+                if (cropped !== bitmap) bitmap.recycle()
+                // Recycle cropped if scaling created a new bitmap
+                if (scaled !== cropped) cropped.recycle()
+                scaled
             }
         } catch (e: Exception) {
             Log.w(TAG, "MediaMetadataRetriever failed for ${file.name}: ${e.message}")

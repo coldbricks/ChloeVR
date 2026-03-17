@@ -247,24 +247,28 @@ class SensorHub(context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         val v = event.values
+        if (v.isEmpty()) return
         when (event.sensor.type) {
             Sensor.TYPE_LIGHT -> lightLux = v[0]
-            Sensor.TYPE_ACCELEROMETER -> { accelX = v[0]; accelY = v[1]; accelZ = v[2] }
-            Sensor.TYPE_GYROSCOPE -> { gyroX = v[0]; gyroY = v[1]; gyroZ = v[2] }
-            Sensor.TYPE_MAGNETIC_FIELD -> { magX = v[0]; magY = v[1]; magZ = v[2] }
+            Sensor.TYPE_ACCELEROMETER -> { if (v.size < 3) return; accelX = v[0]; accelY = v[1]; accelZ = v[2] }
+            Sensor.TYPE_GYROSCOPE -> { if (v.size < 3) return; gyroX = v[0]; gyroY = v[1]; gyroZ = v[2] }
+            Sensor.TYPE_MAGNETIC_FIELD -> { if (v.size < 3) return; magX = v[0]; magY = v[1]; magZ = v[2] }
             Sensor.TYPE_PRESSURE -> pressureHpa = v[0]
             Sensor.TYPE_PROXIMITY -> proximityCm = v[0]
-            Sensor.TYPE_GRAVITY -> { gravityX = v[0]; gravityY = v[1]; gravityZ = v[2] }
-            Sensor.TYPE_LINEAR_ACCELERATION -> { linAccelX = v[0]; linAccelY = v[1]; linAccelZ = v[2] }
+            Sensor.TYPE_GRAVITY -> { if (v.size < 3) return; gravityX = v[0]; gravityY = v[1]; gravityZ = v[2] }
+            Sensor.TYPE_LINEAR_ACCELERATION -> { if (v.size < 3) return; linAccelX = v[0]; linAccelY = v[1]; linAccelZ = v[2] }
             Sensor.TYPE_ROTATION_VECTOR -> {
+                if (v.size < 3) return
                 rotVecX = v[0]; rotVecY = v[1]; rotVecZ = v[2]
-                rotVecW = if (v.size > 3) v[3] else 1f - v[0]*v[0] - v[1]*v[1] - v[2]*v[2]
+                rotVecW = if (v.size > 3) v[3] else kotlin.math.sqrt((1f - v[0]*v[0] - v[1]*v[1] - v[2]*v[2]).coerceAtLeast(0f))
             }
             Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                if (v.size < 3) return
                 gameRotX = v[0]; gameRotY = v[1]; gameRotZ = v[2]
-                gameRotW = if (v.size > 3) v[3] else 1f - v[0]*v[0] - v[1]*v[1] - v[2]*v[2]
+                gameRotW = if (v.size > 3) v[3] else kotlin.math.sqrt((1f - v[0]*v[0] - v[1]*v[1] - v[2]*v[2]).coerceAtLeast(0f))
             }
             Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
+                if (v.size < 3) return
                 gyroUncalX = v[0]; gyroUncalY = v[1]; gyroUncalZ = v[2]
                 if (v.size >= 6) { gyroDriftX = v[3]; gyroDriftY = v[4]; gyroDriftZ = v[5] }
             }
@@ -273,21 +277,25 @@ class SensorHub(context: Context) : SensorEventListener {
             12 -> relativeHumidity = v[0]  // TYPE_RELATIVE_HUMIDITY
             13 -> ambientTempC = v[0]      // TYPE_AMBIENT_TEMPERATURE
             14 -> {  // TYPE_MAGNETIC_FIELD_UNCALIBRATED
+                if (v.size < 3) return
                 magUncalX = v[0]; magUncalY = v[1]; magUncalZ = v[2]
                 if (v.size >= 6) { magBiasX = v[3]; magBiasY = v[4]; magBiasZ = v[5] }
             }
             20 -> {  // TYPE_GEOMAGNETIC_ROTATION_VECTOR
+                if (v.size < 3) return
                 geoRotX = v[0]; geoRotY = v[1]; geoRotZ = v[2]
                 geoRotW = if (v.size > 3) v[3] else 1f
             }
             29 -> isStationary = (v[0] > 0.5f)  // TYPE_STATIONARY_DETECT
             30 -> isInMotion = (v[0] > 0.5f)     // TYPE_MOTION_DETECT
             35 -> {  // TYPE_ACCELEROMETER_UNCALIBRATED
+                if (v.size < 3) return
                 accelUncalX = v[0]; accelUncalY = v[1]; accelUncalZ = v[2]
                 if (v.size >= 6) { accelBiasX = v[3]; accelBiasY = v[4]; accelBiasZ = v[5] }
             }
             36 -> hingeAngleDeg = v[0]  // TYPE_HINGE_ANGLE
             37 -> {  // TYPE_HEAD_TRACKER
+                if (v.size < 3) return
                 headRotX = v[0]; headRotY = v[1]; headRotZ = v[2]
                 if (v.size >= 6) { headVelX = v[3]; headVelY = v[4]; headVelZ = v[5] }
             }

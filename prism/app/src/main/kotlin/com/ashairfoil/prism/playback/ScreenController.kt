@@ -108,7 +108,13 @@ class ScreenController {
         if (!tiltLocked) state.pitch += dpitch * smoothFactor
         state.roll += droll * smoothFactor
         // Normalize yaw to -180..180
-        state.yaw = ((state.yaw + 180f) % 360f) - 180f
+        state.yaw = (state.yaw % 360f).let { y ->
+            when {
+                y > 180f -> y - 360f
+                y < -180f -> y + 360f
+                else -> y
+            }
+        }
         state.pitch = state.pitch.coerceIn(-90f, 90f)
         state.roll = state.roll.coerceIn(-45f, 45f)
     }

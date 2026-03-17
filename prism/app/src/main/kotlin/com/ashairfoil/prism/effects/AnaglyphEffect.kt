@@ -32,12 +32,11 @@ private class AnaglyphShaderProgram(
 
     companion object {
         private const val VERTEX_SHADER = """
-            attribute vec4 aPosition;
-            attribute vec2 aTexCoords;
+            attribute vec4 aFramePosition;
             varying vec2 vTexCoords;
             void main() {
-                gl_Position = aPosition;
-                vTexCoords = aTexCoords;
+                gl_Position = vec4(aFramePosition.xy, 0.0, 1.0);
+                vTexCoords = aFramePosition.zw;
             }
         """
         private const val FRAGMENT_SHADER = """
@@ -75,24 +74,33 @@ private class AnaglyphShaderProgram(
         """
     }
 
-    private val glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+    private var glProgram: GlProgram? = null
 
     override fun configure(inputWidth: Int, inputHeight: Int): androidx.media3.common.util.Size {
+        if (glProgram == null) {
+            glProgram = GlProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        }
         return androidx.media3.common.util.Size(inputWidth, inputHeight)
     }
 
     override fun drawFrame(inputTexId: Int, presentationTimeUs: Long) {
-        glProgram.use()
-        glProgram.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
-        glProgram.setIntUniform("uEnabled", if (state.enabled) 1 else 0)
-        glProgram.setIntUniform("uStereoLayout", state.stereoLayout)
-        glProgram.setIntUniform("uSwapEyes", if (state.swapEyes) 1 else 0)
-        glProgram.setFloatUniform("uGhosting", state.ghosting)
-        glProgram.bindAttributesAndUniforms()
+        val program = glProgram ?: return
+        program.use()
+        program.setSamplerTexIdUniform("uTexSampler", inputTexId, 0)
+        program.setIntUniform("uEnabled", if (state.enabled) 1 else 0)
+        program.setIntUniform("uStereoLayout", state.stereoLayout)
+        program.setIntUniform("uSwapEyes", if (state.swapEyes) 1 else 0)
+        program.setFloatUniform("uGhosting", state.ghosting)
+        program.bindAttributesAndUniforms()
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
     override fun release() {
-        glProgram.delete()
+        try {
+            glProgram?.delete()
+            glProgram = null
+        } finally {
+            super.release()
+        }
     }
 }

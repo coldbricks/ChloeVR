@@ -73,7 +73,8 @@ class HspParser {
      * Load HSP file for a video. Looks for .hsp file alongside the video.
      */
     fun loadForVideo(videoFile: File): HspFile? {
-        val hspFile = File(videoFile.parentFile, "${videoFile.nameWithoutExtension}.hsp")
+        val dir = videoFile.parentFile ?: return null
+        val hspFile = File(dir, "${videoFile.nameWithoutExtension}.hsp")
         if (!hspFile.exists()) return null
         return parse(hspFile)
     }
