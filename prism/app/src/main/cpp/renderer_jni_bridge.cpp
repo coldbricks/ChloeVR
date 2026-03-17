@@ -311,12 +311,12 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
     XrRenderer::PlaneData pd;
     if (!g_renderer->pollPlanes(pd)) return JNI_FALSE;
 
-    float data[XrRenderer::PlaneData::SIZE];
-    memset(data, 0, sizeof(data));
+    float* data = new float[XrRenderer::PlaneData::SIZE];
+    memset(data, 0, XrRenderer::PlaneData::SIZE * sizeof(float));
     data[0] = pd.valid ? 1.0f : 0.0f;
     data[1] = (float)pd.planeCount;
     for (int i = 0; i < pd.planeCount && i < XrRenderer::PlaneData::MAX_PLANES; i++) {
-        int off = 2 + i * 10;
+        int off = 2 + i * XrRenderer::PlaneData::FLOATS_PER_PLANE;
         data[off+0] = pd.planes[i].posX;
         data[off+1] = pd.planes[i].posY;
         data[off+2] = pd.planes[i].posZ;
@@ -327,8 +327,15 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
         data[off+7] = pd.planes[i].extentX;
         data[off+8] = pd.planes[i].extentY;
         data[off+9] = (float)pd.planes[i].label;
+        data[off+10] = (float)pd.planes[i].planeType;
+        data[off+11] = (float)pd.planes[i].vertexCount;
+        for (int v = 0; v < pd.planes[i].vertexCount && v < XrRenderer::DetectedPlane::MAX_VERTICES; v++) {
+            data[off+12 + v*2] = pd.planes[i].vertices[v*2];
+            data[off+12 + v*2+1] = pd.planes[i].vertices[v*2+1];
+        }
     }
     env->SetFloatArrayRegion(outData, 0, XrRenderer::PlaneData::SIZE, data);
+    delete[] data;
     return JNI_TRUE;
 }
 

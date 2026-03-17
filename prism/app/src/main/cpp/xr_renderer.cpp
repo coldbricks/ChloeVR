@@ -157,6 +157,32 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         XR_LOGI("  + Trackables (planes)");
     }
 
+    // Spatial extensions (anchors, entities, persistence)
+    if (hasExt("XR_EXT_spatial_anchor")) {
+        extensions.push_back("XR_EXT_spatial_anchor");
+        XR_LOGI("  + Spatial anchors");
+    }
+    if (hasExt("XR_EXT_spatial_entity")) {
+        extensions.push_back("XR_EXT_spatial_entity");
+        XR_LOGI("  + Spatial entities");
+    }
+    if (hasExt("XR_EXT_spatial_marker_tracking")) {
+        extensions.push_back("XR_EXT_spatial_marker_tracking");
+        XR_LOGI("  + Spatial marker tracking");
+    }
+    if (hasExt("XR_EXT_spatial_persistence")) {
+        extensions.push_back("XR_EXT_spatial_persistence");
+        XR_LOGI("  + Spatial persistence");
+    }
+    if (hasExt("XR_EXT_spatial_persistence_operations")) {
+        extensions.push_back("XR_EXT_spatial_persistence_operations");
+        XR_LOGI("  + Spatial persistence operations");
+    }
+    if (hasExt("XR_EXT_spatial_plane_tracking")) {
+        extensions.push_back("XR_EXT_spatial_plane_tracking");
+        XR_LOGI("  + Spatial plane tracking (Khronos standard)");
+    }
+
     // Display refresh rate
     if (hasExt(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)) {
         extensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
@@ -824,7 +850,7 @@ void XrRenderer::submitFrame(const FrameData& frame) {
     uint32_t layerCount = 0;
     if (frame.shouldRender) {
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&projLayer;
-        if (uiVisible_ && uiSwapchain_ != XR_NULL_HANDLE) {
+        if (uiVisible_ && uiSwapchain_ != XR_NULL_HANDLE && uiHasContent_) {
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&quadLayer;
         }
     }
@@ -1083,6 +1109,7 @@ void XrRenderer::releaseUiImage() {
     if (uiSwapchain_ == XR_NULL_HANDLE) return;
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     xrReleaseSwapchainImage(uiSwapchain_, &ri);
+    uiHasContent_ = true;
 }
 
 // ── Shutdown ──
@@ -1689,11 +1716,27 @@ bool XrRenderer::pollPlanes(PlaneData& data) {
         plane.vertexCountOutput = &vertexCount;
         plane.vertices = nullptr;
 
+        // First call: get plane data + vertex count
         r = xrGetTrackablePlane_(planeTracker_, &getInfo, &plane);
         if (XR_FAILED(r)) continue;
-
-        // Skip planes that are not actively tracking
         if (plane.trackingState != XR_TRACKING_STATE_TRACKING_ANDROID) continue;
+
+        // Second call: fetch polygon vertices if available
+        XrVector2f vertexBuffer[DetectedPlane::MAX_VERTICES];
+        uint32_t fetchedVertexCount = 0;
+        if (vertexCount > 0 && vertexCount <= DetectedPlane::MAX_VERTICES) {
+            XrTrackablePlaneANDROID plane2 = {};
+            plane2.type = XR_TYPE_TRACKABLE_PLANE_ANDROID;
+            plane2.vertexCapacityInput = vertexCount;
+            plane2.vertexCountOutput = &fetchedVertexCount;
+            plane2.vertices = vertexBuffer;
+            XrResult r2 = xrGetTrackablePlane_(planeTracker_, &getInfo, &plane2);
+            if (XR_SUCCEEDED(r2)) {
+                vertexCount = fetchedVertexCount;
+            } else {
+                vertexCount = 0;
+            }
+        }
 
         auto& dst = data.planes[data.planeCount];
         dst.posX = plane.centerPose.position.x;
@@ -1706,6 +1749,12 @@ bool XrRenderer::pollPlanes(PlaneData& data) {
         dst.extentX = plane.extents.width * 0.5f;
         dst.extentY = plane.extents.height * 0.5f;
         dst.label = (int)plane.planeLabel;
+        dst.planeType = (int)plane.planeType;
+        dst.vertexCount = (int)vertexCount;
+        for (uint32_t v = 0; v < vertexCount && v < DetectedPlane::MAX_VERTICES; v++) {
+            dst.vertices[v * 2] = vertexBuffer[v].x;
+            dst.vertices[v * 2 + 1] = vertexBuffer[v].y;
+        }
         data.planeCount++;
     }
 

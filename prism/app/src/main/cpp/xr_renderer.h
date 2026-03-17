@@ -109,14 +109,20 @@ public:
         float rotX = 0, rotY = 0, rotZ = 0, rotW = 1;
         float extentX = 0, extentY = 0; // half-extents
         int label = 0; // 0=unknown, 1=wall, 2=floor, 3=ceiling, 4=table
+        int planeType = 0; // 0=horiz_down, 1=horiz_up, 2=vertical, 3=arbitrary
+        // Polygon vertices (2D in plane-local space)
+        static constexpr int MAX_VERTICES = 32;
+        float vertices[MAX_VERTICES * 2] = {}; // x,y pairs
+        int vertexCount = 0;
     };
     struct PlaneData {
         bool valid = false;
         int planeCount = 0;
-        static constexpr int MAX_PLANES = 32;
+        static constexpr int MAX_PLANES = 64; // was 32
         DetectedPlane planes[MAX_PLANES];
-        // JNI: 1 + 1 + 32×10 = 322 floats
-        static constexpr int SIZE = 2 + MAX_PLANES * 10;
+        // JNI: 1 + 1 + 64×(10 + 1 + 1 + 32*2) = 1 + 1 + 64×76 = 4866 floats
+        static constexpr int FLOATS_PER_PLANE = 10 + 1 + 1 + DetectedPlane::MAX_VERTICES * 2; // 76
+        static constexpr int SIZE = 2 + MAX_PLANES * FLOATS_PER_PLANE;
     };
     bool pollPlanes(PlaneData& data);
 
@@ -212,6 +218,7 @@ private:
     std::vector<uint32_t> uiSwapchainImages_;
     uint32_t uiWidth_ = 0, uiHeight_ = 0;
     bool uiVisible_ = false;
+    bool uiHasContent_ = false;  // true after first successful acquire+release cycle
     bool createUiSwapchain(uint32_t width, uint32_t height);
     float uiPoseX_ = 0, uiPoseY_ = 1.6f, uiPoseZ_ = -1.2f;
     float uiRotX_ = 0, uiRotY_ = 0, uiRotZ_ = 0, uiRotW_ = 1;

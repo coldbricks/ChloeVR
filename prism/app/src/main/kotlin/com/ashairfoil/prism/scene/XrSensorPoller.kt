@@ -27,7 +27,7 @@ class XrSensorPoller(
     val handTrackingBufferR = FloatArray(209)
     val eyeTrackingBuffer = FloatArray(25)
     val faceTrackingBuffer = FloatArray(69) // 1 + 68
-    val planeBuffer = FloatArray(322) // 2 + 32x10
+    val planeBuffer = FloatArray(4866) // 2 + 64x76
     private val perfMetricsBuffer = FloatArray(5)
 
     // ── Tracking toggles (disabled by default for performance) ──
@@ -36,7 +36,7 @@ class XrSensorPoller(
     @Volatile var faceTrackingEnabled = false
     @Volatile var planeDetectionEnabled = false
 
-    // Pre-allocated plane list to avoid allocation every 30 frames
+    // Pre-allocated plane list to avoid allocation every 10 frames
     private val reusablePlanes = ArrayList<GlesModelRenderer.ShadowPlane>(32)
 
     // ── XR Sensor state ──
@@ -113,16 +113,17 @@ class XrSensorPoller(
                     faceTrackingBuffer[0] > 0.5f
         }
 
-        // Plane detection (less frequently - every 30 frames) — disabled by default
-        if (planeDetectionEnabled && xrSensorCaps and (1 shl 3) != 0 && frameCount % 30 == 0) {
+        // Plane detection (every 10 frames) — disabled by default
+        if (planeDetectionEnabled && xrSensorCaps and (1 shl 3) != 0 && frameCount % 10 == 0) {
             if (pollPlanes(planeBuffer) && planeBuffer[0] > 0.5f) {
                 detectedPlaneCount = planeBuffer[1].toInt()
 
                 // Parse planes and find lowest horizontal surface
                 if (detectedPlaneCount > 0) {
                     reusablePlanes.clear()
-                    for (i in 0 until minOf(detectedPlaneCount, 32)) {
-                        val off = 2 + i * 10
+                    val floatsPerPlane = 76 // 10 + 1 + 1 + 32*2
+                    for (i in 0 until minOf(detectedPlaneCount, 64)) {
+                        val off = 2 + i * floatsPerPlane
                         reusablePlanes.add(GlesModelRenderer.ShadowPlane(
                             posX = planeBuffer[off], posY = planeBuffer[off+1], posZ = planeBuffer[off+2],
                             rotX = planeBuffer[off+3], rotY = planeBuffer[off+4],
@@ -134,8 +135,8 @@ class XrSensorPoller(
 
                     // Find lowest horizontal surface
                     var lowestHorizY = Float.MAX_VALUE
-                    for (i in 0 until minOf(detectedPlaneCount, 32)) {
-                        val off = 2 + i * 10
+                    for (i in 0 until minOf(detectedPlaneCount, 64)) {
+                        val off = 2 + i * floatsPerPlane
                         val posY = planeBuffer[off + 1]
                         val qx = planeBuffer[off + 3]; val qy = planeBuffer[off + 4]
                         val qz = planeBuffer[off + 5]; val qw = planeBuffer[off + 6]
@@ -243,10 +244,11 @@ class XrSensorPoller(
             sb.appendLine("Planes: $detectedPlaneCount detected")
             val count = minOf(detectedPlaneCount, 5)
             for (i in 0 until count) {
-                val off = 2 + i * 10
+                val off = 2 + i * 76
                 val labels = arrayOf("unknown", "wall", "floor", "ceiling", "table")
                 val lbl = planeBuffer[off + 9].toInt().coerceIn(0, 4)
-                sb.appendLine("  ${labels[lbl]}: (%.1f,%.1f,%.1f) %.1fx%.1f m".format(
+                val vtxCount = planeBuffer[off + 11].toInt()
+                sb.appendLine("  ${labels[lbl]}: (%.1f,%.1f,%.1f) %.1fx%.1f m vtx=$vtxCount".format(
                     planeBuffer[off], planeBuffer[off+1], planeBuffer[off+2],
                     planeBuffer[off+7]*2, planeBuffer[off+8]*2))
             }
