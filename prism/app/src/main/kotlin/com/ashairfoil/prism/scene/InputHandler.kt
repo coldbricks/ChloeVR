@@ -736,37 +736,54 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 when {
                     hoveredAudioFileIndex >= 0 && hoveredAudioFileIndex < activity.availableAudioFiles.size -> {
                         val file = activity.availableAudioFiles[hoveredAudioFileIndex]
-                        if (activity.audioPlayer == null) activity.audioPlayer = com.ashairfoil.prism.AudioPlayer(activity)
-                        activity.audioPlayer?.play(file)
-                        val reactor = activity.audioReactor
-                        val sid = activity.audioPlayer?.audioSessionId ?: 0
-                        if (reactor != null && sid != 0) {
-                            reactor.restart(sid)
-                            if (!activity.beatReactorEnabled) {
-                                activity.beatReactorEnabled = true
-                                reactor.enabled = true
+                        // ExoPlayer must be created and accessed on the main thread
+                        activity.runOnUiThread {
+                            if (activity.audioPlayer == null) activity.audioPlayer = com.ashairfoil.prism.AudioPlayer(activity)
+                            activity.audioPlayer?.play(file)
+                            val reactor = activity.audioReactor
+                            val sid = activity.audioPlayer?.audioSessionId ?: 0
+                            if (reactor != null && sid != 0) {
+                                reactor.restart(sid)
+                                if (!activity.beatReactorEnabled) {
+                                    activity.beatReactorEnabled = true
+                                    reactor.enabled = true
+                                }
                             }
                         }
                         activity.audioPickerMode = false
-                        Log.i(TAG, "Audio: playing ${file.name}, session=$sid")
+                        Log.i(TAG, "Audio: playing ${file.name}")
                     }
                     hoveredAudioButton == 50 -> activity.audioPickerMode = false
                 }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.audioPlayerMode && !activity.audioPickerMode) {
-                val ap = activity.audioPlayer
-                when (hoveredAudioButton) {
-                    0 -> ap?.seekBy(-10000)
-                    1 -> ap?.togglePlayPause()
-                    2 -> ap?.seekBy(10000)
-                    3 -> { ap?.stop(); activity.audioReactor?.restart(0) }
-                    10 -> ap?.cycleSpeed(false)
-                    11 -> ap?.cycleSpeed(true)
-                    20 -> ap?.setLoopA()
-                    21 -> ap?.setLoopB()
-                    22 -> ap?.clearLoop()
-                    30 -> ap?.cycleRepeat()
-                    in 40..43 -> activity.audioPlayer?.setEqPresetByIndex(hoveredAudioButton - 40)
+                val btn = hoveredAudioButton
+                val laserBx = lastLaserBx
+                // ExoPlayer must be accessed on the main thread
+                activity.runOnUiThread {
+                    val ap = activity.audioPlayer
+                    when (btn) {
+                        0 -> ap?.seekBy(-10000)
+                        1 -> ap?.togglePlayPause()
+                        2 -> ap?.seekBy(10000)
+                        3 -> { ap?.stop(); activity.audioReactor?.restart(0) }
+                        10 -> ap?.cycleSpeed(false)
+                        11 -> ap?.cycleSpeed(true)
+                        20 -> ap?.setLoopA()
+                        21 -> ap?.setLoopB()
+                        22 -> ap?.clearLoop()
+                        30 -> ap?.cycleRepeat()
+                        in 40..43 -> ap?.setEqPresetByIndex(btn - 40)
+                        60 -> {
+                            val dur = ap?.durationMs ?: 0
+                            if (dur > 0) {
+                                val t = ((laserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
+                                ap?.seekTo((t * dur).toLong())
+                            }
+                        }
+                    }
+                }
+                when (btn) {
                     51 -> {
                         activity.availableAudioFiles = FilePicker.listVideoFiles(activity)
                             .filter { FilePicker.isAudioFile(it) }
@@ -776,14 +793,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         hoveredAudioFileIndex = -1
                     }
                     52 -> activity.audioPlayerMode = false
-                    60 -> {
-                        val dur = ap?.durationMs ?: 0
-                        if (dur > 0) {
-                            val t = ((lastLaserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
-                            ap?.seekTo((t * dur).toLong())
-                            audioSeekDragging = true
-                        }
-                    }
+                    60 -> audioSeekDragging = true
                 }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 113) {

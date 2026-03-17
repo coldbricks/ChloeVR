@@ -688,7 +688,10 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             // Audio player A/B loop enforcement + UI refresh
-                            audioPlayer?.updateLoop()
+                            // ExoPlayer must be accessed on main thread
+                            if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true) {
+                                runOnUiThread { audioPlayer?.updateLoop() }
+                            }
                             if (audioPlayerMode && audioPlayer?.isPlaying == true && sensorPollFrame % 5 == 0) {
                                 uiNeedsRefresh = true
                             }
