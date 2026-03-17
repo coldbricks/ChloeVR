@@ -555,14 +555,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     else hoveredActionButton = 102
                                 }
 
-                                // Param rows with section headers
-                                if (by in 160f..850f) {
-                                    val adjustedBy = by - 160f
+                                // Param rows with section headers (rowH=46px render, 8px section pad)
+                                // Render coords map to hit coords via ×(1024/1280)=×0.8
+                                val paramRowHit = 46f * 0.8f  // 36.8
+                                val sectionPadHit = 10f * 0.8f  // 8.0
+                                if (by in 130f..850f) {
+                                    val adjustedBy = by - 130f
                                     var acc = 0f; var idx = -1
                                     for (p in 0 until activity.PARAM_NAMES.size) {
-                                        if (p == 0 || p == 5 || p == 13) acc += 10f
-                                        if (adjustedBy >= acc && adjustedBy < acc + 38f) { idx = p; break }
-                                        acc += 38f
+                                        if (p == 0 || p == 5 || p == 13) acc += sectionPadHit
+                                        if (adjustedBy >= acc && adjustedBy < acc + paramRowHit) { idx = p; break }
+                                        acc += paramRowHit
                                     }
                                     if (idx >= 0) hoveredMenuParam = idx
                                     lastLaserBx = bx
