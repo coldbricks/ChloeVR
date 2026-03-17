@@ -966,5 +966,5 @@ class FilamentModelActivity : ComponentActivity() {
     internal external fun nativeSetFoveationLevel(level: Int)
     private external fun nativeGetFoveationLevel(): Int
     private external fun nativeIsFocused(): Boolean
-    internal external fun nativeIsUsingStageSpace(): Boolean
+    private external fun nativeIsUsingStageSpace(): Boolean
 }
