@@ -30,12 +30,21 @@ class XrSensorPoller(
     val planeBuffer = FloatArray(322) // 2 + 32x10
     private val perfMetricsBuffer = FloatArray(5)
 
+    // ── Tracking toggles (disabled by default for performance) ──
+    @Volatile var handTrackingEnabled = false
+    @Volatile var eyeTrackingEnabled = false
+    @Volatile var faceTrackingEnabled = false
+    @Volatile var planeDetectionEnabled = false
+
+    // Pre-allocated plane list to avoid allocation every 30 frames
+    private val reusablePlanes = ArrayList<GlesModelRenderer.ShadowPlane>(32)
+
     // ── XR Sensor state ──
     @Volatile var xrSensorCaps = 0; private set
     @Volatile var handTrackingActive = booleanArrayOf(false, false); private set
     @Volatile var eyeTrackingActive = false; private set
     @Volatile var faceTrackingActive = false; private set
-    @Volatile var detectedPlaneCount = 0; private set
+    @Volatile var detectedPlaneCount = 0
     @Volatile var gpuFrameTimeMs = 0f; private set
     @Volatile var cpuFrameTimeMs = 0f; private set
     @Volatile var displayRefreshRate = 0f; private set
@@ -75,16 +84,16 @@ class XrSensorPoller(
             if (xrSensorCaps and (1 shl 6) != 0) Log.i(TAG, "  + Passthrough state")
         }
 
-        // Hand tracking (both hands)
-        if (xrSensorCaps and (1 shl 0) != 0) {
+        // Hand tracking (both hands) — disabled by default for performance
+        if (handTrackingEnabled && xrSensorCaps and (1 shl 0) != 0) {
             handTrackingActive[0] = pollHandTracking(0, handTrackingBufferL) &&
                     handTrackingBufferL[0] > 0.5f
             handTrackingActive[1] = pollHandTracking(1, handTrackingBufferR) &&
                     handTrackingBufferR[0] > 0.5f
         }
 
-        // Eye tracking
-        if (xrSensorCaps and (1 shl 1) != 0) {
+        // Eye tracking — disabled by default for performance
+        if (eyeTrackingEnabled && xrSensorCaps and (1 shl 1) != 0) {
             if (pollEyeTracking(eyeTrackingBuffer) && eyeTrackingBuffer[0] > 0.5f) {
                 eyeTrackingActive = true
                 // Combined gaze: indices 17-24
@@ -98,23 +107,23 @@ class XrSensorPoller(
             }
         }
 
-        // Face tracking
-        if (xrSensorCaps and (1 shl 2) != 0) {
+        // Face tracking — disabled by default for performance
+        if (faceTrackingEnabled && xrSensorCaps and (1 shl 2) != 0) {
             faceTrackingActive = pollFaceTracking(faceTrackingBuffer) &&
                     faceTrackingBuffer[0] > 0.5f
         }
 
-        // Plane detection (less frequently - every 30 frames)
-        if (xrSensorCaps and (1 shl 3) != 0 && frameCount % 30 == 0) {
+        // Plane detection (less frequently - every 30 frames) — disabled by default
+        if (planeDetectionEnabled && xrSensorCaps and (1 shl 3) != 0 && frameCount % 30 == 0) {
             if (pollPlanes(planeBuffer) && planeBuffer[0] > 0.5f) {
                 detectedPlaneCount = planeBuffer[1].toInt()
 
                 // Parse planes and find lowest horizontal surface
                 if (detectedPlaneCount > 0) {
-                    val planes = mutableListOf<GlesModelRenderer.ShadowPlane>()
+                    reusablePlanes.clear()
                     for (i in 0 until minOf(detectedPlaneCount, 32)) {
                         val off = 2 + i * 10
-                        planes.add(GlesModelRenderer.ShadowPlane(
+                        reusablePlanes.add(GlesModelRenderer.ShadowPlane(
                             posX = planeBuffer[off], posY = planeBuffer[off+1], posZ = planeBuffer[off+2],
                             rotX = planeBuffer[off+3], rotY = planeBuffer[off+4],
                             rotZ = planeBuffer[off+5], rotW = planeBuffer[off+6],
@@ -130,15 +139,13 @@ class XrSensorPoller(
                         val posY = planeBuffer[off + 1]
                         val qx = planeBuffer[off + 3]; val qy = planeBuffer[off + 4]
                         val qz = planeBuffer[off + 5]; val qw = planeBuffer[off + 6]
-                        // Plane normal Y = transform local up (0,1,0) by quaternion
                         val normalY = 1f - 2f * (qx * qx + qz * qz)
-                        // Horizontal if normal Y > 0.7 (allows ~45 deg tilt)
                         if (normalY > 0.7f && posY < lowestHorizY) {
                             lowestHorizY = posY
                         }
                     }
 
-                    onPlanesUpdated?.invoke(planes, lowestHorizY)
+                    onPlanesUpdated?.invoke(ArrayList(reusablePlanes), lowestHorizY)
                 }
             }
         }

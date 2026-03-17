@@ -101,6 +101,12 @@ class AudioReactor {
     // Temp buffer to avoid allocation in FFT callback
     private val tempBins = FloatArray(DISPLAY_BINS)
     private val tempBinMax = FloatArray(DISPLAY_BINS)
+    // Double-buffered spectrum output to avoid torn reads across threads
+    private val specBufA = FloatArray(DISPLAY_BINS)
+    private val specBufB = FloatArray(DISPLAY_BINS)
+    @Volatile private var specWriteToA = true
+    // Pre-allocated beat color result
+    private val beatColorBuf = FloatArray(3)
 
     // Per-band raw values (written by FFT thread, read by render thread)
     @Volatile private var rawBass = 0f
@@ -218,11 +224,13 @@ class AudioReactor {
 
         // Store raw bin values UNCLAMPED — fill calc needs values above 1.0
         // to reach 100% fill with tight boxes. Display will clamp for rendering.
-        val output = FloatArray(DISPLAY_BINS)
+        // Double-buffer: write to inactive buffer, then swap pointer atomically
+        val buf = if (specWriteToA) specBufA else specBufB
         for (j in 0 until DISPLAY_BINS) {
-            output[j] = tempBinMax[j].coerceAtLeast(0f)
+            buf[j] = tempBinMax[j].coerceAtLeast(0f)
         }
-        spectrumBins = output
+        specWriteToA = !specWriteToA
+        spectrumBins = buf
 
         // Per-band values (average, clamped)
         rawBass = if (bassCnt > 0) (bassE / bassCnt).coerceIn(0f, 1f) else 0f
@@ -413,7 +421,7 @@ class AudioReactor {
 
     val isActive: Boolean get() = started && enabled
 
-    /** Get the active beat color as RGB floats (0..1 each) */
+    /** Get the active beat color as RGB floats (0..1 each). Returns shared buffer — use immediately. */
     fun getBeatColor(): FloatArray {
         val activeHue = when (colorMode) {
             ColorMode.FIXED -> beatHue
@@ -422,15 +430,15 @@ class AudioReactor {
         }
         val h = activeHue / 60f
         val x = 1f - kotlin.math.abs(h % 2f - 1f)
-        val (r, g, b) = when {
-            h < 1f -> Triple(1f, x, 0f)
-            h < 2f -> Triple(x, 1f, 0f)
-            h < 3f -> Triple(0f, 1f, x)
-            h < 4f -> Triple(0f, x, 1f)
-            h < 5f -> Triple(x, 0f, 1f)
-            else -> Triple(1f, 0f, x)
+        when {
+            h < 1f -> { beatColorBuf[0]=1f; beatColorBuf[1]=x; beatColorBuf[2]=0f }
+            h < 2f -> { beatColorBuf[0]=x; beatColorBuf[1]=1f; beatColorBuf[2]=0f }
+            h < 3f -> { beatColorBuf[0]=0f; beatColorBuf[1]=1f; beatColorBuf[2]=x }
+            h < 4f -> { beatColorBuf[0]=0f; beatColorBuf[1]=x; beatColorBuf[2]=1f }
+            h < 5f -> { beatColorBuf[0]=x; beatColorBuf[1]=0f; beatColorBuf[2]=1f }
+            else ->   { beatColorBuf[0]=1f; beatColorBuf[1]=0f; beatColorBuf[2]=x }
         }
-        return floatArrayOf(r, g, b)
+        return beatColorBuf
     }
 
     /** Status string for the main menu HUD */

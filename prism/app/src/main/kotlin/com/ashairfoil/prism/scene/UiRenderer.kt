@@ -33,6 +33,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     var uiFlipCanvas: Canvas? = null
     val uiFlipMatrix = Matrix()
 
+    // Reusable UI bitmap (5.2 MB) — avoids re-allocation every render
+    private var reusableBitmap: Bitmap? = null
+
     // All other UI state lives on the activity or inputHandler.
     // Convenience accessors to avoid verbose chains in rendering code:
     private inline val ih get() = activity.inputHandler
@@ -44,7 +47,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     fun renderUiToBitmap() {
         val uiW = 1024
         val uiH = 1280
-        val bitmap = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
+        val bitmap = reusableBitmap?.let {
+            if (it.width == uiW && it.height == uiH && !it.isRecycled) {
+                it.eraseColor(android.graphics.Color.TRANSPARENT)
+                it
+            } else {
+                it.recycle()
+                null
+            }
+        } ?: Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888).also { reusableBitmap = it }
         val canvas = Canvas(bitmap)
 
         // ── Convenience accessors: activity state ──
@@ -1160,6 +1171,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             "Foveation" to arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel],
             "Tex Quality" to arrayOf("Auto", "4096", "2048", "1024")[textureQuality],
             "Show Planes" to if (activity.glesRenderer?.showPlaneVisualization == true) "ON" else "OFF",
+            "Room Track" to if (activity.roomTrackingEnabled) "ON" else "OFF",
         )
 
         val rowH = 46f

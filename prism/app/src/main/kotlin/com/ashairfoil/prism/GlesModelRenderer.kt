@@ -867,12 +867,13 @@ class GlesModelRenderer {
             1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,
             emitterPos[0], emitterPos[1], emitterPos[2], 1f
         )
-        val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
+        multiplyMat4(viewMatrix, model, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glUseProgram(gizmoProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, mvp, 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, scratchMat4B, 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(gizmoProgramId, "uHighlight"), if (highlighted) 1f else 0f)
         // Override gizmo color to yellow/white glow
         GLES30.glBindVertexArray(emitterVao)
@@ -950,8 +951,9 @@ class GlesModelRenderer {
                 (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
                 q.posX, q.posY, q.posZ, 1f
             )
-            val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
-            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, mvp, 0)
+            multiplyMat4(viewMatrix, model, scratchMat4A)
+            multiplyMat4(projection, scratchMat4A, scratchMat4B)
+            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, scratchMat4B, 0)
 
             GLES30.glBindVertexArray(spVao)  // reuse shadow plane quad geometry
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
@@ -995,8 +997,8 @@ class GlesModelRenderer {
 
         for (m in models) {
             if (m.indexCount == 0) continue
-            val mvp = multiplyMat4(shadowLightMatrix, m.modelMatrix)
-            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, mvp, 0)
+            multiplyMat4(shadowLightMatrix, m.modelMatrix, scratchMat4A)
+            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, scratchMat4A, 0)
             GLES30.glBindVertexArray(m.vao)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, m.indexCount, GLES30.GL_UNSIGNED_INT, 0)
         }
@@ -1073,13 +1075,13 @@ class GlesModelRenderer {
 
         for (m in models) {
             if (m.indexCount == 0) continue
-            val modelView = multiplyMat4(viewMatrix, m.modelMatrix)
-            val mvp = multiplyMat4(projection, modelView)
-            val normalMatrix = extractNormalMatrix(modelView)
-            GLES30.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
-            GLES30.glUniformMatrix4fv(uModelView, 1, false, modelView, 0)
+            multiplyMat4(viewMatrix, m.modelMatrix, scratchMat4A) // modelView
+            multiplyMat4(projection, scratchMat4A, scratchMat4B) // mvp
+            extractNormalMatrix(scratchMat4A, scratchNormal)
+            GLES30.glUniformMatrix4fv(uMVP, 1, false, scratchMat4B, 0)
+            GLES30.glUniformMatrix4fv(uModelView, 1, false, scratchMat4A, 0)
             GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(programId, "uModel"), 1, false, m.modelMatrix, 0)
-            GLES30.glUniformMatrix3fv(uNormalMatrix, 1, false, normalMatrix, 0)
+            GLES30.glUniformMatrix3fv(uNormalMatrix, 1, false, scratchNormal, 0)
             GLES30.glUniform1f(uMetallic, m.metallic)
             GLES30.glUniform1f(uRoughness, m.roughness)
             GLES30.glUniform1f(uExposure, m.exposure)
@@ -1139,9 +1141,10 @@ class GlesModelRenderer {
 
         // Grid model matrix: translate to gridHeight
         val gridModel = floatArrayOf(1f,0f,0f,0f, 0f,1f,0f,0f, 0f,0f,1f,0f, 0f,gridHeight,0f,1f)
-        val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, gridModel))
+        multiplyMat4(viewMatrix, gridModel, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glUseProgram(gridProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gridProgramId, "uMVP"), 1, false, mvp, 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gridProgramId, "uMVP"), 1, false, scratchMat4B, 0)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uGridY"), gridHeight)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uGridScale"), gridScale)
         GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uAlpha"), gridAlpha)
@@ -1240,9 +1243,10 @@ class GlesModelRenderer {
                 (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
                 q.posX, q.posY, q.posZ, 1f
             )
-            val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
+            multiplyMat4(viewMatrix, model, scratchMat4A)
+            multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uMVP"), 1, false, mvp, 0)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uMVP"), 1, false, scratchMat4B, 0)
             GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uModel"), 1, false, model, 0)
 
             GLES30.glBindVertexArray(spVao)
@@ -1307,9 +1311,10 @@ class GlesModelRenderer {
                 (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
                 q.posX, q.posY, q.posZ, 1f
             )
-            val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, model))
+            multiplyMat4(viewMatrix, model, scratchMat4A)
+            multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
-            GLES30.glUniformMatrix4fv(uMVP, 1, false, mvp, 0)
+            GLES30.glUniformMatrix4fv(uMVP, 1, false, scratchMat4B, 0)
             GLES30.glUniformMatrix4fv(uModel, 1, false, model, 0)
             GLES30.glUniform4fv(uColor, 1, color, 0)
 
@@ -1329,16 +1334,16 @@ class GlesModelRenderer {
         if (!initialized || gizmoProgramId == 0) return
 
         // Gizmo model matrix: position + rotation, no scale
-        val gizmoModel = quatToMatrix(modelRot, modelPos)
-        val mv = multiplyMat4(viewMatrix, gizmoModel)
-        val mvp = multiplyMat4(projection, mv)
+        quatToMatrix(modelRot, modelPos, scratchQuat)
+        multiplyMat4(viewMatrix, scratchQuat, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
         GLES30.glUseProgram(gizmoProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, mvp, 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, scratchMat4B, 0)
 
         GLES30.glBindVertexArray(gizmoVao)
         // Draw each axis with highlight
@@ -1366,9 +1371,9 @@ class GlesModelRenderer {
 
         for (i in 0..2) {
             // Transform axis to world space
-            val worldAxis = rotateVecByQuat(axes[i], modelRot)
+            rotateVecByQuat(axes[i], modelRot, scratchVec3)
             // Ray-line closest distance
-            val result = rayLineClosest(rayOrigin, rayDir, modelPos, worldAxis, GIZMO_LENGTH)
+            val result = rayLineClosest(rayOrigin, rayDir, modelPos, scratchVec3, GIZMO_LENGTH)
             if (result != null && result.first < GIZMO_HIT_RADIUS && result.second < bestDist) {
                 bestAxis = i
                 bestDist = result.second
@@ -1385,7 +1390,9 @@ class GlesModelRenderer {
             GIZMO_AXIS_Z -> floatArrayOf(0f, 0f, 1f)
             else -> floatArrayOf(0f, 0f, 0f)
         }
-        return rotateVecByQuat(local, modelRot)
+        val r = FloatArray(3)
+        rotateVecByQuat(local, modelRot, r)
+        return r
     }
 
     // ── Laser ──
@@ -1399,12 +1406,12 @@ class GlesModelRenderer {
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glDepthMask(false)
 
-        val laserModel = quatToMatrix(aimQuat, handPos)
-        val mv = multiplyMat4(viewMatrix, laserModel)
-        val mvp = multiplyMat4(projection, mv)
+        quatToMatrix(aimQuat, handPos, scratchQuat)
+        multiplyMat4(viewMatrix, scratchQuat, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
         GLES30.glUseProgram(laserProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, mvp, 0)
+        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, scratchMat4B, 0)
         GLES30.glUniform3f(GLES30.glGetUniformLocation(laserProgramId, "uColor"), color[0], color[1], color[2])
 
         GLES30.glBindVertexArray(laserVao)
@@ -1412,18 +1419,16 @@ class GlesModelRenderer {
         GLES30.glBindVertexArray(0)
 
         if (hitDistance >= 0f) {
-            val fwd = quatForward(aimQuat)
-            val dotPos = floatArrayOf(
-                handPos[0] + fwd[0] * hitDistance,
-                handPos[1] + fwd[1] * hitDistance,
-                handPos[2] + fwd[2] * hitDistance
-            )
+            quatForward(aimQuat, scratchVec3)
             val dotModel = floatArrayOf(
                 0.01f,0f,0f,0f, 0f,0.01f,0f,0f, 0f,0f,0.01f,0f,
-                dotPos[0], dotPos[1], dotPos[2], 1f
+                handPos[0] + scratchVec3[0] * hitDistance,
+                handPos[1] + scratchVec3[1] * hitDistance,
+                handPos[2] + scratchVec3[2] * hitDistance, 1f
             )
-            val dotMvp = multiplyMat4(projection, multiplyMat4(viewMatrix, dotModel))
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, dotMvp, 0)
+            multiplyMat4(viewMatrix, dotModel, scratchMat4A)
+            multiplyMat4(projection, scratchMat4A, scratchMat4B)
+            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, scratchMat4B, 0)
             GLES30.glUniform3f(GLES30.glGetUniformLocation(laserProgramId, "uColor"), 1f, 1f, 1f)
             GLES30.glBindVertexArray(dotVao)
             GLES30.glDrawArrays(GLES30.GL_LINES, 0, 4)
@@ -1480,9 +1485,10 @@ class GlesModelRenderer {
             panelX,        panelY,        panelZ,        1f
         )
 
-        val mvp = multiplyMat4(projection, multiplyMat4(viewMatrix, panelModel))
+        multiplyMat4(viewMatrix, panelModel, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glUseProgram(uiProgramId)
-        GLES30.glUniformMatrix4fv(uiUMvp, 1, false, mvp, 0)
+        GLES30.glUniformMatrix4fv(uiUMvp, 1, false, scratchMat4B, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, uiTexId)
         GLES30.glUniform1i(uiUTex, 0)
@@ -1790,45 +1796,63 @@ class GlesModelRenderer {
         return s
     }
 
-    // ── Math ──
+    // ── Math (zero-allocation: all scratch buffers reused on GL thread) ──
 
-    private fun multiplyMat4(a: FloatArray, b: FloatArray): FloatArray {
-        val r = FloatArray(16)
+    // Scratch matrices/vectors — safe because all rendering is single-threaded on GL thread
+    private val scratchMat4A = FloatArray(16)
+    private val scratchMat4B = FloatArray(16)
+    private val scratchMat4C = FloatArray(16)
+    private val scratchNormal = FloatArray(9)
+    private val scratchQuat = FloatArray(16)
+    private val scratchVec3 = FloatArray(3)
+
+    private fun multiplyMat4(a: FloatArray, b: FloatArray, r: FloatArray): FloatArray {
         for (col in 0..3) for (row in 0..3)
             r[col*4+row] = a[row]*b[col*4] + a[4+row]*b[col*4+1] + a[8+row]*b[col*4+2] + a[12+row]*b[col*4+3]
         return r
     }
-    private fun extractNormalMatrix(mv: FloatArray) = floatArrayOf(
-        mv[0],mv[1],mv[2], mv[4],mv[5],mv[6], mv[8],mv[9],mv[10])
+    /** Convenience: allocates result (for non-hot paths only) */
+    private fun multiplyMat4(a: FloatArray, b: FloatArray): FloatArray =
+        multiplyMat4(a, b, FloatArray(16))
 
-    private fun quatToMatrix(q: FloatArray, pos: FloatArray): FloatArray {
+    private fun extractNormalMatrix(mv: FloatArray, r: FloatArray): FloatArray {
+        r[0]=mv[0];r[1]=mv[1];r[2]=mv[2]; r[3]=mv[4];r[4]=mv[5];r[5]=mv[6]; r[6]=mv[8];r[7]=mv[9];r[8]=mv[10]
+        return r
+    }
+
+    private fun quatToMatrix(q: FloatArray, pos: FloatArray, r: FloatArray): FloatArray {
         val x=q[0];val y=q[1];val z=q[2];val w=q[3]
         val x2=x+x;val y2=y+y;val z2=z+z
         val xx=x*x2;val xy=x*y2;val xz=x*z2;val yy=y*y2;val yz=y*z2;val zz=z*z2
         val wx=w*x2;val wy=w*y2;val wz=w*z2
-        return floatArrayOf(
-            1f-(yy+zz), xy+wz, xz-wy, 0f,
-            xy-wz, 1f-(xx+zz), yz+wx, 0f,
-            xz+wy, yz-wx, 1f-(xx+yy), 0f,
-            pos[0], pos[1], pos[2], 1f)
+        r[0]=1f-(yy+zz); r[1]=xy+wz; r[2]=xz-wy; r[3]=0f
+        r[4]=xy-wz; r[5]=1f-(xx+zz); r[6]=yz+wx; r[7]=0f
+        r[8]=xz+wy; r[9]=yz-wx; r[10]=1f-(xx+yy); r[11]=0f
+        r[12]=pos[0]; r[13]=pos[1]; r[14]=pos[2]; r[15]=1f
+        return r
     }
 
-    fun quatForward(q: FloatArray): FloatArray {
+    fun quatForward(q: FloatArray, r: FloatArray): FloatArray {
         val x=q[0];val y=q[1];val z=q[2];val w=q[3]
-        return floatArrayOf(-(2f*(x*z+w*y)), -(2f*(y*z-w*x)), -(1f-2f*(x*x+y*y)))
+        r[0]=-(2f*(x*z+w*y)); r[1]=-(2f*(y*z-w*x)); r[2]=-(1f-2f*(x*x+y*y))
+        return r
     }
+    /** Convenience overload for non-hot paths (allocates) */
+    fun quatForward(q: FloatArray): FloatArray = quatForward(q, FloatArray(3))
 
-    fun rotateVecByQuat(v: FloatArray, q: FloatArray): FloatArray {
+    fun rotateVecByQuat(v: FloatArray, q: FloatArray, r: FloatArray): FloatArray {
         val qx=q[0];val qy=q[1];val qz=q[2];val qw=q[3]
         val ix = qw*v[0] + qy*v[2] - qz*v[1]
         val iy = qw*v[1] + qz*v[0] - qx*v[2]
         val iz = qw*v[2] + qx*v[1] - qy*v[0]
         val iw = -qx*v[0] - qy*v[1] - qz*v[2]
-        return floatArrayOf(
-            ix*qw + iw*(-qx) + iy*(-qz) - iz*(-qy),
-            iy*qw + iw*(-qy) + iz*(-qx) - ix*(-qz),
-            iz*qw + iw*(-qz) + ix*(-qy) - iy*(-qx))
+        r[0]=ix*qw + iw*(-qx) + iy*(-qz) - iz*(-qy)
+        r[1]=iy*qw + iw*(-qy) + iz*(-qx) - ix*(-qz)
+        r[2]=iz*qw + iw*(-qz) + ix*(-qy) - iy*(-qx)
+        return r
     }
+    /** Convenience overload for non-hot paths (allocates) */
+    fun rotateVecByQuat(v: FloatArray, q: FloatArray): FloatArray = rotateVecByQuat(v, q, FloatArray(3))
 
     /** Ray-line segment closest approach. Returns (distance, rayT) or null if segment param out of range */
     private fun rayLineClosest(rayO: FloatArray, rayD: FloatArray,

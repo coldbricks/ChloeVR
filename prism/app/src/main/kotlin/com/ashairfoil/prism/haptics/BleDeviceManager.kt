@@ -77,9 +77,12 @@ class BleDeviceManager(private val context: Context) {
         return needed
     }
 
-    private var gatt: BluetoothGatt? = null
-    private var writeCharacteristic: BluetoothGattCharacteristic? = null
-    private var notifyCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile private var gatt: BluetoothGatt? = null
+    @Volatile private var writeCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile private var notifyCharacteristic: BluetoothGattCharacteristic? = null
+
+    // Session tracking: incremented on each connect, callbacks check this to ignore stale GATT
+    @Volatile private var gattSession = 0
 
     // State
     @Volatile var connectionState: ConnectionState = ConnectionState.Disconnected
@@ -241,6 +244,12 @@ class BleDeviceManager(private val context: Context) {
             return false
         }
         val device = bluetoothAdapter?.getRemoteDevice(address) ?: return false
+        // Close any existing connection to prevent resource leak
+        gatt?.close()
+        gatt = null
+        writeCharacteristic = null
+        notifyCharacteristic = null
+        gattSession++ // invalidate any pending callbacks from old connection
         connectionState = ConnectionState.Connecting
         onConnectionStateChanged?.invoke(connectionState)
 
@@ -268,7 +277,11 @@ class BleDeviceManager(private val context: Context) {
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
+        /** Ignore callbacks from a stale GATT connection */
+        private fun isStale(gatt: BluetoothGatt): Boolean = gatt !== this@BleDeviceManager.gatt
+
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (isStale(gatt)) return
             when (newState) {
                 BluetoothGatt.STATE_CONNECTED -> {
                     connectionState = ConnectionState.Connected
@@ -287,7 +300,7 @@ class BleDeviceManager(private val context: Context) {
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-            if (status != BluetoothGatt.GATT_SUCCESS) return
+            if (isStale(gatt) || status != BluetoothGatt.GATT_SUCCESS) return
 
             // Try each known Lovense UUID set
             for (uuids in KNOWN_SERVICES) {
@@ -343,6 +356,7 @@ class BleDeviceManager(private val context: Context) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (isStale(gatt)) return
             // Previous write completed -- flush any queued command
             flushPendingWrite()
         }
@@ -351,6 +365,7 @@ class BleDeviceManager(private val context: Context) {
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
+            if (isStale(gatt)) return
             if (characteristic.uuid == notifyCharacteristic?.uuid) {
                 val response = characteristic.getStringValue(0) ?: return
                 parseLovenseResponse(response)

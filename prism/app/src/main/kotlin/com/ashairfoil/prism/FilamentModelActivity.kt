@@ -31,7 +31,7 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     // Rendering
-    internal var glesRenderer: GlesModelRenderer? = null
+    @Volatile internal var glesRenderer: GlesModelRenderer? = null
     private var renderThread: Thread? = null
     @Volatile internal var running = false
 
@@ -60,6 +60,15 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var roomLux = 200f  // default indoor
     @Volatile internal var autoAmbient = true
     private val lightEstimateBuffer = FloatArray(41)
+
+    // Pre-allocated view/projection matrices to avoid per-frame copyOfRange allocations
+    private val leftProjBuf = FloatArray(16)
+    private val rightProjBuf = FloatArray(16)
+    private val leftViewBuf = FloatArray(16)
+    private val rightViewBuf = FloatArray(16)
+    private val rawSHBuf = FloatArray(27)
+    private val tccBuf = FloatArray(3)
+
     @Volatile internal var xrLightEstimateAvailable = false
     @Volatile internal var xrSHAvailable = false
     @Volatile internal var xrLightDebugStr = ""
@@ -96,7 +105,7 @@ class FilamentModelActivity : ComponentActivity() {
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Foveation", "Tex Quality", "Show Planes")
+        "BeatReactor", "Foveation", "Tex Quality", "Show Planes", "Room Track")
     // Slider ranges for continuous params 0-12. Toggles (13-16) have no range.
     internal val PARAM_RANGES = arrayOf(
         0f to 1f, 0.05f to 1f, -5f to 5f, 0.85f to 1.15f, 0f to 3f,
@@ -147,6 +156,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var bassSlam = 0f          // 0..1, spikes on bass transient, fast decay
     private var breathPhase = 0f       // sine phase for idle breathing pulse
     private var hapticLeadBuffer = 0f  // buffered pct sent 1 frame early
+    private var lastHapticIntensity = -1 // dedupe: skip BLE write if intensity unchanged
     private var edgeSustain = 0f       // time spent near peak (seconds)
     private var lastClimaxTime = 0L    // for dt calculation
     private var bassSlamCooldown = 0f  // prevents slam retriggering too fast
@@ -161,6 +171,8 @@ class FilamentModelActivity : ComponentActivity() {
     internal var beatToggleLatch = false
     internal var foveationToggleLatch = false
     internal var planeVisToggleLatch = false
+    internal var roomTrackToggleLatch = false
+    @Volatile internal var roomTrackingEnabled = false
 
     // ── Audio Player ──
     internal var audioPlayer: AudioPlayer? = null
@@ -405,10 +417,14 @@ class FilamentModelActivity : ComponentActivity() {
                 if (shouldRender) {
                     val leftTexId = frameData[1].toInt()
                     val rightTexId = frameData[2].toInt()
-                    val leftProj = frameData.copyOfRange(3, 19)
-                    val rightProj = frameData.copyOfRange(19, 35)
-                    val leftView = frameData.copyOfRange(35, 51)
-                    val rightView = frameData.copyOfRange(51, 67)
+                    System.arraycopy(frameData, 3, leftProjBuf, 0, 16)
+                    System.arraycopy(frameData, 19, rightProjBuf, 0, 16)
+                    System.arraycopy(frameData, 35, leftViewBuf, 0, 16)
+                    System.arraycopy(frameData, 51, rightViewBuf, 0, 16)
+                    val leftProj = leftProjBuf
+                    val rightProj = rightProjBuf
+                    val leftView = leftViewBuf
+                    val rightView = rightViewBuf
 
                     // Extract camera position + forward from left view matrix
                     val v = leftView
@@ -462,8 +478,8 @@ class FilamentModelActivity : ComponentActivity() {
                                     smoothAmbientIntensity += (targetAmbInt - smoothAmbientIntensity) * aI
                                     gr.ambientIntensity = smoothAmbientIntensity
 
-                                    val tcc = floatArrayOf(ccR.coerceIn(0.5f, 1.5f), ccG.coerceIn(0.5f, 1.5f), ccB.coerceIn(0.5f, 1.5f))
-                                    for (i in 0..2) smoothAmbientColor[i] += (tcc[i] - smoothAmbientColor[i]) * aI
+                                    tccBuf[0] = ccR.coerceIn(0.5f, 1.5f); tccBuf[1] = ccG.coerceIn(0.5f, 1.5f); tccBuf[2] = ccB.coerceIn(0.5f, 1.5f)
+                                    for (i in 0..2) smoothAmbientColor[i] += (tccBuf[i] - smoothAmbientColor[i]) * aI
                                     gr.ambientColor = smoothAmbientColor.copyOf()
 
                                     // Light direction: use manual azimuth/elevation (menu sliders)
@@ -476,8 +492,8 @@ class FilamentModelActivity : ComponentActivity() {
                                         gr.lightIntensity = smoothLightIntensity
 
                                         val maxDir = maxOf(dirR, dirG, dirB).coerceAtLeast(0.01f)
-                                        val tColor = floatArrayOf(dirR / maxDir, dirG / maxDir, dirB / maxDir)
-                                        for (i in 0..2) smoothLightColor[i] += (tColor[i] - smoothLightColor[i]) * aI
+                                        tccBuf[0] = dirR / maxDir; tccBuf[1] = dirG / maxDir; tccBuf[2] = dirB / maxDir
+                                        for (i in 0..2) smoothLightColor[i] += (tccBuf[i] - smoothLightColor[i]) * aI
                                         gr.lightColor = smoothLightColor.copyOf()
                                     }
                                     // Direction set by azimuth/elevation sliders (params 8/9)
@@ -486,8 +502,8 @@ class FilamentModelActivity : ComponentActivity() {
                                     // Smooth SH coefficients
                                     xrSHAvailable = shValid
                                     if (shValid) {
-                                        val rawSH = lightEstimateBuffer.copyOfRange(14, 41)
-                                        for (i in 0 until 27) smoothSH[i] += (rawSH[i] - smoothSH[i]) * aS
+                                        System.arraycopy(lightEstimateBuffer, 14, rawSHBuf, 0, 27)
+                                        for (i in 0 until 27) smoothSH[i] += (rawSHBuf[i] - smoothSH[i]) * aS
                                         gr.shCoefficients = smoothSH.copyOf()
                                         gr.useSH = true
                                     }
@@ -663,8 +679,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (hapticEnabled && hapticConnected) {
                                     val hapticPct = (pct * bi * (1f + climaxAccum * 0.8f)
                                         + bassSlam * 0.4f + breathVal * 0.3f).coerceIn(0f, 1f)
-                                    val hIntensity = (hapticPct * 20f).toInt().coerceIn(0, 20)
-                                    hapticManager?.setIntensity(hIntensity)
+                                    val hIntensity = (hapticPct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                    // Dedupe: skip BLE write if intensity hasn't changed
+                                    if (hIntensity != lastHapticIntensity) {
+                                        lastHapticIntensity = hIntensity
+                                        hapticManager?.setIntensity(hIntensity)
+                                    }
                                 }
 
                             } else if (beatBaseStored) {
@@ -880,6 +900,9 @@ class FilamentModelActivity : ComponentActivity() {
 
     override fun onPause() {
         Log.i(TAG, "onPause")
+        // Safety stop haptics when app goes to background
+        if (hapticConnected) hapticManager?.setIntensity(0)
+        lastHapticIntensity = -1
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()
         super.onPause()
@@ -923,12 +946,19 @@ class FilamentModelActivity : ComponentActivity() {
             Log.i(TAG, "Saved grid height: ${gr.gridHeight}")
         }
 
+        // Safety stop: zero vibration before disconnect to prevent runaway motor
+        hapticManager?.setIntensity(0)
         hapticManager?.disconnect()
         audioPlayer?.release(); audioPlayer = null
         audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()
-        renderThread?.join(2000)
+        renderThread?.join(3000)
+        if (renderThread?.isAlive == true) {
+            Log.w(TAG, "Render thread still alive after join timeout, interrupting")
+            renderThread?.interrupt()
+            renderThread?.join(1000)
+        }
         glesRenderer?.destroy()
         glesRenderer = null
         nativeRendererShutdown()

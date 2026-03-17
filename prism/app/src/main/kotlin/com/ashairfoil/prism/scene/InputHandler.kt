@@ -281,8 +281,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 val pcx = renderer.panelX
                 val pcy = renderer.panelY
                 val pcz = renderer.panelZ
-                val panelHW = renderer.panelW * 0.5f
-                val panelHH = renderer.panelH * 0.5f
+                val panelHW = (renderer.panelW * 0.5f).coerceAtLeast(0.001f)
+                val panelHH = (renderer.panelH * 0.5f).coerceAtLeast(0.001f)
 
                 // Billboard axes -- must match renderer exactly
                 var fwdX = pcx - activity.camPosX; var fwdY = pcy - activity.camPosY; var fwdZ = pcz - activity.camPosZ
@@ -839,6 +839,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 128) {
                 // VIBES: toggle haptic device
                 if (activity.hapticConnected) {
+                    // Safety stop: zero vibration before disconnect
+                    activity.hapticManager?.setIntensity(0)
                     activity.hapticManager?.disconnect()
                     activity.hapticConnected = false
                     activity.hapticEnabled = false
@@ -863,8 +865,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                     }
                     Log.i(TAG, "Starting haptic BLE scan...")
-                    activity.runOnUiThread { activity.hapticManager?.startScan() }
-                    activity.hapticEnabled = true
+                    val scanStarted = activity.hapticManager?.startScan() ?: false
+                    if (scanStarted) {
+                        activity.hapticEnabled = true
+                    } else {
+                        Log.w(TAG, "BLE scan failed to start — permissions missing or BT off")
+                        activity.hapticEnabled = false
+                    }
                 }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.saveNameMode && hoveredSaveButton == 0) {
@@ -1014,6 +1021,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         gr.showPlaneVisualization = !gr.showPlaneVisualization
                         Log.i(TAG, "Plane visualization: ${gr.showPlaneVisualization}")
                     }
+                } else if (hoveredMenuParam == 17) {
+                    activity.roomTrackingEnabled = !activity.roomTrackingEnabled
+                    activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
+                    if (!activity.roomTrackingEnabled) {
+                        activity.sensorPoller.detectedPlaneCount = 0
+                        activity.glesRenderer?.shadowPlanes = emptyList()
+                    }
+                    Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
                 }
                 activity.uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -1190,7 +1205,6 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.audioPickerScrollOffset--; activity.uiNeedsRefresh = true
                     }
                 }
-                lastRightStickClick = rightStickClick
                 if (activity.uiNeedsRefresh) { activity.uiNeedsRefresh = false; activity.runOnUiThread { activity.renderUiToBitmap() } }
                 lastRightStickClick = rightStickClick
                 return
@@ -1317,6 +1331,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                         if (kotlin.math.abs(rightThumbY) < 0.3f) activity.planeVisToggleLatch = false
                     }
+                    17 -> {
+                        if (!activity.roomTrackToggleLatch && kotlin.math.abs(rightThumbY) > 0.5f) {
+                            activity.roomTrackToggleLatch = true
+                            activity.roomTrackingEnabled = !activity.roomTrackingEnabled
+                            activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
+                            if (!activity.roomTrackingEnabled) {
+                                activity.sensorPoller.detectedPlaneCount = 0
+                                activity.glesRenderer?.shadowPlanes = emptyList()
+                            }
+                            Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
+                        }
+                        if (kotlin.math.abs(rightThumbY) < 0.3f) activity.roomTrackToggleLatch = false
+                    }
                 }
                 activity.uiNeedsRefresh = true
             }
@@ -1345,6 +1372,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     14 -> { activity.foveationLevel = 0; activity.nativeSetFoveationLevel(0) }
                     15 -> { activity.textureQuality = 0; activity.reloadAllModels() }
                     16 -> { activity.glesRenderer?.showPlaneVisualization = false }
+                    17 -> {
+                        activity.roomTrackingEnabled = false
+                        activity.sensorPoller.planeDetectionEnabled = false
+                        activity.sensorPoller.detectedPlaneCount = 0
+                        activity.glesRenderer?.shadowPlanes = emptyList()
+                    }
                 }
                 activity.uiNeedsRefresh = true
             }

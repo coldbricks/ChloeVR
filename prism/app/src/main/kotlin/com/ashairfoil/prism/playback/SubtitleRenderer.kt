@@ -250,7 +250,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
                         textIndex = formatFields.indexOfFirst { it.equals("Text", ignoreCase = true) }
                         startIndex = formatFields.indexOfFirst { it.equals("Start", ignoreCase = true) }
                         endIndex = formatFields.indexOfFirst { it.equals("End", ignoreCase = true) }
-                    } else if (trimmed.startsWith("Dialogue:", ignoreCase = true) && textIndex >= 0) {
+                    } else if (trimmed.startsWith("Dialogue:", ignoreCase = true) && textIndex >= 0 && startIndex >= 0 && endIndex >= 0) {
                         val parts = trimmed.substringAfter(":").split(",", limit = formatFields.size)
                         if (parts.size > maxOf(textIndex, startIndex, endIndex)) {
                             val startMs = assTimeToMs(parts[startIndex].trim())
