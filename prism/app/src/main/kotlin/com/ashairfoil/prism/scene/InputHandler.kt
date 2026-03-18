@@ -324,17 +324,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             val u = (hx + panelHW) / (panelHW * 2f)
                             val v = 1f - (hy + panelHH) / (panelHH * 2f)
                             val bx = u * 1024f
-                            val by = v * 1280f
+                            val by = v * 1024f  // NOTE: bitmap is 1280 tall but all hit regions use 1024 coordinate space
 
-                            // Title bar hover indicator
+                            // Title bar drag zone: top ~80px
                             if (by < 85f) {
                                 hoveredActionButton = 200 // title bar hover
-                            }
-                            // Grip anywhere on panel = drag panel
-                            val rg = inputBuffer[7]
-                            if (rg > 0.7f && !draggingPanel) {
-                                draggingPanel = true
-                                panelGrabDist = t
+                                val rg = inputBuffer[7]
+                                if (rg > 0.7f && !draggingPanel) {
+                                    draggingPanel = true
+                                    panelGrabDist = t
+                                }
                             }
 
                             if (activity.audioPlayerMode) {
