@@ -198,10 +198,16 @@ class AudioPlayer(private val context: Context) {
     fun clearLoop() { loopA = -1; loopB = -1 }
     fun hasLoop(): Boolean = loopA >= 0 && loopB > loopA
 
-    /** Call per-frame to enforce A/B loop */
+    private var lastLoopSeekMs = 0L
+
+    /** Call periodically to enforce A/B loop. Throttled to prevent seek storms. */
     fun updateLoop() {
         if (hasLoop() && isPlaying && currentPositionMs >= loopB) {
-            player?.seekTo(loopA)
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastLoopSeekMs > 100) {  // max 10 seeks/sec
+                lastLoopSeekMs = now
+                player?.seekTo(loopA)
+            }
         }
     }
 
