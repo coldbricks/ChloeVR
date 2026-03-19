@@ -939,6 +939,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 100) {
                 Log.i(TAG, "Action: Return to file menu")
+                activity.startActivity(android.content.Intent(activity, com.ashairfoil.prism.MainActivity::class.java).apply {
+                    addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                })
                 activity.finish()
                 return
             } else if (activity.menuVisible && hoveredActionButton == 102) {
