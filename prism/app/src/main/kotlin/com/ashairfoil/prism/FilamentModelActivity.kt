@@ -704,9 +704,9 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Audio player A/B loop enforcement (throttled — every 5 frames ~14Hz)
+                            // Audio player A/B loop enforcement (throttled — every 10 frames ~7Hz)
                             // ExoPlayer must be accessed on main thread
-                            if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true && sensorPollFrame % 5 == 0) {
+                            if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true && sensorPollFrame % 10 == 0) {
                                 requestAudioLoopCheck()
                             }
                             if (audioPlayerMode && sensorPollFrame % 18 == 0) {

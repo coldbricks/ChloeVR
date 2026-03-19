@@ -41,9 +41,9 @@ class AudioPlayer(private val context: Context) {
     /** Called when track changes (auto-advance or manual). Use to restart AudioReactor. */
     var onTrackChanged: ((File) -> Unit)? = null
 
-    // A/B loop
-    var loopA: Long = -1; private set
-    var loopB: Long = -1; private set
+    // A/B loop (volatile: read from render thread, written from UI thread)
+    @Volatile var loopA: Long = -1; private set
+    @Volatile var loopB: Long = -1; private set
 
     // Speed
     var speedIndex = 2  // default 1.0x
