@@ -3104,7 +3104,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
             if (opts.outWidth > 0 && opts.outHeight > 0) {
                 val aspect = opts.outWidth.toFloat() / opts.outHeight.toFloat()
-                val maxDim = 6f
+                val maxDim = 3f
                 if (aspect >= 1f) {
                     currentQuadWidth = maxDim; currentQuadHeight = maxDim / aspect
                 } else {
@@ -3130,6 +3130,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         // Note: play/pause is handled by native OpenXR A button only.
         // InteractableComponent was removed because it double-toggles
         // (A button fires both native handler AND interactable select event).
+
+        // Position the screen entity AFTER creation (resetAdjustments ran before entity existed)
+        updateScreenPose()
+        updateScreenScale()
 
         if (currentFileIsImage) {
             setAlphaPassthroughEnabled(chromaKeyState.enabled)
