@@ -1994,11 +1994,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val entity = surfaceEntity ?: return
         if (currentScreenType == ScreenType.FLAT) {
             // Billboard: screen always faces the viewer (head at origin)
-            // Compute yaw to face origin from screen position, then apply user roll/pitch on top
             val dx = -screenX  // direction from screen toward head
             val dz = -screenZ
             val autoYaw = Math.toDegrees(kotlin.math.atan2(dx.toDouble(), dz.toDouble())).toFloat()
-            val rotation = Quaternion.fromEulerAngles(screenPitch, autoYaw + screenYaw, screenRoll)
+            val rotation = if (currentFileIsImage) {
+                // Images: pure billboard, no user yaw/pitch/roll
+                Quaternion.fromEulerAngles(0f, autoYaw, 0f)
+            } else {
+                // Videos: billboard + user adjustments
+                Quaternion.fromEulerAngles(screenPitch, autoYaw + screenYaw, screenRoll)
+            }
             entity.setPose(Pose(Vector3(screenX, screenY, screenZ), rotation))
         } else {
             // Immersive: centered on user, only rotation matters
@@ -3876,12 +3881,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     updateScreenScale()
                 }
 
-                // Roll via wrist twist
-                var rollDelta = relativeRollDeg(grabStartAimRot, rollRot)
-                while (rollDelta > 180f) rollDelta -= 360f
-                while (rollDelta < -180f) rollDelta += 360f
-                if (!rollDelta.isNaN()) {
-                    screenRoll = grabStartScreenRoll - rollDelta
+                // Roll via wrist twist (NOT for images — images always billboard)
+                if (!currentFileIsImage) {
+                    var rollDelta = relativeRollDeg(grabStartAimRot, rollRot)
+                    while (rollDelta > 180f) rollDelta -= 360f
+                    while (rollDelta < -180f) rollDelta += 360f
+                    if (!rollDelta.isNaN()) {
+                        screenRoll = grabStartScreenRoll - rollDelta
+                    }
                 }
 
                 updateScreenPose()
