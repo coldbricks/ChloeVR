@@ -149,6 +149,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var screenY = 0f
     private var screenZ = -8f  // default: 8m in front
 
+    // Last known controller aim (updated every frame, used to place content where user points)
+    @Volatile private var lastAimFwdX = 0f
+    @Volatile private var lastAimFwdY = 0f
+    @Volatile private var lastAimFwdZ = -1f
+
     // Scrub bar (quick B button access)
     private var scrubBarVisible = false
 
@@ -2014,9 +2019,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         screenRoll = 0f
         screenYaw = 0f
         screenPitch = 0f
-        screenX = 0f
-        screenY = 0f
-        screenZ = if (currentScreenType == ScreenType.FLAT) -8f else 0f
+        if (currentScreenType == ScreenType.FLAT) {
+            // Place screen where the user is pointing (along last aim direction)
+            val dist = 8f
+            screenX = lastAimFwdX * dist
+            screenY = lastAimFwdY * dist
+            screenZ = lastAimFwdZ * dist
+        } else {
+            screenX = 0f; screenY = 0f; screenZ = 0f
+        }
         screenCurvature = 0f
         SettingsManager.setScreenCurvature(currentScreenType.name, 0f)
         abRepeatA = null
@@ -3449,6 +3460,16 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private var loggedAimState = false
     override fun onControllerState(input: OpenXRInput) {
+        // Track controller aim direction for content placement
+        if (input.rightAimValid) {
+            val q = input.rightAimRot
+            // Forward = rotated -Z by quaternion
+            val qx = q[0]; val qy = q[1]; val qz = q[2]; val qw = q[3]
+            lastAimFwdX = -(2f * (qx * qz + qw * qy))
+            lastAimFwdY = -(2f * (qy * qz - qw * qx))
+            lastAimFwdZ = -(1f - 2f * (qx * qx + qy * qy))
+        }
+
         // Thumbstick scroll when menu/file picker is showing
         if (menuVisible || filePickerActive) {
             val vAxis = if (kotlin.math.abs(input.rightThumbY) > kotlin.math.abs(input.leftThumbY))
