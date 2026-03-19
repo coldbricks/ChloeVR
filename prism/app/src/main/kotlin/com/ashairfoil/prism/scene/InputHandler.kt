@@ -482,15 +482,26 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         // Display-space box positions (for hit testing)
                                         val dispBoxTop = (reactor.boxTop * vzex).coerceAtMost(1f)
                                         val dispBoxBot = (reactor.boxBottom * vzex).coerceAtMost(1f)
+                                        val hasSplit = activity.hapticDualMotorSplit
+                                        val disp2Top = if (hasSplit) (reactor.box2Top * vzex).coerceAtMost(1f) else 0f
+                                        val disp2Bot = if (hasSplit) (reactor.box2Bottom * vzex).coerceAtMost(1f) else 0f
 
                                         if (rightTrigger > 0.5f) {
                                             if (beatDragCorner < 0) {
-                                                val corners = arrayOf(
-                                                    floatArrayOf(reactor.boxLeft, dispBoxTop),
-                                                    floatArrayOf(reactor.boxRight, dispBoxTop),
-                                                    floatArrayOf(reactor.boxLeft, dispBoxBot),
-                                                    floatArrayOf(reactor.boxRight, dispBoxBot)
+                                                // Box A corners: 0-3, body: 4
+                                                // Box B corners: 5-8, body: 9
+                                                val corners = mutableListOf(
+                                                    floatArrayOf(reactor.boxLeft, dispBoxTop),   // 0
+                                                    floatArrayOf(reactor.boxRight, dispBoxTop),  // 1
+                                                    floatArrayOf(reactor.boxLeft, dispBoxBot),   // 2
+                                                    floatArrayOf(reactor.boxRight, dispBoxBot)   // 3
                                                 )
+                                                if (hasSplit) {
+                                                    corners.add(floatArrayOf(reactor.box2Left, disp2Top))   // 4+1=5
+                                                    corners.add(floatArrayOf(reactor.box2Right, disp2Top))  // 6
+                                                    corners.add(floatArrayOf(reactor.box2Left, disp2Bot))   // 7
+                                                    corners.add(floatArrayOf(reactor.box2Right, disp2Bot))  // 8
+                                                }
                                                 var minDist = Float.MAX_VALUE
                                                 var nearestCorner = -1
                                                 for (ci in corners.indices) {
@@ -498,12 +509,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                                             (screenY - corners[ci][1]) * (screenY - corners[ci][1])
                                                     if (d < minDist) { minDist = d; nearestCorner = ci }
                                                 }
-                                                beatDragCorner = if (minDist < 0.015f) nearestCorner
-                                                    else if (normX in reactor.boxLeft..reactor.boxRight && screenY in dispBoxBot..dispBoxTop) 4
-                                                    else -1
+                                                beatDragCorner = if (minDist < 0.015f) {
+                                                    if (nearestCorner < 4) nearestCorner  // Box A corner
+                                                    else nearestCorner + 1  // Box B corners: 5,6,7,8 -> stored as 5,6,7,8
+                                                } else if (hasSplit && normX in reactor.box2Left..reactor.box2Right && screenY in disp2Bot..disp2Top) 9
+                                                else if (normX in reactor.boxLeft..reactor.boxRight && screenY in dispBoxBot..dispBoxTop) 4
+                                                else -1
                                             }
                                             // Apply drag (normY is in raw box space)
                                             when (beatDragCorner) {
+                                                // Box A
                                                 0 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.01f, 1f) }
                                                 1 -> { reactor.boxRight = normX.coerceIn(reactor.boxLeft + 0.02f, 1f); reactor.boxTop = normY.coerceIn(reactor.boxBottom + 0.01f, 1f) }
                                                 2 -> { reactor.boxLeft = normX.coerceIn(0f, reactor.boxRight - 0.02f); reactor.boxBottom = normY.coerceIn(0f, reactor.boxTop - 0.01f) }
@@ -515,6 +530,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                                     val newB = (normY - bh / 2f).coerceIn(0f, 1f - bh)
                                                     reactor.boxLeft = newL; reactor.boxRight = newL + bw
                                                     reactor.boxBottom = newB; reactor.boxTop = newB + bh
+                                                }
+                                                // Box B
+                                                5 -> { reactor.box2Left = normX.coerceIn(0f, reactor.box2Right - 0.02f); reactor.box2Top = normY.coerceIn(reactor.box2Bottom + 0.01f, 1f) }
+                                                6 -> { reactor.box2Right = normX.coerceIn(reactor.box2Left + 0.02f, 1f); reactor.box2Top = normY.coerceIn(reactor.box2Bottom + 0.01f, 1f) }
+                                                7 -> { reactor.box2Left = normX.coerceIn(0f, reactor.box2Right - 0.02f); reactor.box2Bottom = normY.coerceIn(0f, reactor.box2Top - 0.01f) }
+                                                8 -> { reactor.box2Right = normX.coerceIn(reactor.box2Left + 0.02f, 1f); reactor.box2Bottom = normY.coerceIn(0f, reactor.box2Top - 0.01f) }
+                                                9 -> {
+                                                    val bw = reactor.box2Right - reactor.box2Left
+                                                    val bh = reactor.box2Top - reactor.box2Bottom
+                                                    val newL = (normX - bw / 2f).coerceIn(0f, 1f - bw)
+                                                    val newB = (normY - bh / 2f).coerceIn(0f, 1f - bh)
+                                                    reactor.box2Left = newL; reactor.box2Right = newL + bw
+                                                    reactor.box2Bottom = newB; reactor.box2Top = newB + bh
                                                 }
                                             }
                                             activity.uiNeedsRefresh = true

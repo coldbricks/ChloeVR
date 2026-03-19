@@ -36,11 +36,18 @@ class AudioReactor {
     @Volatile var mid = 0f; private set
     @Volatile var high = 0f; private set
 
-    // ── Bounding box (0..1 normalized on spectrum display) ──
+    // ── Bounding box A (0..1 normalized on spectrum display) ──
     @Volatile var boxLeft = 0.0f
     @Volatile var boxRight = 0.35f
     @Volatile var boxBottom = 0.05f
     @Volatile var boxTop = 0.85f
+
+    // ── Bounding box B (second box for dual-motor split) ──
+    @Volatile var box2Left = 0.4f
+    @Volatile var box2Right = 0.75f
+    @Volatile var box2Bottom = 0.05f
+    @Volatile var box2Top = 0.85f
+    @Volatile var box2FillPct = 0f; private set
 
     // ── Roll-off mode ──
     enum class Rolloff { INSTANT, HARD_KNEE, SOFT_KNEE, THROB }
@@ -97,6 +104,8 @@ class AudioReactor {
     private var visualizer: Visualizer? = null
     private var started = false
     private var smoothedOutput = 0f  // the envelope-followed output (before dynRange)
+    private var smoothedOutput2 = 0f // envelope for box B
+    private var prevFillPct2 = 0f
 
     // Temp buffer to avoid allocation in FFT callback
     private val tempBins = FloatArray(DISPLAY_BINS)
@@ -162,6 +171,7 @@ class AudioReactor {
         started = false
         bass = 0f; mid = 0f; high = 0f
         boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
+        box2FillPct = 0f; smoothedOutput2 = 0f; prevFillPct2 = 0f
     }
 
     /** Restart with a different audio session (e.g., switch to app audio player) */
@@ -254,6 +264,7 @@ class AudioReactor {
     fun update() {
         if (!enabled) {
             bass = 0f; mid = 0f; high = 0f; boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
+            box2FillPct = 0f; smoothedOutput2 = 0f; prevFillPct2 = 0f
             return
         }
 
@@ -362,6 +373,47 @@ class AudioReactor {
         updateFrameCount++
         if (updateFrameCount - fftFrameStamp > 8) {
             boxFillPct = prevFillPct
+        }
+
+        // ── Box B fill (same envelope logic, independent region) ──
+        val box2H = (box2Top - box2Bottom).coerceAtLeast(0.001f)
+        var fill2Sum = 0f
+        var bins2InBox = 0
+        for (i in bins.indices) {
+            val binNormX = i.toFloat() / bins.size
+            if (binNormX < box2Left || binNormX > box2Right) continue
+            bins2InBox++
+            val barHeight = bins[i]
+            val fillInBox = ((barHeight - box2Bottom) / box2H).coerceIn(0f, 1f)
+            fill2Sum += fillInBox
+        }
+        val rawFill2 = if (bins2InBox > 0) fill2Sum / bins2InBox else 0f
+
+        // Box B uses same rolloff/envelope as box A
+        when (rolloff) {
+            Rolloff.INSTANT -> smoothedOutput2 = if (rawFill2 > threshold) rawFill2 else 0f
+            Rolloff.THROB -> smoothedOutput2 = smoothedOutput // mirror box A throb behavior
+            Rolloff.HARD_KNEE -> {
+                if (rawFill2 > smoothedOutput2) {
+                    smoothedOutput2 += (rawFill2 - smoothedOutput2) * atkAlpha
+                } else {
+                    smoothedOutput2 += (rawFill2 - smoothedOutput2) * relAlpha
+                }
+            }
+            Rolloff.SOFT_KNEE -> {
+                if (rawFill2 > smoothedOutput2) {
+                    smoothedOutput2 += (rawFill2 - smoothedOutput2) * atkAlpha
+                } else {
+                    smoothedOutput2 += (rawFill2 - smoothedOutput2) * relAlpha
+                }
+            }
+        }
+        val scaled2 = (smoothedOutput2 * trim).coerceAtMost(1f)
+        box2FillPct = scaled2.coerceIn(outputFloor, outputCeiling)
+        box2FillPct = prevFillPct2 + (box2FillPct - prevFillPct2) * smoothAlpha
+        prevFillPct2 = box2FillPct
+        if (updateFrameCount - fftFrameStamp > 8) {
+            box2FillPct = prevFillPct2
         }
 
         // BOOM detector: track variance per bin, find biggest consistent swings

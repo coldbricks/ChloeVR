@@ -648,11 +648,9 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
                                     if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
-                                        // Split mode: motor 1 = bass, motor 2 = mid+high
-                                        val m1Pct = (bass * bi * 2.5f).coerceIn(0f, 1f)
-                                        val m2Pct = (reactor.mid * bi * 1.8f + reactor.high * bi * 1.0f).coerceIn(0f, 1f)
-                                        val m1 = (m1Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
-                                        val m2 = (m2Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        // Split mode: box A → motor 1, box B → motor 2
+                                        val m1 = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        val m2 = (reactor.box2FillPct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (m1 != lastHapticMotor1 || m2 != lastHapticMotor2) {
                                             lastHapticMotor1 = m1
                                             lastHapticMotor2 = m2

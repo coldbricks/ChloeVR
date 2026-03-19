@@ -429,6 +429,68 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 p.textAlign = Paint.Align.CENTER
                 canvas.drawText("%.0f%%".format(reactor.boxFillPct * 100), meterX + meterW / 2f, specTop - 8f, p)
                 p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+
+                // ── Box B (cyan, only when dual motor split active) ──
+                if (activity.hapticDualMotorSplit) {
+                    val b2L = specLeft + ((reactor.box2Left - visLeft) / visRange).coerceIn(0f, 1f) * specW
+                    val b2R = specLeft + ((reactor.box2Right - visLeft) / visRange).coerceIn(0f, 1f) * specW
+                    val b2T = specBot - (reactor.box2Top * vz * ex).coerceAtMost(1f) * specH
+                    val b2B = specBot - (reactor.box2Bottom * vz * ex).coerceAtMost(1f) * specH
+
+                    // Fill
+                    p.color = 0x1800FFFF.toInt()
+                    canvas.drawRect(b2L, b2T, b2R, b2B, p)
+
+                    // Edges
+                    p.style = Paint.Style.STROKE; p.strokeWidth = 3f
+                    p.color = 0xFF00FFFF.toInt()
+                    canvas.drawRect(b2L, b2T, b2R, b2B, p)
+                    p.style = Paint.Style.FILL
+
+                    // Corner markers
+                    p.color = 0xFF00FFFF.toInt()
+                    canvas.drawRect(b2L - 1f, b2T - 1f, b2L + cm, b2T + cm, p)
+                    canvas.drawRect(b2R - cm, b2T - 1f, b2R + 1f, b2T + cm, p)
+                    canvas.drawRect(b2L - 1f, b2B - cm, b2L + cm, b2B + 1f, p)
+                    canvas.drawRect(b2R - cm, b2B - cm, b2R + 1f, b2B + 1f, p)
+
+                    // Box B label
+                    p.color = 0xFF00FFFF.toInt(); p.textSize = 16f
+                    canvas.drawText("B", b2L + 4f, b2T + 14f, p)
+
+                    // Box A label
+                    p.color = 0xFFFFFF00.toInt(); p.textSize = 16f
+                    canvas.drawText("A", bxL + 4f, bxT + 14f, p)
+
+                    // Box B output meter (far right)
+                    val m2X = meterX + meterW + 6f
+                    p.color = 0xFF0A0A14.toInt()
+                    canvas.drawRoundRect(m2X, specTop, m2X + meterW, specBot, 4f, 4f, p)
+                    p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
+                    for (pct2 in arrayOf(0.25f, 0.5f, 0.75f)) {
+                        val my = specBot - pct2 * specH
+                        canvas.drawLine(m2X, my, m2X + meterW, my, p)
+                    }
+                    val m2FillH = reactor.box2FillPct * specH
+                    if (m2FillH > 0f) {
+                        val m2FillTop = specBot - m2FillH
+                        p.color = 0xFF00CCDD.toInt()
+                        canvas.drawRoundRect(m2X + 2f, m2FillTop, m2X + meterW - 2f, specBot, 3f, 3f, p)
+                        if (m2FillH > 4f) {
+                            p.color = 0xFFFFFFFF.toInt()
+                            canvas.drawRect(m2X + 2f, m2FillTop, m2X + meterW - 2f, m2FillTop + 3f, p)
+                        }
+                    }
+                    p.style = Paint.Style.STROKE; p.strokeWidth = 1.5f
+                    p.color = 0x80FFFFFF.toInt()
+                    canvas.drawRoundRect(m2X, specTop, m2X + meterW, specBot, 4f, 4f, p)
+                    p.style = Paint.Style.FILL
+
+                    p.color = 0xFF00FFFF.toInt(); p.textSize = 18f; p.isFakeBoldText = true
+                    p.textAlign = Paint.Align.CENTER
+                    canvas.drawText("%.0f%%".format(reactor.box2FillPct * 100), m2X + meterW / 2f, specTop - 8f, p)
+                    p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+                }
             }
 
             // Frequency labels (mapped to visible range)
