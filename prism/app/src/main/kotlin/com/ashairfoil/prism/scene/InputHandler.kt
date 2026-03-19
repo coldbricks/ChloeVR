@@ -96,6 +96,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
     // Save name hover
     var hoveredSaveButton = -1
+    private var lastHoveredSaveButton = -1
 
     // Slider dragging
     private var sliderDragging = -1
@@ -675,6 +676,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton
                     || (activity.glbPickerMode && hoveredGlbIndex != lastHoveredGlbIndex)
                     || (activity.scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)
+                    || (activity.saveNameMode && (hoveredSaveButton != lastHoveredSaveButton || hoveredSceneIndex != lastHoveredSceneIndex))
                     || (activity.audioPlayerMode && (
                         hoveredAudioButton != lastHoveredAudioButton ||
                             (activity.audioPickerMode && hoveredAudioFileIndex != lastHoveredAudioFileIndex)))
@@ -683,6 +685,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     lastHoveredActionButton = hoveredActionButton
                     lastHoveredGlbIndex = hoveredGlbIndex
                     lastHoveredSceneIndex = hoveredSceneIndex
+                    lastHoveredSaveButton = hoveredSaveButton
                     lastHoveredAudioButton = hoveredAudioButton
                     lastHoveredAudioFileIndex = hoveredAudioFileIndex
                     activity.uiNeedsRefresh = true

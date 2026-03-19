@@ -712,6 +712,10 @@ class FilamentModelActivity : ComponentActivity() {
                             if (audioPlayerMode && sensorPollFrame % 18 == 0) {
                                 uiNeedsRefresh = true
                             }
+                            // Save name mode: refresh for cursor tracking
+                            if (saveNameMode && menuVisible && sensorPollFrame % 3 == 0) {
+                                uiNeedsRefresh = true
+                            }
 
                             // Upload pending UI bitmap to compositor quad layer (swapchain texture)
                             val bmp = uiRenderer.pendingUiBitmap
