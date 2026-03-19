@@ -2057,9 +2057,8 @@ void main() {
     // ACES tone mapping
     color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
     color = clamp(color, 0.0, 1.0);
-    // S-curve contrast: crushes blacks, lifts highlights, pivots at mid-gray
-    // uContrast=1.0 is neutral, >1.0 darkens darks + brightens brights
-    color = clamp((color - 0.5) * uContrast + 0.5, 0.0, 1.0);
+    // Gamma contrast: >1.0 darkens darks while barely touching highlights
+    color = pow(color, vec3(uContrast));
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = clamp(mix(vec3(luma), color, uSaturation), 0.0, 1.0);
     color = pow(color, vec3(1.0/2.2));
