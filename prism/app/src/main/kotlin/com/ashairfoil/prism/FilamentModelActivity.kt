@@ -127,7 +127,8 @@ class FilamentModelActivity : ComponentActivity() {
     internal var uiNeedsRefresh = false
     private var lastBCloseTime = 0L
     @Volatile private var uiRenderQueued = false
-    @Volatile private var audioLoopCheckQueued = false
+    private val loopHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var loopRunning = false
 
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
@@ -704,10 +705,11 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Audio player A/B loop enforcement (throttled — every 10 frames ~7Hz)
-                            // ExoPlayer must be accessed on main thread
-                            if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true && sensorPollFrame % 10 == 0) {
-                                requestAudioLoopCheck()
+                            // A/B loop: start/stop the UI-thread loop handler as needed
+                            if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true) {
+                                if (!loopRunning) startLoopHandler()
+                            } else if (loopRunning) {
+                                stopLoopHandler()
                             }
                             if (audioPlayerMode && sensorPollFrame % 18 == 0) {
                                 uiNeedsRefresh = true
@@ -909,16 +911,22 @@ class FilamentModelActivity : ComponentActivity() {
         }
     }
 
-    private fun requestAudioLoopCheck() {
-        if (audioLoopCheckQueued) return
-        audioLoopCheckQueued = true
-        runOnUiThread {
-            try {
-                audioPlayer?.updateLoop()
-            } finally {
-                audioLoopCheckQueued = false
-            }
+    private val loopRunnable = object : Runnable {
+        override fun run() {
+            audioPlayer?.updateLoop()
+            if (loopRunning) loopHandler.postDelayed(this, 120)
         }
+    }
+
+    private fun startLoopHandler() {
+        if (loopRunning) return
+        loopRunning = true
+        loopHandler.post(loopRunnable)
+    }
+
+    internal fun stopLoopHandler() {
+        loopRunning = false
+        loopHandler.removeCallbacks(loopRunnable)
     }
 
     private fun getAudioCacheFile(): File = File(cacheDir, "audio_cache.txt")

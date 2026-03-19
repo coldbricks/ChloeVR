@@ -855,8 +855,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 val laserBx = lastLaserBx
                 val applyAudioAction = btn in 0..3 || btn in 10..11 || btn in 20..22 || btn == 30 || btn in 40..43 || btn == 60
                 if (applyAudioAction) {
-                    // Clear loop immediately from render thread to stop loop-check posts
-                    if (btn in 0..2) activity.audioPlayer?.clearLoop()
+                    // Stop loop handler + clear loop immediately to prevent freeze
+                    if (btn in 0..3) { activity.stopLoopHandler(); activity.audioPlayer?.clearLoop() }
                     // ExoPlayer must be accessed on the main thread
                     activity.runOnUiThread {
                         val ap = activity.audioPlayer
