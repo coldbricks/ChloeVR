@@ -937,7 +937,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 // VIBES: toggle haptic device
                 if (activity.hapticConnected) {
                     // Safety stop: zero vibration before disconnect
-                    activity.hapticManager?.setIntensity(0)
+                    val hmStop = activity.hapticManager
+                    if (hmStop != null && hmStop.isDualMotor) hmStop.setDualIntensity(0, 0)
+                    else hmStop?.setIntensity(0)
                     activity.hapticManager?.disconnect()
                     activity.hapticConnected = false
                     activity.hapticEnabled = false

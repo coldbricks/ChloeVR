@@ -647,6 +647,10 @@ class FilamentModelActivity : ComponentActivity() {
                                 // 100% fill = 100% vibrator, 0% fill = 0% (release handled by AudioReactor envelope)
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
+                                    if (sensorPollFrame % 200 == 0) {
+                                        Log.i(TAG, "Haptic: pct=%.2f hm=%s dual=%s split=%s".format(
+                                            pct, hm != null, hm?.isDualMotor, hapticDualMotorSplit))
+                                    }
                                     if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
                                         // Split mode: box A → motor 1, box B → motor 2
                                         val m1 = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
@@ -656,17 +660,17 @@ class FilamentModelActivity : ComponentActivity() {
                                             lastHapticMotor2 = m2
                                             hm.setDualIntensity(m1, m2)
                                         }
-                                    } else {
-                                        // Unified: both motors (or single motor) follow box fill directly
+                                    } else if (hm != null) {
+                                        // Unified: both motors follow box fill directly
                                         val hIntensity = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (hIntensity != lastHapticIntensity) {
                                             lastHapticIntensity = hIntensity
-                                            if (hm != null && hm.isDualMotor) {
+                                            if (hm.isDualMotor) {
                                                 hm.setDualIntensity(hIntensity, hIntensity)
-                                                lastHapticMotor1 = hIntensity; lastHapticMotor2 = hIntensity
                                             } else {
-                                                hm?.setIntensity(hIntensity)
+                                                hm.setIntensity(hIntensity)
                                             }
+                                            lastHapticMotor1 = hIntensity; lastHapticMotor2 = hIntensity
                                         }
                                     }
                                 }
@@ -682,7 +686,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 beatBaseStored = false
                                 // Safety: zero haptic output when reactor disabled
                                 if (hapticConnected) {
-                                    hapticManager?.setIntensity(0)
+                                    val hm2 = hapticManager
+                                    if (hm2 != null && hm2.isDualMotor) {
+                                        hm2.setDualIntensity(0, 0)
+                                    } else {
+                                        hm2?.setIntensity(0)
+                                    }
                                     lastHapticIntensity = -1; lastHapticMotor1 = -1; lastHapticMotor2 = -1
                                 }
                                 for (placed in models) {
@@ -990,7 +999,11 @@ class FilamentModelActivity : ComponentActivity() {
     override fun onPause() {
         Log.i(TAG, "onPause")
         // Safety stop haptics when app goes to background
-        if (hapticConnected) hapticManager?.setIntensity(0)
+        if (hapticConnected) {
+            val hm3 = hapticManager
+            if (hm3 != null && hm3.isDualMotor) hm3.setDualIntensity(0, 0)
+            else hm3?.setIntensity(0)
+        }
         lastHapticIntensity = -1; lastHapticMotor1 = -1; lastHapticMotor2 = -1
         // Pause audio player so it doesn't keep playing with headset removed
         audioPlayer?.pause()
@@ -1049,7 +1062,9 @@ class FilamentModelActivity : ComponentActivity() {
         }
 
         // Safety stop: zero vibration before disconnect to prevent runaway motor
-        hapticManager?.setIntensity(0)
+        val hmD = hapticManager
+        if (hmD != null && hmD.isDualMotor) hmD.setDualIntensity(0, 0)
+        else hmD?.setIntensity(0)
         hapticManager?.disconnect()
         audioPlayer?.release(); audioPlayer = null
         audioReactor?.stop()
