@@ -1395,7 +1395,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         gpuModel?.exposure = model.exposure
                     }
                     3 -> if (model != null) {
-                        model.contrast = (model.contrast + delta * 0.2f).coerceIn(0.85f, 1.15f)
+                        model.contrast = (model.contrast + delta * 0.2f).coerceIn(0.5f, 2.0f)
                         gpuModel?.contrast = model.contrast
                     }
                     4 -> if (model != null) {

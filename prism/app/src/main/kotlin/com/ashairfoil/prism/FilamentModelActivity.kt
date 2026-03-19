@@ -118,7 +118,7 @@ class FilamentModelActivity : ComponentActivity() {
         "BeatReactor", "Foveation", "Tex Quality", "Show Planes", "Room Track")
     // Slider ranges for continuous params 0-12. Toggles (13-16) have no range.
     internal val PARAM_RANGES = arrayOf(
-        0f to 1f, 0.05f to 1f, -5f to 5f, 0.85f to 1.15f, 0f to 3f,
+        0f to 1f, 0.05f to 1f, -5f to 5f, 0.5f to 2.0f, 0f to 3f,
         0f to 10f, 0f to 5f, 0f to 5f, 0f to 360f, 5f to 90f,
         0f to 1f, 0.5f to 5f, 2f to 30f
     )
