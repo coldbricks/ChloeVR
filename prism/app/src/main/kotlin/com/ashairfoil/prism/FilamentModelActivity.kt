@@ -166,6 +166,8 @@ class FilamentModelActivity : ComponentActivity() {
     private var breathPhase = 0f       // sine phase for idle breathing pulse
     private var hapticLeadBuffer = 0f  // buffered pct sent 1 frame early
     private var lastHapticIntensity = -1 // dedupe: skip BLE write if intensity unchanged
+    private var lastHapticMotor1 = -1    // dedupe for dual motor (head/primary)
+    private var lastHapticMotor2 = -1    // dedupe for dual motor (handle/secondary)
     private var edgeSustain = 0f       // time spent near peak (seconds)
     private var lastClimaxTime = 0L    // for dt calculation
     private var bassSlamCooldown = 0f  // prevents slam retriggering too fast
@@ -185,7 +187,7 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var roomTrackingEnabled = false
 
     // ── Audio Player ──
-    internal var audioPlayer: AudioPlayer? = null
+    @Volatile internal var audioPlayer: AudioPlayer? = null
     @Volatile internal var audioPlayerMode = false
     @Volatile internal var audioPickerMode = false
     internal var availableAudioFiles: List<File> = emptyList()
@@ -370,7 +372,8 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     private fun loadModel(file: File, offsetIndex: Int = 0) {
-        sceneManager.loadModel(file, offsetIndex, detectedFloorY)
+        sceneManager.loadModel(file, offsetIndex, detectedFloorY,
+            camPosX, camPosY, camPosZ, camFwdX, camFwdY, camFwdZ)
     }
 
     internal fun updateModelTransform(model: SceneManager.PlacedModel) {
@@ -704,16 +707,37 @@ class FilamentModelActivity : ComponentActivity() {
                                 } else 0f
 
                                 // ── Haptic output: LEADS visual by 1 frame ──
-                                // Send the CURRENT pct now (visual won't render until next composite)
-                                // Plus slam spike for physical punch on bass drops
+                                // Dual motor: bass→motor1(head), mid+high→motor2(handle)
+                                // Single motor: combined signal
                                 if (hapticEnabled && hapticConnected) {
-                                    val hapticPct = (pct * bi * (1f + climaxAccum * 0.8f)
-                                        + bassSlam * 0.4f + breathVal * 0.3f).coerceIn(0f, 1f)
-                                    val hIntensity = (hapticPct * 20f + 0.5f).toInt().coerceIn(0, 20)
-                                    // Dedupe: skip BLE write if intensity hasn't changed
-                                    if (hIntensity != lastHapticIntensity) {
-                                        lastHapticIntensity = hIntensity
-                                        hapticManager?.setIntensity(hIntensity)
+                                    val hm = hapticManager
+                                    if (hm != null && hm.isDualMotor) {
+                                        // Motor 1 (head): bass-driven, punchy, power channel
+                                        val m1Pct = (bass * bi * 2.5f * (1f + climaxAccum * 1.2f)
+                                            + bassSlam * 0.7f
+                                            + (if (pct < 0.1f) (kotlin.math.sin((breathPhase).toDouble()).toFloat() * 0.5f + 0.5f) * 0.12f else 0f)
+                                        ).coerceIn(0f, 1f)
+                                        // Motor 2 (handle): mid+high texture, complementary
+                                        val m2Pct = (reactor.mid * bi * 1.8f + reactor.high * bi * 1.0f
+                                            + pct * 0.25f * bi * (1f + climaxAccum * 0.5f)
+                                            + bassSlam * 0.2f
+                                            + (if (pct < 0.1f) (kotlin.math.sin((breathPhase + Math.PI.toFloat()).toDouble()).toFloat() * 0.5f + 0.5f) * 0.10f else 0f)
+                                        ).coerceIn(0f, 1f)
+                                        val m1 = (m1Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        val m2 = (m2Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        if (m1 != lastHapticMotor1 || m2 != lastHapticMotor2) {
+                                            lastHapticMotor1 = m1
+                                            lastHapticMotor2 = m2
+                                            hm.setDualIntensity(m1, m2)
+                                        }
+                                    } else {
+                                        val hapticPct = (pct * bi * (1f + climaxAccum * 0.8f)
+                                            + bassSlam * 0.4f + breathVal * 0.3f).coerceIn(0f, 1f)
+                                        val hIntensity = (hapticPct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        if (hIntensity != lastHapticIntensity) {
+                                            lastHapticIntensity = hIntensity
+                                            hm?.setIntensity(hIntensity)
+                                        }
                                     }
                                 }
 
@@ -727,6 +751,11 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.bloomIntensity = 0.3f
                                 beatBaseStored = false
                                 climaxAccum = 0f; climaxPeak = 0f; bassSlam = 0f; edgeSustain = 0f
+                                // Safety: zero haptic output when reactor disabled
+                                if (hapticConnected) {
+                                    hapticManager?.setIntensity(0)
+                                    lastHapticIntensity = -1; lastHapticMotor1 = -1; lastHapticMotor2 = -1
+                                }
                                 for (placed in models) {
                                     val gpuModel = gr.getModel(placed.gpuModelId)
                                     if (gpuModel != null) {
@@ -742,7 +771,7 @@ class FilamentModelActivity : ComponentActivity() {
                             if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true) {
                                 runOnUiThread { audioPlayer?.updateLoop() }
                             }
-                            if (audioPlayerMode && audioPlayer?.isPlaying == true && sensorPollFrame % 5 == 0) {
+                            if (audioPlayerMode && audioPlayer?.isPlaying == true && sensorPollFrame % 18 == 0) {
                                 uiNeedsRefresh = true
                             }
 
@@ -941,13 +970,23 @@ class FilamentModelActivity : ComponentActivity() {
         if (lightSensor != null) {
             sensorManager?.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_UI)
         }
+        // Resume audio player and reactor if they were playing before pause
+        val ap = audioPlayer
+        if (ap != null && audioPlayerMode) {
+            ap.resume()
+            val sid = ap.audioSessionId
+            if (sid != 0 && beatReactorEnabled) audioReactor?.restart(sid)
+        }
     }
 
     override fun onPause() {
         Log.i(TAG, "onPause")
         // Safety stop haptics when app goes to background
         if (hapticConnected) hapticManager?.setIntensity(0)
-        lastHapticIntensity = -1
+        lastHapticIntensity = -1; lastHapticMotor1 = -1; lastHapticMotor2 = -1
+        // Pause audio player so it doesn't keep playing with headset removed
+        audioPlayer?.pause()
+        audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()
         super.onPause()

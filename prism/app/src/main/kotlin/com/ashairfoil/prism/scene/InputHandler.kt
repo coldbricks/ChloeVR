@@ -63,6 +63,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
     // Panel drag
     var draggingPanel = false
     private var panelGrabDist = 1.0f
+    private var blockGripInteractionsUntilRelease = false
 
     // Menu hover
     var hoveredMenuParam = -1
@@ -246,7 +247,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
         val rightAimRotZ = inputBuffer[36]; val rightAimRotW = inputBuffer[38]
         val leftAimValid = inputBuffer[39] > 0.5f
         val rightAimValid = inputBuffer[40] > 0.5f
-
+        if (blockGripInteractionsUntilRelease && leftSqueeze < 0.3f && rightSqueeze < 0.3f) {
+            blockGripInteractionsUntilRelease = false
+        }
         if (inputLogCount < 5 && (menuButton || bButton || aButton)) {
             Log.i(TAG, "Input: menu=$menuButton b=$bButton a=$aButton squeeze=${inputBuffer[6]},${inputBuffer[7]}")
             inputLogCount++
@@ -277,7 +280,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
             hoveredMenuParam = -1
             hoveredActionButton = -1
             var laserOnPanel = false
-            if (activity.menuVisible && renderer != null) {
+            activity.beatCursorX = -1f
+            activity.beatCursorY = -1f
+            if (activity.menuVisible) {
                 val pcx = renderer.panelX
                 val pcy = renderer.panelY
                 val pcz = renderer.panelZ
@@ -324,7 +329,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             val u = (hx + panelHW) / (panelHW * 2f)
                             val v = 1f - (hy + panelHH) / (panelHH * 2f)
                             val bx = u * 1024f
-                            val by = v * 1024f  // NOTE: bitmap is 1280 tall but all hit regions use 1024 coordinate space
+                            val by = v * 1280f
+                            activity.beatCursorX = bx
+                            activity.beatCursorY = by
 
                             // Title bar drag zone: top ~80px
                             if (by < 85f) {
@@ -349,9 +356,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         val idx = activity.audioPickerScrollOffset + vi
                                         if (idx < activity.availableAudioFiles.size) hoveredAudioFileIndex = idx
                                     }
-                                    if (by > (1024 - 80f)) hoveredAudioButton = 50 // BACK
+                                    if (by > (1280 - 80f)) hoveredAudioButton = 50 // BACK
                                 } else {
-                                    // Transport buttons: y=245..300
+                                    // Transport buttons: y=245..300 (matches UiRenderer txY=245, txBtnH=55)
                                     if (by in 245f..300f) {
                                         val btnW = 130f; val gap = 12f
                                         for (i in 0..3) {
@@ -384,8 +391,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     if (by in 200f..230f && bx in 60f..964f) {
                                         hoveredAudioButton = 60 // seekbar
                                     }
-                                    // BROWSE / BACK: bottom
-                                    if (by > (1024 - 80f)) {
+                                    // BROWSE / BACK: bottom (UiRenderer bbY = uiH - 80 = 1200)
+                                    if (by > 1200f) {
                                         val halfW = (1024 - 70f) / 2f
                                         if (bx < 30f + halfW) hoveredAudioButton = 51
                                         else hoveredAudioButton = 52
@@ -397,7 +404,6 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 beatDraggingSlider = -1
                                 beatSliderLaserX = 0f
                                 hoveredActionButton = -1
-                                activity.beatCursorX = bx; activity.beatCursorY = by
 
                                 // Layout: spectrum 140..390, sliders 418..786, buttons 920+
                                 val specTopHit = 155f; val specBotHit = 435f
@@ -405,7 +411,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 val sliderAreaTopHit = 465f
                                 val sliderRowH = 32f
 
-                                if (by > 920f) {
+                                if (by > 1205f) {
                                     val quarter = (1024f - 100f) / 4f
                                     if (bx < 30f + quarter) hoveredActionButton = 127 // BOOM
                                     else if (bx < 40f + quarter * 2f) hoveredActionButton = 128 // VIBES
@@ -506,61 +512,63 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             } else if (activity.saveNameMode) {
                                 hoveredSaveButton = -1
                                 hoveredSceneIndex = -1
-                                if (by in 190f..270f) hoveredSaveButton = 0
-                                if (by in 280f..880f) {
+                                // UiRenderer: SAVE button at saveBtnY=200, height 50; scene rows at 310, rowH=55
+                                if (by in 200f..250f) hoveredSaveButton = 0
+                                if (by in 310f..860f) {
                                     val maxVisible = 10
-                                    val frac = (by - 280f) / (880f - 280f)
+                                    val frac = (by - 310f) / (860f - 310f)
                                     val idx = (frac * maxVisible).toInt()
                                     if (idx < activity.savedSceneFiles.size) hoveredSceneIndex = idx
                                 }
-                                if (by > 920f) hoveredSaveButton = 1
+                                if (by > 1200f) hoveredSaveButton = 1 // BACK at uiH-80=1200
                             } else if (activity.glbPickerMode) {
-                                if (by > 920f) {
-                                    hoveredActionButton = 103
+                                if (by > 1200f) {
+                                    hoveredActionButton = 103 // BACK at uiH-80=1200
                                 }
-                                if (by in 120f..900f) {
+                                // UiRenderer: GLB rows at startY=140, rowH=76, 13 visible
+                                if (by in 140f..1128f) {
                                     val maxVisible = 13
-                                    val frac = (by - 120f) / (900f - 120f)
+                                    val frac = (by - 140f) / (1128f - 140f)
                                     val idx = activity.glbPickerScrollOffset + (frac * maxVisible).toInt()
                                     if (idx < activity.availableGlbFiles.size) {
                                         hoveredGlbIndex = idx
                                     }
                                 }
                             } else if (activity.scenePickerMode) {
-                                if (by > 920f) {
-                                    hoveredActionButton = 106
+                                if (by > 1200f) {
+                                    hoveredActionButton = 106 // BACK at uiH-80=1200
                                 }
-                                if (by in 120f..900f) {
+                                // UiRenderer: scene rows at startY=130, rowH=60, 13 visible
+                                if (by in 130f..910f) {
                                     val maxVisible = 13
-                                    val frac = (by - 120f) / (900f - 120f)
+                                    val frac = (by - 130f) / (910f - 130f)
                                     val idx = (frac * maxVisible).toInt()
                                     if (idx < activity.savedSceneFiles.size) {
                                         hoveredSceneIndex = idx
                                     }
                                 }
                             } else {
-                                // Action buttons: 3 rows at bottom
-                                if (by in 800f..860f) {
+                                // Action buttons: 3 rows at bottom (UiRenderer: row1Y=1110, row2Y=1166, row3Y=1222, btnH=48)
+                                if (by in 1110f..1158f) {
                                     if (bx < 520f) hoveredActionButton = 104
                                     else hoveredActionButton = 105
                                 }
-                                if (by in 860f..925f) {
+                                if (by in 1166f..1214f) {
                                     if (bx < 360f) hoveredActionButton = 101
                                     else if (bx < 690f) hoveredActionButton = 107
                                     else hoveredActionButton = 108
                                 }
-                                if (by > 925f) {
+                                if (by > 1222f) {
                                     if (bx < 360f) hoveredActionButton = 109
                                     else if (bx < 690f) hoveredActionButton = 100
                                     else hoveredActionButton = 102
                                 }
 
-                                // Param rows with section headers (rowH=46px render, 8px section pad)
-                                // Render coords map to hit coords via ×(1024/1280)=×0.8
-                                val paramRowHit = 46f * 0.8f  // 36.8
-                                val sectionPadHit = 10f * 0.8f  // 8.0
-                                if (by in 130f..850f) {
-                                    val adjustedBy = by - 130f
+                                // Param rows with section headers (rowH=46px, 10px section pad)
+                                val paramRowHit = 46f
+                                val sectionPadHit = 10f
+                                if (by in 164f..1100f) {
+                                    val adjustedBy = by - 164f
                                     var acc = 0f; var idx = -1
                                     for (p in 0 until activity.PARAM_NAMES.size) {
                                         if (p == 0 || p == 5 || p == 13) acc += sectionPadHit
@@ -576,7 +584,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 }
 
                 // Drag update -- full 3D: place panel along laser ray at grab distance
-                if (draggingPanel && renderer != null) {
+                if (draggingPanel) {
                     val rg = inputBuffer[7]
                     if (rg > 0.5f) {
                         val stickY = inputBuffer[3]
@@ -633,7 +641,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
             }
 
             // Emitter grab: grip on hovered emitter -> drag along ray, delta-based
-            if (emitterHovered && rightSqueeze > 0.5f && !emitterGrabbed) {
+            if (emitterHovered && rightSqueeze > 0.5f && !emitterGrabbed && !blockGripInteractionsUntilRelease) {
                 emitterGrabbed = true
                 val dx = renderer.emitterPos[0] - laserHandPos[0]
                 val dy = renderer.emitterPos[1] - laserHandPos[1]
@@ -714,7 +722,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else {
                     gizmoDragging = false
                 }
-            } else if (rightGripForGizmo && hoveredGizmoAxis >= 0 && selModel != null) {
+            } else if (rightGripForGizmo && !blockGripInteractionsUntilRelease && hoveredGizmoAxis >= 0 && selModel != null) {
                 // Start gizmo drag
                 gizmoDragging = true
                 gizmoDragAxis = hoveredGizmoAxis
@@ -727,6 +735,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
             hitDistance = -1f
             hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
             gizmoDragging = false
+            activity.beatCursorX = -1f
+            activity.beatCursorY = -1f
         }
 
         // Trigger press (edge-detected) = select/deselect or menu select
@@ -736,11 +746,21 @@ class InputHandler(private val activity: FilamentModelActivity) {
             if (activity.menuVisible && activity.audioPlayerMode && activity.audioPickerMode) {
                 when {
                     hoveredAudioFileIndex >= 0 && hoveredAudioFileIndex < activity.availableAudioFiles.size -> {
-                        val file = activity.availableAudioFiles[hoveredAudioFileIndex]
+                        val fileIndex = hoveredAudioFileIndex
+                        val files = activity.availableAudioFiles
                         // ExoPlayer must be created and accessed on the main thread
                         activity.runOnUiThread {
-                            if (activity.audioPlayer == null) activity.audioPlayer = com.ashairfoil.prism.AudioPlayer(activity)
-                            activity.audioPlayer?.play(file)
+                            if (activity.audioPlayer == null) {
+                                activity.audioPlayer = com.ashairfoil.prism.AudioPlayer(activity)
+                                // Wire auto-restart AudioReactor on track change (playlist advance)
+                                activity.audioPlayer?.onTrackChanged = { _ ->
+                                    val reactor = activity.audioReactor
+                                    val sid = activity.audioPlayer?.audioSessionId ?: 0
+                                    if (reactor != null && sid != 0) reactor.restart(sid)
+                                    activity.uiNeedsRefresh = true
+                                }
+                            }
+                            activity.audioPlayer?.playFromPlaylist(files, fileIndex)
                             val reactor = activity.audioReactor
                             val sid = activity.audioPlayer?.audioSessionId ?: 0
                             if (reactor != null && sid != 0) {
@@ -752,7 +772,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             }
                         }
                         activity.audioPickerMode = false
-                        Log.i(TAG, "Audio: playing ${file.name}")
+                        Log.i(TAG, "Audio: playing ${files[fileIndex].name} [${fileIndex + 1}/${files.size}]")
                     }
                     hoveredAudioButton == 50 -> activity.audioPickerMode = false
                 }
@@ -760,26 +780,29 @@ class InputHandler(private val activity: FilamentModelActivity) {
             } else if (activity.menuVisible && activity.audioPlayerMode && !activity.audioPickerMode) {
                 val btn = hoveredAudioButton
                 val laserBx = lastLaserBx
-                // ExoPlayer must be accessed on the main thread
-                activity.runOnUiThread {
-                    val ap = activity.audioPlayer
-                    when (btn) {
-                        0 -> ap?.seekBy(-10000)
-                        1 -> ap?.togglePlayPause()
-                        2 -> ap?.seekBy(10000)
-                        3 -> { ap?.stop(); activity.audioReactor?.restart(0) }
-                        10 -> ap?.cycleSpeed(false)
-                        11 -> ap?.cycleSpeed(true)
-                        20 -> ap?.setLoopA()
-                        21 -> ap?.setLoopB()
-                        22 -> ap?.clearLoop()
-                        30 -> ap?.cycleRepeat()
-                        in 40..43 -> ap?.setEqPresetByIndex(btn - 40)
-                        60 -> {
-                            val dur = ap?.durationMs ?: 0
-                            if (dur > 0) {
-                                val t = ((laserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
-                                ap?.seekTo((t * dur).toLong())
+                val applyAudioAction = btn in 0..3 || btn in 10..11 || btn in 20..22 || btn == 30 || btn in 40..43 || btn == 60
+                if (applyAudioAction) {
+                    // ExoPlayer must be accessed on the main thread
+                    activity.runOnUiThread {
+                        val ap = activity.audioPlayer
+                        when (btn) {
+                            0 -> ap?.playPrevious()
+                            1 -> ap?.togglePlayPause()
+                            2 -> ap?.playNext()
+                            3 -> { ap?.stop(); activity.audioReactor?.restart(0) }
+                            10 -> ap?.cycleSpeed(false)
+                            11 -> ap?.cycleSpeed(true)
+                            20 -> ap?.setLoopA()
+                            21 -> ap?.setLoopB()
+                            22 -> ap?.clearLoop()
+                            30 -> ap?.cycleRepeat()
+                            in 40..43 -> ap?.setEqPresetByIndex(btn - 40)
+                            60 -> {
+                                val dur = ap?.durationMs ?: 0
+                                if (dur > 0) {
+                                    val t = ((laserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
+                                    ap?.seekTo((t * dur).toLong())
+                                }
                             }
                         }
                     }
@@ -1066,6 +1089,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             }
         }
+        if (activity.menuVisible && activity.audioPlayerMode && !activity.audioPickerMode && rightTriggerPressed && audioSeekDragging) {
+            val t = ((lastLaserBx - 60f) / (1024f - 120f)).coerceIn(0f, 1f)
+            activity.runOnUiThread {
+                val ap = activity.audioPlayer
+                val dur = ap?.durationMs ?: 0
+                if (dur > 0) ap?.seekTo((t * dur).toLong())
+            }
+        }
+        if (!rightTriggerPressed || !activity.menuVisible || !activity.audioPlayerMode || activity.audioPickerMode) {
+            audioSeekDragging = false
+        }
         if (!rightTriggerPressed) sliderDragging = -1
         lastRightTriggerState = rightTriggerPressed
 
@@ -1077,7 +1111,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
         }
 
         // Grid height: grip + stick Y with nothing selected -> adjust grid Y
-        if (selectedModelIndex < 0 && rightHandValid && rightSqueeze > 0.5f && !emitterGrabbed && renderer != null) {
+        if (selectedModelIndex < 0 && rightHandValid && rightSqueeze > 0.5f && !emitterGrabbed && !blockGripInteractionsUntilRelease && renderer != null) {
             if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
                 renderer.gridHeight += rightThumbY * 0.02f
                 renderer.gridHeight = renderer.gridHeight.coerceIn(-3f, 3f)
@@ -1145,6 +1179,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.panelRotY = kotlin.math.sin(yaw * 0.5f)
                 activity.panelRotZ = 0f
                 activity.panelRotW = kotlin.math.cos(yaw * 0.5f)
+            } else if (!activity.menuVisible) {
+                blockGripInteractionsUntilRelease = true
+                grabbing = false
+                gizmoDragging = false
+                emitterGrabbed = false
+                activity.beatCursorX = -1f
+                activity.beatCursorY = -1f
             }
             activity.uiNeedsRefresh = true
         }
@@ -1397,6 +1438,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
         lastRightStickClick = rightStickClick
 
         if (activity.handsLocked) return
+        if (blockGripInteractionsUntilRelease) return
 
         // ── Model manipulation (skip if gizmo is being dragged) ──
         if (gizmoDragging) return
@@ -1498,6 +1540,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 selected.rotY = relW * sr[1] - relX * sr[2] + relY * sr[3] + relZ * sr[0]
                 selected.rotZ = relW * sr[2] + relX * sr[1] - relY * sr[0] + relZ * sr[3]
                 selected.rotW = relW * sr[3] - relX * sr[0] - relY * sr[1] - relZ * sr[2]
+                // Renormalize to prevent floating-point drift over extended manipulation
+                val qLen = kotlin.math.sqrt(selected.rotX * selected.rotX + selected.rotY * selected.rotY +
+                    selected.rotZ * selected.rotZ + selected.rotW * selected.rotW)
+                if (qLen > 0.001f) {
+                    val inv = 1f / qLen
+                    selected.rotX *= inv; selected.rotY *= inv; selected.rotZ *= inv; selected.rotW *= inv
+                }
             }
 
             activity.updateModelTransform(selected)

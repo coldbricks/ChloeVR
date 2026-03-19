@@ -463,13 +463,6 @@ bool OpenXRInput::poll(ControllerState& state) {
                 state.handRotZ[hand] = loc.pose.orientation.z;
                 state.handRotW[hand] = loc.pose.orientation.w;
             }
-            // Debug: log hand pose every ~2 seconds
-            if (logCounter % 120 == 0 && (state.trigger[hand] > 0.5f)) {
-                LOGI("Hand[%d] flags=0x%llx pos=(%.3f,%.3f,%.3f) valid=%d",
-                     hand, (unsigned long long)loc.locationFlags,
-                     loc.pose.position.x, loc.pose.position.y, loc.pose.position.z,
-                     posValid ? 1 : 0);
-            }
         } else {
             if (logCounter % 120 == 0) {
                 LOGE("xrLocateSpace hand[%d] failed: %d", hand, (int)lr);

@@ -2,7 +2,6 @@ package com.ashairfoil.prism.effects
 
 import android.media.audiofx.Virtualizer
 import android.util.Log
-import kotlin.math.cos
 import kotlin.math.sin
 
 /**

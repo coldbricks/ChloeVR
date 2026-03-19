@@ -18,6 +18,7 @@ class GlesModelRenderer {
         const val GIZMO_AXIS_Z = 2
         const val GIZMO_LENGTH = 0.25f
         const val GIZMO_HIT_RADIUS = 0.04f
+        const val LASER_BASE_LENGTH = 5.0f
     }
 
     // ── Per-model GPU state ──
@@ -402,7 +403,7 @@ class GlesModelRenderer {
 
     private fun initLaserGeometry() {
         val hw = 0.001f
-        val len = 5.0f
+        val len = LASER_BASE_LENGTH
         val verts = floatArrayOf(
             -hw, 0f, 0f, 1f,  hw, 0f, 0f, 1f,  hw, 0f, -len, 0f,  -hw, 0f, -len, 0f,
             0f, -hw, 0f, 1f,  0f, hw, 0f, 1f,  0f, hw, -len, 0f,  0f, -hw, -len, 0f,
@@ -1416,18 +1417,25 @@ class GlesModelRenderer {
         GLES30.glUseProgram(laserProgramId)
         GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, scratchMat4B, 0)
         GLES30.glUniform3f(GLES30.glGetUniformLocation(laserProgramId, "uColor"), color[0], color[1], color[2])
+        val beamLength = if (hitDistance > 0f) hitDistance.coerceAtLeast(0.02f) else LASER_BASE_LENGTH
+        val lenScale = beamLength / LASER_BASE_LENGTH
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(laserProgramId, "uLenScale"), lenScale)
 
         GLES30.glBindVertexArray(laserVao)
         GLES30.glDrawElements(GLES30.GL_TRIANGLES, laserIndexCount, GLES30.GL_UNSIGNED_INT, 0)
         GLES30.glBindVertexArray(0)
 
-        if (hitDistance >= 0f) {
+        if (hitDistance > 0f) {
+            // Disable depth test so dot always renders on top of panel/models
+            GLES30.glDisable(GLES30.GL_DEPTH_TEST)
             quatForward(aimQuat, scratchVec3)
+            // Nudge dot 2mm toward camera to prevent z-fighting
+            val dotDist = hitDistance - 0.002f
             val dotModel = floatArrayOf(
                 0.01f,0f,0f,0f, 0f,0.01f,0f,0f, 0f,0f,0.01f,0f,
-                handPos[0] + scratchVec3[0] * hitDistance,
-                handPos[1] + scratchVec3[1] * hitDistance,
-                handPos[2] + scratchVec3[2] * hitDistance, 1f
+                handPos[0] + scratchVec3[0] * dotDist,
+                handPos[1] + scratchVec3[1] * dotDist,
+                handPos[2] + scratchVec3[2] * dotDist, 1f
             )
             multiplyMat4(viewMatrix, dotModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
@@ -1436,6 +1444,7 @@ class GlesModelRenderer {
             GLES30.glBindVertexArray(dotVao)
             GLES30.glDrawArrays(GLES30.GL_LINES, 0, 4)
             GLES30.glBindVertexArray(0)
+            GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         }
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
@@ -2072,8 +2081,13 @@ private const val LASER_VERTEX_SHADER = """#version 300 es
 layout(location=0) in vec3 aPosition;
 layout(location=1) in float aAlpha;
 uniform mat4 uMVP;
+uniform float uLenScale;
 out float vAlpha;
-void main() { gl_Position = uMVP * vec4(aPosition, 1.0); vAlpha = aAlpha; }
+void main() {
+    vec3 laserPos = vec3(aPosition.xy, aPosition.z * uLenScale);
+    gl_Position = uMVP * vec4(laserPos, 1.0);
+    vAlpha = aAlpha;
+}
 """
 
 private const val LASER_FRAGMENT_SHADER = """#version 300 es

@@ -62,6 +62,9 @@ object SettingsManager {
     private const val KEY_STEREO_VERTICAL_OFFSET = "stereo_vertical_offset"
     private const val KEY_STEREO_ENABLED = "stereo_enabled"
 
+    // Screen curvature — stored per projection type
+    private const val KEY_SCREEN_CURVATURE = "screen_curvature_"
+
     // Zoom
     private const val KEY_ZOOM_LEVEL = "zoom_level"
 
@@ -227,6 +230,13 @@ object SettingsManager {
     }
     fun setScreenScale(projection: String, value: Float) {
         ensureInit(); prefs.edit().putFloat(KEY_SCREEN_SCALE + projection, value).apply()
+    }
+
+    fun getScreenCurvature(projection: String): Float {
+        ensureInit(); return prefs.getFloat(KEY_SCREEN_CURVATURE + projection, 0f)
+    }
+    fun setScreenCurvature(projection: String, value: Float) {
+        ensureInit(); prefs.edit().putFloat(KEY_SCREEN_CURVATURE + projection, value).apply()
     }
 
     // ── Chroma key settings ─────────────────────────────────────────────

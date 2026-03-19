@@ -69,9 +69,18 @@ class SceneManager(
      * Load a GLB file and add it to the scene.
      * Must be called on a thread with a current GL context.
      *
+     * Auto-scales based on bounding box to a comfortable VR viewing size (~0.5m),
+     * and places the model in front of the camera rather than at world origin.
+     *
      * @param detectedFloorY current detected floor Y for auto-snap, or Float.MIN_VALUE if unknown
+     * @param camPosX/Y/Z current camera (head) position
+     * @param camFwdX/Y/Z current camera forward direction
      */
-    fun loadModel(file: File, offsetIndex: Int = 0, detectedFloorY: Float = Float.MIN_VALUE) {
+    fun loadModel(
+        file: File, offsetIndex: Int = 0, detectedFloorY: Float = Float.MIN_VALUE,
+        camPosX: Float = 0f, camPosY: Float = 1.6f, camPosZ: Float = 0f,
+        camFwdX: Float = 0f, camFwdY: Float = 0f, camFwdZ: Float = -1f
+    ) {
         try {
             val bytes = file.readBytes()
             Log.i(TAG, "Loading GLB: ${file.name} (${bytes.size} bytes)")
@@ -85,9 +94,22 @@ class SceneManager(
 
             val gpuModel = renderer.getModel(gpuId) ?: return
 
-            val autoScale = 0.75f
-            // Offset new models so they don't overlap
-            val offsetX = if (models.isEmpty()) 0f else offsetIndex * 1.0f
+            // Auto-scale: target ~0.5m extent for comfortable VR viewing
+            val diameter = (gpuModel.boundsRadius * 2f).coerceAtLeast(0.001f)
+            val autoScale = (0.5f / diameter).coerceIn(0.05f, 10f)
+
+            // Place in front of camera on the horizontal plane
+            val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
+            val hFwdX = camFwdX / hLen
+            val hFwdZ = camFwdZ / hLen
+            // Right vector for spacing multiple models side by side
+            val rightX = hFwdZ
+            val rightZ = -hFwdX
+            val placeDistance = 2.0f
+            val scaledDiameter = diameter * autoScale
+            val offsetDist = if (models.isEmpty()) 0f else offsetIndex * scaledDiameter * 1.5f
+            val placePosX = camPosX + hFwdX * placeDistance + rightX * offsetDist
+            val placePosZ = camPosZ + hFwdZ * placeDistance + rightZ * offsetDist
 
             val placed = PlacedModel(
                 file = file,
@@ -95,8 +117,8 @@ class SceneManager(
                 gpuModelId = gpuId,
                 scale = autoScale,
                 baseScale = autoScale,
-                posX = offsetX,
-                posZ = -1f,
+                posX = placePosX,
+                posZ = placePosZ,
                 metallic = gpuModel.metallic,
                 roughness = gpuModel.roughness
             )
@@ -114,7 +136,8 @@ class SceneManager(
 
             updateModelTransform(placed)
 
-            Log.i(TAG, "Model loaded: ${file.name}, scale=$autoScale, gpuId=$gpuId, floorY=$detectedFloorY")
+            Log.i(TAG, "Model loaded: ${file.name}, rawDiameter=%.3f, autoScale=%.3f, pos=(%.2f,%.2f,%.2f), gpuId=$gpuId"
+                .format(diameter, autoScale, placePosX, placed.posY, placePosZ))
         } catch (e: Exception) {
             Log.e(TAG, "Exception loading model: ${file.name}", e)
             runOnUiThread(Runnable { showMessage("Error: ${e.message}") })

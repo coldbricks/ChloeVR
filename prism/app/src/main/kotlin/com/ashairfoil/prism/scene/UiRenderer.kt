@@ -98,6 +98,24 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val saveNameLen = activity.saveNameLen
         val saveNameCursor = activity.saveNameCursor
         val glbPickerScrollOffset = activity.glbPickerScrollOffset
+        val drawLaserCursorOverlay = {
+            if (beatCursorX > 0f && beatCursorY > 0f) {
+                val cp = Paint().apply {
+                    isAntiAlias = true
+                    color = 0xFFFFFFFF.toInt()
+                    strokeWidth = 2f
+                    style = Paint.Style.STROKE
+                }
+                canvas.drawCircle(beatCursorX, beatCursorY, 12f, cp)
+                cp.strokeWidth = 1f
+                cp.color = 0x90FFFFFF.toInt()
+                canvas.drawLine(beatCursorX - 20f, beatCursorY, beatCursorX + 20f, beatCursorY, cp)
+                canvas.drawLine(beatCursorX, beatCursorY - 20f, beatCursorX, beatCursorY + 20f, cp)
+                cp.style = Paint.Style.FILL
+                cp.color = 0xFFEC4899.toInt()
+                canvas.drawCircle(beatCursorX, beatCursorY, 3f, cp)
+            }
+        }
 
         // ═══ ChloeVibes Neon Theme ═══
         // Background: dark with subtle purple gradient
@@ -523,20 +541,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("\u25C0 BACK", 60f + quarterW * 3f + (uiW - 90f - quarterW * 3f) / 2f, btnY + 33f, p)
             p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
 
-            // ── Laser cursor (bright, visible crosshair) ──
-            if (beatCursorX > 0f && beatCursorY > 0f) {
-                val cp = Paint().apply {
-                    isAntiAlias = true; color = 0xFFFFFFFF.toInt(); strokeWidth = 2f
-                    style = Paint.Style.STROKE
-                }
-                canvas.drawCircle(beatCursorX, beatCursorY, 12f, cp)
-                cp.strokeWidth = 1f; cp.color = 0x80FFFFFF.toInt()
-                canvas.drawLine(beatCursorX - 20f, beatCursorY, beatCursorX + 20f, beatCursorY, cp)
-                canvas.drawLine(beatCursorX, beatCursorY - 20f, beatCursorX, beatCursorY + 20f, cp)
-                cp.style = Paint.Style.FILL; cp.color = 0xFFEC4899.toInt()
-                canvas.drawCircle(beatCursorX, beatCursorY, 3f, cp)
-            }
-
+            drawLaserCursorOverlay()
             pendingUiBitmap = bitmap
             return
         }
@@ -607,6 +612,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 canvas.drawText("\u25C0 BACK", uiW / 2f, apBtnY + 40f, p)
                 p.textAlign = Paint.Align.LEFT
 
+                drawLaserCursorOverlay()
                 pendingUiBitmap = bitmap
                 return
             }
@@ -777,6 +783,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, bbY + 40f, p)
             p.textAlign = Paint.Align.LEFT
 
+            drawLaserCursorOverlay()
             pendingUiBitmap = bitmap
             return
         }
@@ -889,6 +896,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
             canvas.drawText("\u25C0 BACK", uiW / 2f, snBtnY + 40f, backText)
 
+            drawLaserCursorOverlay()
             pendingUiBitmap = bitmap
             return
         }
@@ -1036,6 +1044,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
             canvas.drawText("\u25C0 BACK", uiW / 2f, glbBtnY + 40f, backText)
 
+            drawLaserCursorOverlay()
             pendingUiBitmap = bitmap
             return
         }
@@ -1106,6 +1115,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
             canvas.drawText("\u25C0 BACK", uiW / 2f, scBtnY + 40f, scBackText)
 
+            drawLaserCursorOverlay()
             pendingUiBitmap = bitmap
             return
         }
@@ -1434,6 +1444,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
         }
 
+        drawLaserCursorOverlay()
         pendingUiBitmap = bitmap
     }
 

@@ -1085,7 +1085,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         layout.addView(makeAdjustRow("Curve", "+", "\u2212") { delta ->
             screenCurvature = (screenCurvature + delta * 0.1f).coerceIn(0f, 1f)
-            // Recreate surface entity with new shape
+            SettingsManager.setScreenCurvature(currentScreenType.name, screenCurvature)
             restartCurrentVideo()
         })
 
@@ -2018,6 +2018,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         screenY = 0f
         screenZ = if (currentScreenType == ScreenType.FLAT) -8f else 0f
         screenCurvature = 0f
+        SettingsManager.setScreenCurvature(currentScreenType.name, 0f)
         abRepeatA = null
         abRepeatB = null
         abRepeatBoomerang = false
@@ -3092,6 +3093,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         stopPlayback()
         resetAdjustments()
+        // Restore saved curvature for this projection type
+        screenCurvature = SettingsManager.getScreenCurvature(currentScreenType.name)
         isGrabbing = false
         isTriggerZooming = false
 

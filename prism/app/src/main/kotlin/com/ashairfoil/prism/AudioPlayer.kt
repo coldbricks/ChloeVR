@@ -29,6 +29,17 @@ class AudioPlayer(private val context: Context) {
     val audioSessionId: Int get() = player?.audioSessionId ?: 0
     var currentFile: File? = null; private set
 
+    // Playlist
+    var playlist: List<File> = emptyList()
+        private set
+    var playlistIndex: Int = -1
+        private set
+    val hasNext: Boolean get() = playlist.isNotEmpty() && playlistIndex < playlist.size - 1
+    val hasPrevious: Boolean get() = playlist.isNotEmpty() && playlistIndex > 0
+
+    /** Called when track changes (auto-advance or manual). Use to restart AudioReactor. */
+    var onTrackChanged: ((File) -> Unit)? = null
+
     // A/B loop
     var loopA: Long = -1; private set
     var loopB: Long = -1; private set
@@ -45,21 +56,49 @@ class AudioPlayer(private val context: Context) {
     enum class RepeatMode(val label: String) { OFF("OFF"), ONE("ONE"), ALL("ALL") }
     var repeatMode = RepeatMode.OFF; private set
 
+    // Volume (0.0 - 1.0)
+    var volume = 1.0f
+        private set
+
+    /** Set playlist and play a specific track. */
+    fun playFromPlaylist(files: List<File>, index: Int) {
+        playlist = files
+        playlistIndex = index.coerceIn(0, files.size - 1)
+        play(files[playlistIndex])
+    }
+
     fun play(file: File) {
-        release()
+        val prevPlayer = player
+        val prevEq = equalizer
+        equalizer = null
+        player = null
+        prevEq?.release()
+        prevPlayer?.release()
         currentFile = file
-        Log.i(TAG, "Playing: ${file.name}")
+        // Update playlist index if playing from existing playlist
+        if (playlist.isNotEmpty()) {
+            val idx = playlist.indexOf(file)
+            if (idx >= 0) playlistIndex = idx
+        }
+        clearLoop()
+        Log.i(TAG, "Playing: ${file.name} [${playlistIndex + 1}/${playlist.size}]")
         player = ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             playWhenReady = true
+            // For ALL mode, we handle advancement ourselves via STATE_ENDED
+            this.repeatMode = when (this@AudioPlayer.repeatMode) {
+                RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
+            this.volume = this@AudioPlayer.volume
             prepare()
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (state == Player.STATE_ENDED) {
                         when (this@AudioPlayer.repeatMode) {
-                            RepeatMode.ONE -> this@AudioPlayer.seekTo(0)
+                            RepeatMode.ONE -> {} // ExoPlayer handles loop
+                            RepeatMode.ALL -> playNext()
                             RepeatMode.OFF -> {}
-                            RepeatMode.ALL -> {}
                         }
                     }
                 }
@@ -69,6 +108,29 @@ class AudioPlayer(private val context: Context) {
         player?.playbackParameters = PlaybackParameters(SPEED_OPTIONS[speedIndex])
         // Init EQ
         initEq()
+    }
+
+    /** Advance to next track in playlist. Wraps around in ALL mode. */
+    fun playNext(): Boolean {
+        if (playlist.isEmpty()) return false
+        val nextIdx = if (playlistIndex < playlist.size - 1) playlistIndex + 1
+            else if (repeatMode == RepeatMode.ALL) 0 else return false
+        val file = playlist[nextIdx]
+        playlistIndex = nextIdx
+        play(file)
+        onTrackChanged?.invoke(file)
+        return true
+    }
+
+    /** Go to previous track, or restart current if past 3 seconds. */
+    fun playPrevious(): Boolean {
+        if (currentPositionMs > 3000) { seekTo(0); return true }
+        if (playlist.isEmpty() || playlistIndex <= 0) { seekTo(0); return true }
+        val file = playlist[playlistIndex - 1]
+        playlistIndex -= 1
+        play(file)
+        onTrackChanged?.invoke(file)
+        return true
     }
 
     fun togglePlayPause() {
@@ -90,6 +152,12 @@ class AudioPlayer(private val context: Context) {
 
     fun seekBy(deltaMs: Long) {
         seekTo(currentPositionMs + deltaMs)
+    }
+
+    // Volume control
+    fun setVolume(vol: Float) {
+        volume = vol.coerceIn(0f, 1f)
+        player?.volume = volume
     }
 
     // Speed control
@@ -127,10 +195,10 @@ class AudioPlayer(private val context: Context) {
             RepeatMode.ONE -> RepeatMode.ALL
             RepeatMode.ALL -> RepeatMode.OFF
         }
+        // ONE = ExoPlayer loops internally. ALL = we handle via STATE_ENDED callback.
         player?.repeatMode = when (repeatMode) {
             RepeatMode.ONE -> Player.REPEAT_MODE_ONE
-            RepeatMode.ALL -> Player.REPEAT_MODE_ALL
-            RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+            else -> Player.REPEAT_MODE_OFF
         }
     }
 

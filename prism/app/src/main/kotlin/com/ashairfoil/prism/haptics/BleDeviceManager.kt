@@ -92,6 +92,12 @@ class BleDeviceManager(private val context: Context) {
     @Volatile var batteryLevel: Int = -1
         private set
 
+    // Device capabilities (detected on connect via DeviceType response)
+    @Volatile var isDualMotor: Boolean = false
+        private set
+    @Volatile var deviceTypeLetter: Char = ' '
+        private set
+
     // BLE write gating -- Lovense devices drop commands if sent too fast.
     // We wait for the onCharacteristicWrite callback before sending the next.
     @Volatile private var writeInFlight = false
@@ -116,41 +122,6 @@ class BleDeviceManager(private val context: Context) {
     // Known Lovense service/characteristic UUID sets.
     // Older devices use Nordic UART; newer firmware uses Lovense-specific UUIDs.
     data class ServiceUuids(val service: UUID, val tx: UUID, val rx: UUID)
-
-    companion object {
-        private const val TAG = "ChloeVR-BLE"
-
-        private val KNOWN_SERVICES = listOf(
-            // Nordic UART Service (older Lovense firmware)
-            ServiceUuids(
-                UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e"),
-                UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e"),
-                UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
-            ),
-            // Lovense-specific service (newer firmware, Domi 2 / Mission etc.)
-            ServiceUuids(
-                UUID.fromString("50300001-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("50300002-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("50300003-0023-4bd4-bbd5-a6920e4c5653")
-            ),
-            // Alternate Lovense service (some newer models)
-            ServiceUuids(
-                UUID.fromString("53300001-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("53300002-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("53300003-0023-4bd4-bbd5-a6920e4c5653")
-            ),
-            // Another variant seen on some Lovense devices
-            ServiceUuids(
-                UUID.fromString("57300001-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("57300002-0023-4bd4-bbd5-a6920e4c5653"),
-                UUID.fromString("57300003-0023-4bd4-bbd5-a6920e4c5653")
-            )
-        )
-
-        /** CCCD descriptor UUID for enabling notifications. */
-        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
-        private const val SCAN_TIMEOUT_MS = 15_000L
-    }
 
     // -----------------------------------------------------------------------
     // Scanning
@@ -273,6 +244,8 @@ class BleDeviceManager(private val context: Context) {
         connectionState = ConnectionState.Disconnected
         connectedDeviceName = null
         batteryLevel = -1
+        isDualMotor = false
+        deviceTypeLetter = ' '
         onConnectionStateChanged?.invoke(connectionState)
     }
 
@@ -349,6 +322,8 @@ class BleDeviceManager(private val context: Context) {
             android.util.Log.i(TAG, "Lovense device READY: ${gatt.device.name}")
             handler.post { onConnectionStateChanged?.invoke(connectionState) }
             handler.postDelayed({ sendCommand("Battery;") }, 500)
+            // Query device type to detect dual-motor devices (Domi 2, Edge, etc.)
+            handler.postDelayed({ sendCommand("DeviceType;") }, 1200)
         }
 
         override fun onCharacteristicWrite(
@@ -437,6 +412,22 @@ class BleDeviceManager(private val context: Context) {
         sendCommand(LovenseProtocol.vibrate(lovenseLevel))
     }
 
+    /**
+     * Set dual motor intensity (for Domi 2, Edge, etc.).
+     * Motor 1 = head/primary, Motor 2 = handle/secondary.
+     * Falls back to single motor if device doesn't support dual.
+     * @param motor1 0-20 (primary motor)
+     * @param motor2 0-20 (secondary motor)
+     */
+    fun setDualIntensity(motor1: Int, motor2: Int) {
+        if (connectionState != ConnectionState.Ready) return
+        if (isDualMotor) {
+            sendCommand(LovenseProtocol.vibrate2(motor1, motor2))
+        } else {
+            sendCommand(LovenseProtocol.vibrate(maxOf(motor1, motor2).coerceIn(0, 20)))
+        }
+    }
+
     /** Request battery level update. */
     fun requestBattery() {
         if (connectionState == ConnectionState.Ready) {
@@ -462,8 +453,63 @@ class BleDeviceManager(private val context: Context) {
                 if (level in 0..100) {
                     batteryLevel = level
                     handler.post { onBatteryUpdate?.invoke(level) }
+                    return
                 }
             }
         }
+
+        // DeviceType response: single letter identifying the device model
+        // Dual-motor devices: J=Domi2, W=Edge, A=Nora (vibe+rotate), P=Edge2
+        if (trimmed.length == 1 && trimmed[0].isLetter()) {
+            deviceTypeLetter = trimmed[0].uppercaseChar()
+            isDualMotor = deviceTypeLetter in DUAL_MOTOR_TYPES
+            android.util.Log.i(TAG, "DeviceType: '$deviceTypeLetter' isDualMotor=$isDualMotor")
+            return
+        }
+        // Some firmware returns "Jxx:yy:zz;" format
+        if (trimmed.isNotEmpty() && trimmed[0].isLetter() && trimmed.contains(':')) {
+            deviceTypeLetter = trimmed[0].uppercaseChar()
+            isDualMotor = deviceTypeLetter in DUAL_MOTOR_TYPES
+            android.util.Log.i(TAG, "DeviceType(ext): '$deviceTypeLetter' isDualMotor=$isDualMotor")
+        }
+    }
+
+    companion object {
+        private const val TAG = "ChloeVR-BLE"
+
+        // Lovense device type letters with dual vibration motors
+        // J=Domi2, W=Edge, P=Edge2, A=Nora(vibe+rotate)
+        private val DUAL_MOTOR_TYPES = setOf('J', 'W', 'P', 'A')
+
+        private val KNOWN_SERVICES = listOf(
+            // Nordic UART Service (older Lovense firmware)
+            ServiceUuids(
+                UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e"),
+                UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e"),
+                UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+            ),
+            // Lovense-specific service (newer firmware, Domi 2 / Mission etc.)
+            ServiceUuids(
+                UUID.fromString("50300001-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("50300002-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("50300003-0023-4bd4-bbd5-a6920e4c5653")
+            ),
+            // Alternate Lovense service (some newer models)
+            ServiceUuids(
+                UUID.fromString("53300001-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("53300002-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("53300003-0023-4bd4-bbd5-a6920e4c5653")
+            ),
+            // Another variant seen on some Lovense devices
+            ServiceUuids(
+                UUID.fromString("57300001-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("57300002-0023-4bd4-bbd5-a6920e4c5653"),
+                UUID.fromString("57300003-0023-4bd4-bbd5-a6920e4c5653")
+            )
+        )
+
+        /** CCCD descriptor UUID for enabling notifications. */
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+        private const val SCAN_TIMEOUT_MS = 15_000L
     }
 }
