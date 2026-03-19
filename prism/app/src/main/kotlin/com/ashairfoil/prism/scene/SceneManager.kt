@@ -94,22 +94,22 @@ class SceneManager(
 
             val gpuModel = renderer.getModel(gpuId) ?: return
 
-            // Auto-scale: target ~0.5m extent for comfortable VR viewing
+            // Auto-scale: normalize very large/small models to ~0.5m, keep meter-scale models near original
             val diameter = (gpuModel.boundsRadius * 2f).coerceAtLeast(0.001f)
-            val autoScale = (0.5f / diameter).coerceIn(0.05f, 10f)
+            val autoScale = when {
+                diameter < 0.05f -> 0.5f / diameter  // tiny model (probably cm/mm units), scale up
+                diameter > 5f -> 1f / diameter        // huge model, scale down to ~1m
+                else -> 0.75f                          // already meter-scale, use proven default
+            }.coerceIn(0.1f, 5f)
 
             // Place in front of camera on the horizontal plane
             val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
             val hFwdX = camFwdX / hLen
             val hFwdZ = camFwdZ / hLen
-            // Right vector for spacing multiple models side by side
-            val rightX = hFwdZ
-            val rightZ = -hFwdX
-            val placeDistance = 2.0f
-            val scaledDiameter = diameter * autoScale
-            val offsetDist = if (models.isEmpty()) 0f else offsetIndex * scaledDiameter * 1.5f
-            val placePosX = camPosX + hFwdX * placeDistance + rightX * offsetDist
-            val placePosZ = camPosZ + hFwdZ * placeDistance + rightZ * offsetDist
+            val placeDistance = 1.5f
+            val offsetX = if (models.isEmpty()) 0f else offsetIndex * 1.0f
+            val placePosX = camPosX + hFwdX * placeDistance + hFwdZ * offsetX
+            val placePosZ = camPosZ + hFwdZ * placeDistance - hFwdX * offsetX
 
             val placed = PlacedModel(
                 file = file,

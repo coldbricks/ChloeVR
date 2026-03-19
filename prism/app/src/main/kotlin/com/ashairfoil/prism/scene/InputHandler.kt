@@ -568,14 +568,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 val paramRowHit = 46f
                                 val sectionPadHit = 10f
                                 if (by in 164f..1100f) {
-                                    val adjustedBy = by - 164f
-                                    var acc = 0f; var idx = -1
-                                    for (p in 0 until activity.PARAM_NAMES.size) {
-                                        if (p == 0 || p == 5 || p == 13) acc += sectionPadHit
-                                        if (adjustedBy >= acc && adjustedBy < acc + paramRowHit) { idx = p; break }
-                                        acc += paramRowHit
+                                    // Lock hover to dragged slider while trigger is held
+                                    if (sliderDragging >= 0 && rightTrigger > 0.5f) {
+                                        hoveredMenuParam = sliderDragging
+                                    } else {
+                                        val adjustedBy = by - 164f
+                                        var acc = 0f; var idx = -1
+                                        for (p in 0 until activity.PARAM_NAMES.size) {
+                                            if (p == 0 || p == 5 || p == 13) acc += sectionPadHit
+                                            if (adjustedBy >= acc && adjustedBy < acc + paramRowHit) { idx = p; break }
+                                            acc += paramRowHit
+                                        }
+                                        if (idx >= 0) hoveredMenuParam = idx
                                     }
-                                    if (idx >= 0) hoveredMenuParam = idx
                                     lastLaserBx = bx
                                 }
                             }

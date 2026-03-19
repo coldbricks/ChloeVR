@@ -68,12 +68,9 @@ class AudioPlayer(private val context: Context) {
     }
 
     fun play(file: File) {
-        val prevPlayer = player
-        val prevEq = equalizer
-        equalizer = null
-        player = null
-        prevEq?.release()
-        prevPlayer?.release()
+        // Release previous player — must null refs first to avoid re-entrant access
+        equalizer?.release(); equalizer = null
+        player?.release(); player = null
         currentFile = file
         // Update playlist index if playing from existing playlist
         if (playlist.isNotEmpty()) {
@@ -97,7 +94,10 @@ class AudioPlayer(private val context: Context) {
                     if (state == Player.STATE_ENDED) {
                         when (this@AudioPlayer.repeatMode) {
                             RepeatMode.ONE -> {} // ExoPlayer handles loop
-                            RepeatMode.ALL -> playNext()
+                            RepeatMode.ALL -> {
+                                // Post to handler — can't create new ExoPlayer from inside listener callback
+                                android.os.Handler(android.os.Looper.getMainLooper()).post { playNext() }
+                            }
                             RepeatMode.OFF -> {}
                         }
                     }
