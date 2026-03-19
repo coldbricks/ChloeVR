@@ -86,6 +86,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         // ── Convenience accessors: activity mode state ──
         val audioPlayerMode = activity.audioPlayerMode
         val audioPickerMode = activity.audioPickerMode
+        val audioScanInProgress = activity.audioScanInProgress
         val beatSettingsMode = activity.beatSettingsMode
         val glbPickerMode = activity.glbPickerMode
         val scenePickerMode = activity.scenePickerMode
@@ -455,7 +456,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             for ((i, slider) in beatSliders.withIndex()) {
                 val isHovered = i == beatDraggingSlider
                 val value = slider.get()
-                val norm = ((value - slider.min) / (slider.max - slider.min)).coerceIn(0f, 1f)
+                val norm = activity.inputHandler.sliderNorm(slider)
 
                 canvas.drawText(slider.name, 40f, sy + 13f, labelP)
                 val valStr = when (slider.unit) {
@@ -504,41 +505,50 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 sy += 32f
             }
 
-            // ── Buttons: BOOM / VIBES / OFF / BACK ──
+            // ── Buttons: BOOM / VIBES / SPLIT / OFF / BACK ──
             val btnY = uiH - 75f; val btnH = 50f
-            val quarterW = (uiW - 100f) / 4f
-            p.textSize = 22f; p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = true
+            val fifthW = (uiW - 130f) / 5f
+            p.textSize = 20f; p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = true
 
             // BOOM button
             val boomReady = reactor?.boomReady ?: false
             p.color = if (hoveredActionButton == 127) 0x80FF9500.toInt()
                 else if (boomReady) 0x40FF9500.toInt() else 0x15FF9500.toInt()
-            canvas.drawRoundRect(30f, btnY, 30f + quarterW, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(30f, btnY, 30f + fifthW, btnY + btnH, 10f, 10f, p)
             p.color = if (boomReady) 0xFFFF9500.toInt() else 0xFF555555.toInt()
-            canvas.drawText("\uD83D\uDCA5 BOOM", 30f + quarterW / 2f, btnY + 33f, p)
+            canvas.drawText("BOOM", 30f + fifthW / 2f, btnY + 33f, p)
 
             // VIBES button
             val vibesColor = if (hapticConnected) 0xFF8B5CF6.toInt() else 0xFFEC4899.toInt()
-            val vibesLabel = if (hapticConnected) "VIBES: ON"
-                else if (hapticEnabled) "Scanning..."
+            val vibesLabel = if (hapticConnected) "VIBES:ON"
+                else if (hapticEnabled) "Scan..."
                 else "VIBES"
             p.color = if (hoveredActionButton == 128) 0x80EC4899.toInt()
                 else if (hapticConnected) 0x408B5CF6.toInt() else 0x20EC4899.toInt()
-            canvas.drawRoundRect(40f + quarterW, btnY, 40f + quarterW * 2f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(40f + fifthW, btnY, 40f + fifthW * 2f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 128) 0xFFFFFFFF.toInt() else vibesColor
-            canvas.drawText(vibesLabel, 40f + quarterW * 1.5f, btnY + 33f, p)
+            canvas.drawText(vibesLabel, 40f + fifthW * 1.5f, btnY + 33f, p)
+
+            // SPLIT button (dual motor toggle)
+            val splitActive = activity.hapticDualMotorSplit
+            val splitColor = if (splitActive) 0xFF22D3EE.toInt() else 0xFF666666.toInt()
+            p.color = if (hoveredActionButton == 129) 0x8022D3EE.toInt()
+                else if (splitActive) 0x4022D3EE.toInt() else 0x15666666.toInt()
+            canvas.drawRoundRect(50f + fifthW * 2f, btnY, 50f + fifthW * 3f, btnY + btnH, 10f, 10f, p)
+            p.color = if (hoveredActionButton == 129) 0xFFFFFFFF.toInt() else splitColor
+            canvas.drawText(if (splitActive) "SPLIT" else "UNIFIED", 50f + fifthW * 2.5f, btnY + 33f, p)
 
             // OFF button
             p.color = if (hoveredActionButton == 112) 0x80F04858.toInt() else 0x20F04858.toInt()
-            canvas.drawRoundRect(50f + quarterW * 2f, btnY, 50f + quarterW * 3f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(60f + fifthW * 3f, btnY, 60f + fifthW * 4f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 112) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt()
-            canvas.drawText("OFF", 50f + quarterW * 2.5f, btnY + 33f, p)
+            canvas.drawText("OFF", 60f + fifthW * 3.5f, btnY + 33f, p)
 
             // BACK button
             p.color = if (hoveredActionButton == 111) 0x80EC4899.toInt() else 0x20EC4899.toInt()
-            canvas.drawRoundRect(60f + quarterW * 3f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
+            canvas.drawRoundRect(70f + fifthW * 4f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
             p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
-            canvas.drawText("\u25C0 BACK", 60f + quarterW * 3f + (uiW - 90f - quarterW * 3f) / 2f, btnY + 33f, p)
+            canvas.drawText("BACK", 70f + fifthW * 4f + (uiW - 100f - fifthW * 4f) / 2f, btnY + 33f, p)
             p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
 
             drawLaserCursorOverlay()
@@ -560,8 +570,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                 val files = availableAudioFiles
                 if (files.isEmpty()) {
-                    p.textSize = 32f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
-                    canvas.drawText("No audio files found", 60f, 200f, p)
+                    p.textSize = 32f
+                    p.color = if (audioScanInProgress) 0xFF8B5CF6.toInt() else 0xFF6B7280.toInt()
+                    p.isFakeBoldText = false
+                    canvas.drawText(if (audioScanInProgress) "Scanning audio files..." else "No audio files found", 60f, 200f, p)
+                    if (audioScanInProgress) {
+                        p.textSize = 22f
+                        p.color = 0xFF9CA3AF.toInt()
+                        canvas.drawText("Browsing will populate automatically.", 60f, 238f, p)
+                    }
                 } else {
                     val maxVis = 10; val rowH = 72f; val startY = 140f
                     for (vi in 0 until maxVis) {
@@ -601,6 +618,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                             uiW / 2f, startY + maxVis * rowH + 16f, p)
                         p.textAlign = Paint.Align.LEFT
                     }
+                }
+                if (audioScanInProgress) {
+                    p.textSize = 20f
+                    p.color = 0xFF8B5CF6.toInt()
+                    p.textAlign = Paint.Align.RIGHT
+                    canvas.drawText("SCANNING...", uiW - 40f, 112f, p)
+                    p.textAlign = Paint.Align.LEFT
                 }
                 // BACK button
                 val apBtnY = uiH - 80f

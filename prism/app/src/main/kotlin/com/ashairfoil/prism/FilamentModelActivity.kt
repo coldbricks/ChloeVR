@@ -6,6 +6,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -125,6 +126,8 @@ class FilamentModelActivity : ComponentActivity() {
     internal var textureQuality = 0
     internal var uiNeedsRefresh = false
     private var lastBCloseTime = 0L
+    @Volatile private var uiRenderQueued = false
+    @Volatile private var audioLoopCheckQueued = false
 
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
@@ -159,18 +162,10 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var beatIntensity = 1.0f
 
     // ── Climax Engine state ──
-    private var climaxAccum = 0f       // 0..1, builds over sustained audio
-    private var climaxPeak = 0f        // short-term peak tracker (fast attack, slow decay)
-    private var lastBass = 0f          // previous frame bass for slam detection
-    private var bassSlam = 0f          // 0..1, spikes on bass transient, fast decay
-    private var breathPhase = 0f       // sine phase for idle breathing pulse
     private var hapticLeadBuffer = 0f  // buffered pct sent 1 frame early
     private var lastHapticIntensity = -1 // dedupe: skip BLE write if intensity unchanged
     private var lastHapticMotor1 = -1    // dedupe for dual motor (head/primary)
     private var lastHapticMotor2 = -1    // dedupe for dual motor (handle/secondary)
-    private var edgeSustain = 0f       // time spent near peak (seconds)
-    private var lastClimaxTime = 0L    // for dt calculation
-    private var bassSlamCooldown = 0f  // prevents slam retriggering too fast
     // Base values captured when BeatReactor turns on — beat modulates FROM these
     internal var beatBaseStored = false
     private var beatBaseAmbient = 1f
@@ -192,6 +187,9 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var audioPickerMode = false
     internal var availableAudioFiles: List<File> = emptyList()
     internal var audioPickerScrollOffset = 0
+    @Volatile internal var audioScanInProgress = false
+    @Volatile private var audioScanQueued = false
+    @Volatile private var lastAudioScanStartMs = 0L
 
     // BeatReactor settings sub-menu
     @Volatile internal var beatSettingsMode = false
@@ -202,6 +200,7 @@ class FilamentModelActivity : ComponentActivity() {
     internal var hapticManager: com.ashairfoil.prism.haptics.BleDeviceManager? = null
     @Volatile internal var hapticConnected = false
     @Volatile internal var hapticEnabled = false
+    @Volatile internal var hapticDualMotorSplit = false  // true = independent bass/treble motors
 
     // Floor detection: snap grid once at startup, track floor Y for model placement
     @Volatile private var floorSnappedOnce = false  // true after first grid snap to detected floor
@@ -251,6 +250,7 @@ class FilamentModelActivity : ComponentActivity() {
                 }
             } catch (_: Exception) {}
         }
+        loadCachedAudioFiles()
         // Rescan in background and update cache
         Thread {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
@@ -366,7 +366,7 @@ class FilamentModelActivity : ComponentActivity() {
 
             if (models.isNotEmpty()) {
                 menuVisible = false  // don't pop menu on restore
-                runOnUiThread { renderUiToBitmap() }
+                requestUiRender()
             }
         }.start()
     }
@@ -470,7 +470,7 @@ class FilamentModelActivity : ComponentActivity() {
                             pendingModelLoad = null
                             loadModel(pendingFile, offsetIndex = models.size)
                             uiNeedsRefresh = true
-                            runOnUiThread { renderUiToBitmap() }
+                            requestUiRender()
                         }
                         // Process pending scene loads
                         val pendingScene = pendingSceneLoad
@@ -478,7 +478,7 @@ class FilamentModelActivity : ComponentActivity() {
                             pendingSceneLoad = null
                             loadScene(pendingScene)
                             uiNeedsRefresh = true
-                            runOnUiThread { renderUiToBitmap() }
+                            requestUiRender()
                         }
 
                         try {
@@ -562,7 +562,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // ── BeatReactor + Climax Engine ──
+                            // ── BeatReactor — pure box-fill driven ──
                             val reactor = audioReactor
                             if (reactor != null && beatReactorEnabled) {
                                 reactor.update()
@@ -575,154 +575,82 @@ class FilamentModelActivity : ComponentActivity() {
                                     beatBaseFill = gr.fillLightIntensity
                                     beatBaseShadow = gr.shadowDarkness
                                     beatBaseStored = true
-                                    lastClimaxTime = System.nanoTime()
-                                    climaxAccum = 0f; climaxPeak = 0f; bassSlam = 0f
-                                    edgeSustain = 0f; breathPhase = 0f
                                 }
-
-                                val now = System.nanoTime()
-                                val dt = ((now - lastClimaxTime) / 1_000_000_000f).coerceIn(0.001f, 0.1f)
-                                lastClimaxTime = now
 
                                 val pct = reactor.boxFillPct
                                 val bi = beatIntensity
                                 val c = reactor.getBeatColor()
                                 val bass = reactor.bass
 
-                                // ── Climax Accumulator ──
-                                // Slowly builds when audio is active, decays when quiet.
-                                // Creates an escalating intensity curve over the duration of a track.
-                                val buildRate = 0.03f  // takes ~33s of sustained audio to reach 1.0
-                                val decayRate = 0.008f // slow bleed when quiet
-                                if (pct > 0.15f) {
-                                    climaxAccum = (climaxAccum + pct * buildRate * dt * bi).coerceAtMost(1f)
-                                } else {
-                                    climaxAccum = (climaxAccum - decayRate * dt).coerceAtLeast(0f)
-                                }
-
-                                // ── Peak Tracker (fast attack, slow release) ──
-                                if (pct > climaxPeak) {
-                                    climaxPeak = climaxPeak + (pct - climaxPeak) * 0.5f // fast attack
-                                } else {
-                                    climaxPeak = climaxPeak - (climaxPeak - pct) * 2f * dt // slow decay
-                                }
-                                climaxPeak = climaxPeak.coerceIn(0f, 1f)
-
-                                // ── Bass Slam Detector ──
-                                // Detects sudden bass transients (kick drums, drops)
-                                bassSlamCooldown = (bassSlamCooldown - dt).coerceAtLeast(0f)
-                                val bassDelta = bass - lastBass
-                                if (bassDelta > 0.15f && bass > 0.3f && bassSlamCooldown <= 0f) {
-                                    // SLAM! Scale by how much we've built up (louder when climax is higher)
-                                    bassSlam = (0.6f + climaxAccum * 0.4f).coerceAtMost(1f)
-                                    bassSlamCooldown = 0.08f // 80ms cooldown prevents multi-trigger
-                                }
-                                bassSlam = (bassSlam * (1f - 12f * dt)).coerceAtLeast(0f) // fast ~80ms decay
-                                lastBass = bass
-
-                                // ── Edge Sustain ──
-                                // Tracks how long we've been near the peak — tension builder
-                                if (pct > 0.7f && climaxAccum > 0.4f) {
-                                    edgeSustain = (edgeSustain + dt).coerceAtMost(8f)
-                                } else {
-                                    edgeSustain = (edgeSustain - dt * 0.5f).coerceAtLeast(0f)
-                                }
-                                val edgeMult = 1f + edgeSustain * 0.15f // up to 2.2x after 8s of edge
-
-                                // ── Breathing Pulse (idle/low moments) ──
-                                breathPhase += dt * 1.2f // ~0.2 Hz breathing cycle
-                                val breathVal = if (pct < 0.1f) {
-                                    (kotlin.math.sin(breathPhase.toDouble()).toFloat() * 0.5f + 0.5f) * 0.15f
-                                } else 0f
-
-                                // ── Composite intensity ──
-                                // Base beat + climax buildup escalation + slam spike + breathing
-                                val intensity = pct * bi * (1f + climaxAccum * 1.5f) * edgeMult
-                                val slamBoost = bassSlam * bi * 3f
+                                // Straight box output: pct * bi. No accumulation, no drift.
+                                val intensity = pct * bi
 
                                 val affectsModels = reactor.washScope != AudioReactor.WashScope.ROOM
                                 val affectsRoom = reactor.washScope != AudioReactor.WashScope.MODELS
 
                                 if (affectsModels) {
-                                    // Ambient: warm glow that builds with climax
-                                    gr.ambientIntensity = beatBaseAmbient + intensity * 2.5f + breathVal * 0.5f
+                                    // Ambient: direct beat-driven glow
+                                    gr.ambientIntensity = beatBaseAmbient + intensity * 2.5f
                                     setRgb(gr.ambientColor,
-                                        c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.2f,
-                                        c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f + breathVal * 0.1f,
+                                        c[0] * pct * bi * 1.5f + (1f - pct) * 0.3f,
+                                        c[1] * pct * bi * 1.5f + (1f - pct) * 0.3f,
                                         c[2] * pct * bi * 1.5f + (1f - pct) * 0.3f
                                     )
 
-                                    // Main light: punches hard on slam, builds with climax
-                                    gr.lightIntensity = beatBaseLight + intensity * 4f + slamBoost * 5f
+                                    // Main light: direct from box fill
+                                    gr.lightIntensity = beatBaseLight + intensity * 4f
                                     setRgb(gr.lightColor,
-                                        c[0] * pct + (1f - pct) * 1f + bassSlam * 0.3f,
-                                        c[1] * pct + (1f - pct) * 0.95f + bassSlam * 0.1f,
+                                        c[0] * pct + (1f - pct) * 1f,
+                                        c[1] * pct + (1f - pct) * 0.95f,
                                         c[2] * pct + (1f - pct) * 0.9f
                                     )
 
-                                    // Fill: contrast light follows
-                                    gr.fillLightIntensity = beatBaseFill + intensity * 2f + slamBoost * 2f
+                                    // Fill: contrast light
+                                    gr.fillLightIntensity = beatBaseFill + intensity * 2f
                                     setRgb(gr.fillLightColor,
                                         c[2] * pct + (1f - pct) * 0.85f,
                                         c[0] * pct + (1f - pct) * 0.9f,
                                         c[1] * pct + (1f - pct) * 1f
                                     )
 
-                                    // Per-model: exposure + EMISSIVE PULSE (models glow from within)
+                                    // Per-model: exposure + emissive pulse
                                     for (placed in models) {
                                         val gpuModel = gr.getModel(placed.gpuModelId)
                                         if (gpuModel != null) {
-                                            // Exposure builds with climax
-                                            gpuModel.exposure = placed.exposure + intensity * 1f + slamBoost * 0.5f
-                                            // Emissive glow: models radiate light on beats
-                                            // Stronger as climax builds, spikes on slam
-                                            val emGlow = pct * bi * (0.5f + climaxAccum * 1.5f) + bassSlam * 2f + breathVal
+                                            gpuModel.exposure = placed.exposure + intensity * 1f
+                                            val emGlow = pct * bi * 0.8f
                                             setRgb(gpuModel.emissiveFactor,
-                                                c[0] * emGlow + breathVal * 0.5f,
-                                                c[1] * emGlow + breathVal * 0.3f,
-                                                c[2] * emGlow + breathVal * 0.2f
+                                                c[0] * emGlow,
+                                                c[1] * emGlow,
+                                                c[2] * emGlow
                                             )
-                                            // Saturation surge on slam (punchy color)
-                                            gpuModel.saturation = placed.saturation + bassSlam * 0.5f
+                                            gpuModel.saturation = placed.saturation
                                         }
                                     }
 
-                                    // Shadows soften as intensity builds (removes harsh edges)
+                                    // Shadows soften proportionally
                                     gr.shadowDarkness = beatBaseShadow * (1f - pct * 0.4f * bi)
                                 }
 
-                                // ── Beat-synced bloom ──
-                                // Threshold drops on slam → bloom FLARES on bass hits
-                                // Intensity rises with climax accumulator
+                                // Bloom: direct from box fill
                                 if (gr.bloomEnabled) {
-                                    gr.bloomThreshold = (0.8f - bassSlam * 0.5f - climaxAccum * 0.15f).coerceAtLeast(0.2f)
-                                    gr.bloomIntensity = 0.3f + pct * bi * 0.3f + bassSlam * 0.8f + climaxAccum * 0.2f
+                                    gr.bloomThreshold = (0.8f - pct * bi * 0.3f).coerceAtLeast(0.2f)
+                                    gr.bloomIntensity = 0.3f + pct * bi * 0.5f
                                 }
 
-                                // ── Room wash: builds with climax, flashes on slam ──
+                                // Room wash: direct from box fill
                                 beatWashAlpha = if (affectsRoom) {
-                                    val baseWash = intensity * 0.35f
-                                    val slamFlash = bassSlam * 0.5f
-                                    (baseWash + slamFlash + breathVal * 0.1f).coerceAtMost(0.85f)
+                                    (intensity * 0.4f).coerceAtMost(0.85f)
                                 } else 0f
 
-                                // ── Haptic output: LEADS visual by 1 frame ──
-                                // Dual motor: bass→motor1(head), mid+high→motor2(handle)
-                                // Single motor: combined signal
+                                // Haptic output: box fill drives vibrator directly.
+                                // 100% fill = 100% vibrator, 0% fill = 0% (release handled by AudioReactor envelope)
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
-                                    if (hm != null && hm.isDualMotor) {
-                                        // Motor 1 (head): bass-driven, punchy, power channel
-                                        val m1Pct = (bass * bi * 2.5f * (1f + climaxAccum * 1.2f)
-                                            + bassSlam * 0.7f
-                                            + (if (pct < 0.1f) (kotlin.math.sin((breathPhase).toDouble()).toFloat() * 0.5f + 0.5f) * 0.12f else 0f)
-                                        ).coerceIn(0f, 1f)
-                                        // Motor 2 (handle): mid+high texture, complementary
-                                        val m2Pct = (reactor.mid * bi * 1.8f + reactor.high * bi * 1.0f
-                                            + pct * 0.25f * bi * (1f + climaxAccum * 0.5f)
-                                            + bassSlam * 0.2f
-                                            + (if (pct < 0.1f) (kotlin.math.sin((breathPhase + Math.PI.toFloat()).toDouble()).toFloat() * 0.5f + 0.5f) * 0.10f else 0f)
-                                        ).coerceIn(0f, 1f)
+                                    if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
+                                        // Split mode: motor 1 = bass, motor 2 = mid+high
+                                        val m1Pct = (bass * bi * 2.5f).coerceIn(0f, 1f)
+                                        val m2Pct = (reactor.mid * bi * 1.8f + reactor.high * bi * 1.0f).coerceIn(0f, 1f)
                                         val m1 = (m1Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         val m2 = (m2Pct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (m1 != lastHapticMotor1 || m2 != lastHapticMotor2) {
@@ -731,12 +659,16 @@ class FilamentModelActivity : ComponentActivity() {
                                             hm.setDualIntensity(m1, m2)
                                         }
                                     } else {
-                                        val hapticPct = (pct * bi * (1f + climaxAccum * 0.8f)
-                                            + bassSlam * 0.4f + breathVal * 0.3f).coerceIn(0f, 1f)
-                                        val hIntensity = (hapticPct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        // Unified: both motors (or single motor) follow box fill directly
+                                        val hIntensity = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (hIntensity != lastHapticIntensity) {
                                             lastHapticIntensity = hIntensity
-                                            hm?.setIntensity(hIntensity)
+                                            if (hm != null && hm.isDualMotor) {
+                                                hm.setDualIntensity(hIntensity, hIntensity)
+                                                lastHapticMotor1 = hIntensity; lastHapticMotor2 = hIntensity
+                                            } else {
+                                                hm?.setIntensity(hIntensity)
+                                            }
                                         }
                                     }
                                 }
@@ -750,7 +682,6 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.bloomThreshold = 0.8f
                                 gr.bloomIntensity = 0.3f
                                 beatBaseStored = false
-                                climaxAccum = 0f; climaxPeak = 0f; bassSlam = 0f; edgeSustain = 0f
                                 // Safety: zero haptic output when reactor disabled
                                 if (hapticConnected) {
                                     hapticManager?.setIntensity(0)
@@ -769,9 +700,9 @@ class FilamentModelActivity : ComponentActivity() {
                             // Audio player A/B loop enforcement + UI refresh
                             // ExoPlayer must be accessed on main thread
                             if (audioPlayer?.hasLoop() == true && audioPlayer?.isPlaying == true) {
-                                runOnUiThread { audioPlayer?.updateLoop() }
+                                requestAudioLoopCheck()
                             }
-                            if (audioPlayerMode && audioPlayer?.isPlaying == true && sensorPollFrame % 18 == 0) {
+                            if (audioPlayerMode && sensorPollFrame % 18 == 0) {
                                 uiNeedsRefresh = true
                             }
 
@@ -929,9 +860,8 @@ class FilamentModelActivity : ComponentActivity() {
 
                 nativeSubmitFrame()
 
-                if (nativePollInput(inputHandler.inputBuffer)) {
-                    inputHandler.handle()
-                }
+                nativePollInput(inputHandler.inputBuffer)
+                inputHandler.handle()
 
                 // ── Poll ALL XR sensors (every few frames to save CPU) ──
                 sensorPollFrame++
@@ -955,6 +885,86 @@ class FilamentModelActivity : ComponentActivity() {
 
     /** Render HUD text panel to bitmap — delegates to UiRenderer */
     internal fun renderUiToBitmap() = uiRenderer.renderUiToBitmap()
+
+    internal fun requestUiRender() {
+        if (uiRenderQueued) return
+        uiRenderQueued = true
+        runOnUiThread {
+            try {
+                renderUiToBitmap()
+            } finally {
+                uiRenderQueued = false
+            }
+        }
+    }
+
+    private fun requestAudioLoopCheck() {
+        if (audioLoopCheckQueued) return
+        audioLoopCheckQueued = true
+        runOnUiThread {
+            try {
+                audioPlayer?.updateLoop()
+            } finally {
+                audioLoopCheckQueued = false
+            }
+        }
+    }
+
+    private fun getAudioCacheFile(): File = File(cacheDir, "audio_cache.txt")
+
+    private fun loadCachedAudioFiles() {
+        val cacheFile = getAudioCacheFile()
+        if (!cacheFile.exists()) return
+        try {
+            val cached = cacheFile.readLines()
+                .asSequence()
+                .map { File(it) }
+                .filter { it.exists() && FilePicker.isAudioFile(it) }
+                .sortedBy { it.nameWithoutExtension.lowercase() }
+                .toList()
+            if (cached.isNotEmpty()) {
+                availableAudioFiles = cached
+                Log.i(TAG, "Loaded ${cached.size} audio files from cache")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed loading audio cache: ${e.message}")
+        }
+    }
+
+    internal fun requestAudioFileScan(force: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (!force && now - lastAudioScanStartMs < 1500L && availableAudioFiles.isNotEmpty()) {
+            return
+        }
+        if (audioScanInProgress) {
+            audioScanQueued = audioScanQueued || force
+            return
+        }
+        lastAudioScanStartMs = now
+        audioScanInProgress = true
+        audioScanQueued = false
+        Thread {
+            try {
+                val scanned = FilePicker.listVideoFiles(this)
+                    .asSequence()
+                    .filter { FilePicker.isAudioFile(it) }
+                    .sortedBy { it.nameWithoutExtension.lowercase() }
+                    .toList()
+                availableAudioFiles = scanned
+                try {
+                    getAudioCacheFile().writeText(scanned.joinToString("\n") { it.absolutePath })
+                } catch (_: Exception) {}
+                Log.i(TAG, "Scanned ${scanned.size} audio files")
+            } catch (e: Exception) {
+                Log.w(TAG, "Audio scan failed: ${e.message}")
+            } finally {
+                audioScanInProgress = false
+                uiNeedsRefresh = true
+                requestUiRender()
+                if (audioScanQueued) requestAudioFileScan(force = true)
+            }
+        }.start()
+    }
 
     private fun buildModelPanelView(): android.view.View = uiRenderer.buildModelPanelView()
 
@@ -998,6 +1008,16 @@ class FilamentModelActivity : ComponentActivity() {
         if (hasFocus) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // Samsung Galaxy XR: B button fires both OpenXR action AND KEYCODE_BACK.
+        // B handled entirely via OpenXR input polling — suppress Android back event
+        // to prevent finish()/onPause() from killing audio and freezing the menu.
+        if (event.keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private val lightListener = object : SensorEventListener {

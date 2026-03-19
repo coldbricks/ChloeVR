@@ -1,9 +1,9 @@
 package com.ashairfoil.prism.scene
 
+import android.os.SystemClock
 import android.util.Log
 import com.ashairfoil.prism.AudioReactor
 import com.ashairfoil.prism.FilamentModelActivity
-import com.ashairfoil.prism.FilePicker
 import com.ashairfoil.prism.GlesModelRenderer
 
 /**
@@ -82,7 +82,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
     // Audio hover
     var hoveredAudioButton = -1
     var hoveredAudioFileIndex = -1
+    private var lastHoveredAudioButton = -1
+    private var lastHoveredAudioFileIndex = -1
     private var audioSeekDragging = false
+    private var lastAudioSeekTargetMs = Long.MIN_VALUE
+    private var lastCursorRefreshMs = 0L
 
     // Beat settings drag
     var beatDraggingSlider = -1
@@ -101,20 +105,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
     data class BeatSlider(
         val name: String, val unit: String, val min: Float, val max: Float,
-        val get: () -> Float, val set: (Float) -> Unit
+        val get: () -> Float, val set: (Float) -> Unit,
+        val logScale: Boolean = false
     )
 
     val beatSliders by lazy {
         arrayOf(
             BeatSlider("GAIN", "x", 0.5f, 10f,
                 { activity.audioReactor?.sensitivity ?: 3f },
-                { activity.audioReactor?.sensitivity = it }),
+                { activity.audioReactor?.sensitivity = it },
+                logScale = true),
             BeatSlider("BOX LEFT", "Hz", 20f, 2000f,
                 { val r = activity.audioReactor; if (r != null) 20f * Math.pow(1000.0, r.boxLeft.toDouble()).toFloat() else 20f },
-                { activity.audioReactor?.boxLeft = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) }),
+                { activity.audioReactor?.boxLeft = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) },
+                logScale = true),
             BeatSlider("BOX RIGHT", "Hz", 100f, 20000f,
                 { val r = activity.audioReactor; if (r != null) 20f * Math.pow(1000.0, r.boxRight.toDouble()).toFloat() else 300f },
-                { activity.audioReactor?.boxRight = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) }),
+                { activity.audioReactor?.boxRight = (kotlin.math.ln(it / 20f) / kotlin.math.ln(1000f)).coerceIn(0f, 1f) },
+                logScale = true),
             BeatSlider("BOX BOTTOM", "%", 0f, 80f,
                 { (activity.audioReactor?.boxBottom ?: 5f) * 100f },
                 { activity.audioReactor?.boxBottom = it / 100f }),
@@ -126,7 +134,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 { activity.audioReactor?.attackMs = it }),
             BeatSlider("RELEASE", "ms", 10f, 2000f,
                 { activity.audioReactor?.releaseMs ?: 150f },
-                { activity.audioReactor?.releaseMs = it }),
+                { activity.audioReactor?.releaseMs = it },
+                logScale = true),
             BeatSlider("EXPAND", "x", 0.3f, 4f,
                 { activity.audioReactor?.dynRange ?: 2f },
                 { activity.audioReactor?.dynRange = it }),
@@ -204,8 +213,27 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
     private fun applyBeatSlider(idx: Int, normalizedX: Float) {
         val slider = beatSliders.getOrNull(idx) ?: return
-        val value = slider.min + normalizedX * (slider.max - slider.min)
+        val value = if (slider.logScale && slider.min > 0f) {
+            // Log interpolation: left side of slider gets more resolution for low values
+            val logMin = kotlin.math.ln(slider.min)
+            val logMax = kotlin.math.ln(slider.max)
+            kotlin.math.exp(logMin + normalizedX * (logMax - logMin))
+        } else {
+            slider.min + normalizedX * (slider.max - slider.min)
+        }
         slider.set(value)
+    }
+
+    /** Convert a slider's current value to normalized 0..1 position, respecting logScale */
+    fun sliderNorm(slider: BeatSlider): Float {
+        val value = slider.get()
+        return if (slider.logScale && slider.min > 0f) {
+            val logMin = kotlin.math.ln(slider.min)
+            val logMax = kotlin.math.ln(slider.max)
+            ((kotlin.math.ln(value.coerceIn(slider.min, slider.max)) - logMin) / (logMax - logMin)).coerceIn(0f, 1f)
+        } else {
+            ((value - slider.min) / (slider.max - slider.min)).coerceIn(0f, 1f)
+        }
     }
 
     // ── Convenience accessors ──
@@ -280,6 +308,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
             hoveredMenuParam = -1
             hoveredActionButton = -1
             var laserOnPanel = false
+            var panelRayT = -1f
+            var panelRayNearUi = false
             activity.beatCursorX = -1f
             activity.beatCursorY = -1f
             if (activity.menuVisible) {
@@ -288,32 +318,22 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 val pcz = renderer.panelZ
                 val panelHW = (renderer.panelW * 0.5f).coerceAtLeast(0.001f)
                 val panelHH = (renderer.panelH * 0.5f).coerceAtLeast(0.001f)
-
-                // Billboard axes -- must match renderer exactly
-                var fwdX = pcx - activity.camPosX; var fwdY = pcy - activity.camPosY; var fwdZ = pcz - activity.camPosZ
-                val fLen = kotlin.math.sqrt(fwdX*fwdX + fwdY*fwdY + fwdZ*fwdZ).coerceAtLeast(0.001f)
-                fwdX /= fLen; fwdY /= fLen; fwdZ /= fLen
-
-                // Right = cross(fwd, worldUp)
-                var rx = fwdY*0f - fwdZ*1f
-                var ry = fwdZ*0f - fwdX*0f
-                var rz = fwdX*1f - fwdY*0f
-                val rLen = kotlin.math.sqrt(rx*rx + ry*ry + rz*rz).coerceAtLeast(0.001f)
-                rx /= rLen; ry /= rLen; rz /= rLen
-
-                // Up = cross(fwd, right) then negate
-                val bupX = fwdY*rz - fwdZ*ry
-                val bupY = fwdZ*rx - fwdX*rz
-                val bupZ = fwdX*ry - fwdY*rx
-                val ux = -bupX; val uy = -bupY; val uz = -bupZ
-
-                // Normal for ray-plane intersection (panel faces camera)
-                val nx = -fwdX; val ny = -fwdY; val nz = -fwdZ
+                val panelRot = floatArrayOf(
+                    activity.panelRotX, activity.panelRotY, activity.panelRotZ, activity.panelRotW
+                )
+                // Match compositor panel orientation exactly (XR quad uses this pose).
+                val rightAxis = renderer.rotateVecByQuat(floatArrayOf(1f, 0f, 0f), panelRot)
+                val upAxis = renderer.rotateVecByQuat(floatArrayOf(0f, 1f, 0f), panelRot)
+                val normalAxis = renderer.rotateVecByQuat(floatArrayOf(0f, 0f, 1f), panelRot)
+                val rx = rightAxis[0]; val ry = rightAxis[1]; val rz = rightAxis[2]
+                val ux = upAxis[0]; val uy = upAxis[1]; val uz = upAxis[2]
+                val nx = normalAxis[0]; val ny = normalAxis[1]; val nz = normalAxis[2]
 
                 val denom = rayDir[0]*nx + rayDir[1]*ny + rayDir[2]*nz
                 if (kotlin.math.abs(denom) > 0.01f) {
                     val t = ((pcx - laserHandPos[0])*nx + (pcy - laserHandPos[1])*ny + (pcz - laserHandPos[2])*nz) / denom
                     if (t > 0f && t < 8f) {
+                        panelRayT = t
                         val wx = laserHandPos[0] + rayDir[0] * t
                         val wy = laserHandPos[1] + rayDir[1] * t
                         val wz = laserHandPos[2] + rayDir[2] * t
@@ -322,6 +342,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         val dx = wx - pcx; val dy = wy - pcy; val dz = wz - pcz
                         val hx = dx*rx + dy*ry + dz*rz
                         val hy = dx*ux + dy*uy + dz*uz
+                        panelRayNearUi = hx in (-panelHW * 1.5f)..(panelHW * 1.5f) &&
+                            hy in (-panelHH * 1.5f)..(panelHH * 1.5f)
 
                         if (hx in -panelHW..panelHW && hy in -panelHH..panelHH) {
                             laserOnPanel = true
@@ -398,7 +420,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         else hoveredAudioButton = 52
                                     }
                                 }
-                                activity.uiNeedsRefresh = true
+                                val now = SystemClock.uptimeMillis()
+                                if (now - lastCursorRefreshMs >= 90L) {
+                                    lastCursorRefreshMs = now
+                                    activity.uiNeedsRefresh = true
+                                }
                             } else if (activity.beatSettingsMode) {
                                 val prevDragging = beatDraggingSlider
                                 beatDraggingSlider = -1
@@ -412,10 +438,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 val sliderRowH = 32f
 
                                 if (by > 1205f) {
-                                    val quarter = (1024f - 100f) / 4f
-                                    if (bx < 30f + quarter) hoveredActionButton = 127 // BOOM
-                                    else if (bx < 40f + quarter * 2f) hoveredActionButton = 128 // VIBES
-                                    else if (bx < 50f + quarter * 3f) hoveredActionButton = 112 // OFF
+                                    val fifth = (1024f - 100f) / 5f
+                                    if (bx < 30f + fifth) hoveredActionButton = 127 // BOOM
+                                    else if (bx < 40f + fifth * 2f) hoveredActionButton = 128 // VIBES
+                                    else if (bx < 50f + fifth * 3f) hoveredActionButton = 129 // SPLIT (dual motor toggle)
+                                    else if (bx < 60f + fifth * 4f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
                                     // Rolloff mode buttons
@@ -587,6 +614,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                     }
                 }
+                if (!laserOnPanel && panelRayT > 0f && panelRayNearUi) {
+                    // Prevent visual/menu click-through when ray is on (or very near) the menu plane.
+                    hitDistance = panelRayT
+                }
 
                 // Drag update -- full 3D: place panel along laser ray at grab distance
                 if (draggingPanel) {
@@ -615,11 +646,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 // Refresh only when hover state actually changes
                 if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton
                     || (activity.glbPickerMode && hoveredGlbIndex != lastHoveredGlbIndex)
-                    || (activity.scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)) {
+                    || (activity.scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)
+                    || (activity.audioPlayerMode && (
+                        hoveredAudioButton != lastHoveredAudioButton ||
+                            (activity.audioPickerMode && hoveredAudioFileIndex != lastHoveredAudioFileIndex)))
+                ) {
                     lastHoveredMenuParam = hoveredMenuParam
                     lastHoveredActionButton = hoveredActionButton
                     lastHoveredGlbIndex = hoveredGlbIndex
                     lastHoveredSceneIndex = hoveredSceneIndex
+                    lastHoveredAudioButton = hoveredAudioButton
+                    lastHoveredAudioFileIndex = hoveredAudioFileIndex
                     activity.uiNeedsRefresh = true
                 }
 
@@ -814,15 +851,18 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 }
                 when (btn) {
                     51 -> {
-                        activity.availableAudioFiles = FilePicker.listVideoFiles(activity)
-                            .filter { FilePicker.isAudioFile(it) }
-                            .sortedBy { it.nameWithoutExtension.lowercase() }
                         activity.audioPickerMode = true
                         activity.audioPickerScrollOffset = 0
                         hoveredAudioFileIndex = -1
+                        activity.requestAudioFileScan()
+                        activity.uiNeedsRefresh = true
+                        activity.requestUiRender()
                     }
                     52 -> activity.audioPlayerMode = false
-                    60 -> audioSeekDragging = true
+                    60 -> {
+                        audioSeekDragging = true
+                        lastAudioSeekTargetMs = Long.MIN_VALUE
+                    }
                 }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 113) {
@@ -902,6 +942,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.hapticEnabled = false
                     }
                 }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 129) {
+                // SPLIT: toggle dual motor independent bass/treble
+                activity.hapticDualMotorSplit = !activity.hapticDualMotorSplit
+                Log.i(TAG, "Dual motor split: ${activity.hapticDualMotorSplit}")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.saveNameMode && hoveredSaveButton == 0) {
                 val name = String(activity.saveNameChars, 0, activity.saveNameLen).trim()
@@ -1066,10 +1111,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
                 }
                 activity.uiNeedsRefresh = true
-            } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
+            } else if (!activity.menuVisible && hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
                 selectedModelIndex = hoveredModelIndex
                 activity.uiNeedsRefresh = true
-            } else if (hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0) {
+            } else if (!activity.menuVisible && hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0) {
                 selectedModelIndex = -1
                 if (renderer != null) {
                     for (placed in models) {
@@ -1102,11 +1147,20 @@ class InputHandler(private val activity: FilamentModelActivity) {
             activity.runOnUiThread {
                 val ap = activity.audioPlayer
                 val dur = ap?.durationMs ?: 0
-                if (dur > 0) ap?.seekTo((t * dur).toLong())
+                if (dur > 0) {
+                    val targetMs = (t * dur).toLong()
+                    if (lastAudioSeekTargetMs == Long.MIN_VALUE ||
+                        kotlin.math.abs(targetMs - lastAudioSeekTargetMs) >= 120L
+                    ) {
+                        ap?.seekTo(targetMs)
+                        lastAudioSeekTargetMs = targetMs
+                    }
+                }
             }
         }
         if (!rightTriggerPressed || !activity.menuVisible || !activity.audioPlayerMode || activity.audioPickerMode) {
             audioSeekDragging = false
+            lastAudioSeekTargetMs = Long.MIN_VALUE
         }
         if (!rightTriggerPressed) sliderDragging = -1
         lastRightTriggerState = rightTriggerPressed
@@ -1242,7 +1296,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 lastRightStickClick = rightStickClick
                 if (activity.uiNeedsRefresh) {
                     activity.uiNeedsRefresh = false
-                    activity.runOnUiThread { activity.renderUiToBitmap() }
+                    activity.requestUiRender()
                 }
                 return
             }
@@ -1258,7 +1312,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.audioPickerScrollOffset--; activity.uiNeedsRefresh = true
                     }
                 }
-                if (activity.uiNeedsRefresh) { activity.uiNeedsRefresh = false; activity.runOnUiThread { activity.renderUiToBitmap() } }
+                if (activity.uiNeedsRefresh) { activity.uiNeedsRefresh = false; activity.requestUiRender() }
                 lastRightStickClick = rightStickClick
                 return
             }
@@ -1277,7 +1331,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 lastRightStickClick = rightStickClick
                 if (activity.uiNeedsRefresh) {
                     activity.uiNeedsRefresh = false
-                    activity.runOnUiThread { activity.renderUiToBitmap() }
+                    activity.requestUiRender()
                 }
                 return
             }
@@ -1438,7 +1492,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
             if (activity.uiNeedsRefresh) {
                 activity.uiNeedsRefresh = false
-                activity.runOnUiThread { activity.renderUiToBitmap() }
+                activity.requestUiRender()
             }
             lastRightStickClick = rightStickClick
             return
@@ -1641,7 +1695,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
         if (activity.uiNeedsRefresh) {
             activity.uiNeedsRefresh = false
-            activity.runOnUiThread { activity.renderUiToBitmap() }
+            activity.requestUiRender()
         }
     }
 }

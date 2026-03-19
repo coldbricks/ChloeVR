@@ -20,6 +20,7 @@ class AudioPlayer(private val context: Context) {
     }
 
     private var player: ExoPlayer? = null
+    private var playerListener: Player.Listener? = null
     private var equalizer: Equalizer? = null
 
     val isPlaying: Boolean get() = player?.isPlaying == true
@@ -68,7 +69,10 @@ class AudioPlayer(private val context: Context) {
     }
 
     fun play(file: File) {
-        // Release previous player — must null refs first to avoid re-entrant access
+        // Remove listener BEFORE release to prevent stale STATE_ENDED cascade
+        // (releasing ExoPlayer fires STATE_ENDED, which would queue playNext())
+        playerListener?.let { player?.removeListener(it) }
+        playerListener = null
         equalizer?.release(); equalizer = null
         player?.release(); player = null
         currentFile = file
@@ -79,30 +83,30 @@ class AudioPlayer(private val context: Context) {
         }
         clearLoop()
         Log.i(TAG, "Playing: ${file.name} [${playlistIndex + 1}/${playlist.size}]")
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_ENDED) {
+                    when (this@AudioPlayer.repeatMode) {
+                        RepeatMode.ONE -> {} // ExoPlayer handles loop
+                        RepeatMode.ALL -> {
+                            android.os.Handler(android.os.Looper.getMainLooper()).post { playNext() }
+                        }
+                        RepeatMode.OFF -> {}
+                    }
+                }
+            }
+        }
+        playerListener = listener
         player = ExoPlayer.Builder(context).build().apply {
             setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             playWhenReady = true
-            // For ALL mode, we handle advancement ourselves via STATE_ENDED
             this.repeatMode = when (this@AudioPlayer.repeatMode) {
                 RepeatMode.ONE -> Player.REPEAT_MODE_ONE
                 else -> Player.REPEAT_MODE_OFF
             }
             this.volume = this@AudioPlayer.volume
             prepare()
-            addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(state: Int) {
-                    if (state == Player.STATE_ENDED) {
-                        when (this@AudioPlayer.repeatMode) {
-                            RepeatMode.ONE -> {} // ExoPlayer handles loop
-                            RepeatMode.ALL -> {
-                                // Post to handler — can't create new ExoPlayer from inside listener callback
-                                android.os.Handler(android.os.Looper.getMainLooper()).post { playNext() }
-                            }
-                            RepeatMode.OFF -> {}
-                        }
-                    }
-                }
-            })
+            addListener(listener)
         }
         // Apply current speed
         player?.playbackParameters = PlaybackParameters(SPEED_OPTIONS[speedIndex])
@@ -134,16 +138,29 @@ class AudioPlayer(private val context: Context) {
     }
 
     fun togglePlayPause() {
-        val p = player ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        val p = player
+        if (p == null) {
+            // Player released (after stop) — restart current track
+            val file = currentFile ?: return
+            play(file)
+            return
+        }
+        when {
+            p.isPlaying -> p.pause()
+            p.playbackState == Player.STATE_ENDED -> { p.seekTo(0); p.play() }
+            else -> p.play()
+        }
     }
 
     fun pause() { player?.pause() }
     fun resume() { player?.play() }
 
     fun stop() {
+        playerListener?.let { player?.removeListener(it) }
+        playerListener = null
         player?.stop()
-        player?.clearMediaItems()
+        player?.release()
+        player = null
     }
 
     fun seekTo(posMs: Long) {
@@ -261,6 +278,8 @@ class AudioPlayer(private val context: Context) {
     }
 
     fun release() {
+        playerListener?.let { player?.removeListener(it) }
+        playerListener = null
         equalizer?.release(); equalizer = null
         player?.release(); player = null
         currentFile = null
