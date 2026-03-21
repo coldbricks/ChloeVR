@@ -182,6 +182,40 @@ class FilamentModelActivity : ComponentActivity() {
     internal var roomTrackToggleLatch = false
     @Volatile internal var roomTrackingEnabled = false
 
+    // ── Room Edit (manual plane trim) ──
+    @Volatile internal var roomEditMode = false
+    internal var roomEditToggleLatch = false
+    internal var selectedPlaneIndex = -1
+    // Per-plane Y offset keyed by quantized centroid "x,z" (10cm grid)
+    internal val planeAdjustments = mutableMapOf<String, Float>()
+
+    /** Quantize plane position to 10cm grid for stable matching across detection updates */
+    internal fun planeKey(posX: Float, posZ: Float): String {
+        val qx = (posX * 10).toInt()
+        val qz = (posZ * 10).toInt()
+        return "$qx,$qz"
+    }
+
+    /** Apply manual Y offsets to detected planes */
+    private fun applyPlaneAdjustments(planes: List<GlesModelRenderer.ShadowPlane>): List<GlesModelRenderer.ShadowPlane> {
+        if (planeAdjustments.isEmpty()) return planes
+        val adjusted = ArrayList<GlesModelRenderer.ShadowPlane>(planes.size)
+        for (p in planes) {
+            val key = planeKey(p.posX, p.posZ)
+            val offsetY = planeAdjustments[key]
+            if (offsetY != null && offsetY != 0f) {
+                adjusted.add(GlesModelRenderer.ShadowPlane(
+                    p.posX, p.posY + offsetY, p.posZ,
+                    p.rotX, p.rotY, p.rotZ, p.rotW,
+                    p.extentX, p.extentY, p.label
+                ))
+            } else {
+                adjusted.add(p)
+            }
+        }
+        return adjusted
+    }
+
     // ── Audio Player ──
     @Volatile internal var audioPlayer: AudioPlayer? = null
     @Volatile internal var audioPlayerMode = false
@@ -281,7 +315,7 @@ class FilamentModelActivity : ComponentActivity() {
             sensorPoller.onPlanesUpdated = { planes, lowestHorizY ->
                 val gr = glesRenderer
                 if (gr != null) {
-                    gr.shadowPlanes = planes
+                    gr.shadowPlanes = applyPlaneAdjustments(planes)
                     if (lowestHorizY < Float.MAX_VALUE) {
                         // If using LOCAL space (fallback), the origin is at the head.
                         // Floor planes will be reported relative to head position.
@@ -811,6 +845,9 @@ class FilamentModelActivity : ComponentActivity() {
                                 washR = wc[0]; washG = wc[1]; washB = wc[2]
                                 washMode = reactor.blendMode.ordinal
                             }
+
+                            // Sync room edit highlight
+                            gr.selectedPlaneIndex = if (roomEditMode) selectedPlaneIndex else -1
 
                             // Left eye: models -> ground/shadow -> gizmo -> laser
                             gr.renderEye(leftTexId, width, height, leftProj, leftView)

@@ -1151,6 +1151,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.glesRenderer?.shadowPlanes = emptyList()
                     }
                     Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
+                } else if (hoveredMenuParam == 18) {
+                    activity.roomEditMode = !activity.roomEditMode
+                    if (activity.roomEditMode) {
+                        // Auto-enable room tracking + plane vis
+                        activity.roomTrackingEnabled = true
+                        activity.sensorPoller.planeDetectionEnabled = true
+                        activity.glesRenderer?.showPlaneVisualization = true
+                        activity.selectedPlaneIndex = -1
+                        Log.i(TAG, "Room edit ON — select planes with laser, stick Y to adjust height")
+                    } else {
+                        activity.selectedPlaneIndex = -1
+                        Log.i(TAG, "Room edit OFF")
+                    }
                 }
                 activity.uiNeedsRefresh = true
             } else if (!activity.menuVisible && hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -1493,6 +1506,35 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                         if (kotlin.math.abs(rightThumbX) < 0.3f) activity.roomTrackToggleLatch = false
                     }
+                    18 -> {
+                        // Room Edit: stick Y adjusts selected plane height, stick X cycles planes
+                        if (activity.roomEditMode) {
+                            val planes = activity.glesRenderer?.shadowPlanes ?: emptyList()
+                            if (planes.isNotEmpty()) {
+                                // Stick X: cycle through planes
+                                if (!activity.roomEditToggleLatch && kotlin.math.abs(rightThumbX) > 0.5f) {
+                                    activity.roomEditToggleLatch = true
+                                    val cur = activity.selectedPlaneIndex
+                                    activity.selectedPlaneIndex = if (rightThumbX > 0) {
+                                        (cur + 1) % planes.size
+                                    } else {
+                                        (cur - 1 + planes.size) % planes.size
+                                    }
+                                }
+                                if (kotlin.math.abs(rightThumbX) < 0.3f) activity.roomEditToggleLatch = false
+
+                                // Stick Y: adjust selected plane Y offset (5mm per tick)
+                                val sel = activity.selectedPlaneIndex
+                                if (sel in planes.indices && kotlin.math.abs(rightThumbY) > 0.15f) {
+                                    val p = planes[sel]
+                                    val key = activity.planeKey(p.posX, p.posZ)
+                                    val cur = activity.planeAdjustments[key] ?: 0f
+                                    val step = rightThumbY * 0.005f // 5mm per unit
+                                    activity.planeAdjustments[key] = (cur + step).coerceIn(-0.5f, 0.5f)
+                                }
+                            }
+                        }
+                    }
                 }
                 activity.uiNeedsRefresh = true
             }
@@ -1526,6 +1568,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.sensorPoller.planeDetectionEnabled = false
                         activity.sensorPoller.detectedPlaneCount = 0
                         activity.glesRenderer?.shadowPlanes = emptyList()
+                    }
+                    18 -> {
+                        // Reset: clear selected plane's adjustment, or all if none selected
+                        val sel = activity.selectedPlaneIndex
+                        val planes = activity.glesRenderer?.shadowPlanes ?: emptyList()
+                        if (sel in planes.indices) {
+                            val key = activity.planeKey(planes[sel].posX, planes[sel].posZ)
+                            activity.planeAdjustments.remove(key)
+                            Log.i(TAG, "Reset plane $sel adjustment")
+                        } else {
+                            activity.planeAdjustments.clear()
+                            Log.i(TAG, "Reset all plane adjustments")
+                        }
                     }
                 }
                 activity.uiNeedsRefresh = true

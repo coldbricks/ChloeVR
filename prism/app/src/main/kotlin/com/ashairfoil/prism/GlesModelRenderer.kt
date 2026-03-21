@@ -30,6 +30,7 @@ class GlesModelRenderer {
         private val PV_COLOR_CEILING = floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)
         private val PV_COLOR_TABLE   = floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)
         private val PV_COLOR_WALL    = floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)
+        private val PV_COLOR_SELECTED = floatArrayOf(1.0f, 0.3f, 0.7f, 0.8f)  // bright pink for selected
     }
 
     // ── Per-model GPU state ──
@@ -150,6 +151,7 @@ class GlesModelRenderer {
     private var shadowPlaneProgramId = 0
     private var planeVisProgramId = 0
     var showPlaneVisualization = false
+    var selectedPlaneIndex = -1  // highlighted during room edit
     private var planeVisStartTime = 0L
     private var spVao = 0
     private var spVbo = 0
@@ -1357,13 +1359,13 @@ class GlesModelRenderer {
 
         GLES30.glUniform1f(uPvTime, time)
 
-        for (plane in shadowPlanes) {
-            // Samsung labels are unreliable — use pure geometry for colors.
-            // normalY > 0.7 = horizontal, then classify by height relative to grid.
+        for ((planeIdx, plane) in shadowPlanes.withIndex()) {
+            // Selected plane gets bright highlight
+            val isSelected = planeIdx == selectedPlaneIndex
             val normalY = 1f - 2f * (plane.rotX * plane.rotX + plane.rotZ * plane.rotZ)
             val isHorizontal = normalY > 0.7f
             val heightAboveFloor = plane.posY - gridHeight
-            val color = when {
+            val color = if (isSelected) PV_COLOR_SELECTED else when {
                 isHorizontal && heightAboveFloor < 0.3f -> PV_COLOR_FLOOR
                 isHorizontal && heightAboveFloor > 1.8f -> PV_COLOR_CEILING
                 isHorizontal -> PV_COLOR_TABLE

@@ -1277,6 +1277,17 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             "Tex Quality" to arrayOf("Auto", "4096", "2048", "1024")[textureQuality],
             "Show Planes" to if (activity.glesRenderer?.showPlaneVisualization == true) "ON" else "OFF",
             "Room Track" to if (activity.roomTrackingEnabled) "ON" else "OFF",
+            "Room Edit" to if (activity.roomEditMode) {
+                val idx = activity.selectedPlaneIndex
+                if (idx >= 0) {
+                    val p = activity.glesRenderer?.shadowPlanes?.getOrNull(idx)
+                    if (p != null) {
+                        val key = activity.planeKey(p.posX, p.posZ)
+                        val off = activity.planeAdjustments[key] ?: 0f
+                        "Plane $idx %+.0fcm".format(off * 100)
+                    } else "ON"
+                } else "SELECT"
+            } else "OFF",
         )
 
         val rowH = 46f
