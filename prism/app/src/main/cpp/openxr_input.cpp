@@ -47,10 +47,10 @@ bool OpenXRInput::createInstance(JNIEnv* env, jobject activity) {
                           (PFN_xrVoidFunction*)&initLoader);
     if (initLoader) {
         XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
-        JavaVM* vm;
-        env->GetJavaVM(&vm);
-        loaderInfo.applicationVM = vm;
-        loaderInfo.applicationContext = env->NewGlobalRef(activity);
+        env->GetJavaVM(&javaVM_);
+        loaderInfo.applicationVM = javaVM_;
+        loaderGlobalRef_ = env->NewGlobalRef(activity);
+        loaderInfo.applicationContext = loaderGlobalRef_;
         initLoader((const XrLoaderInitInfoBaseHeaderKHR*)&loaderInfo);
     }
 
@@ -96,10 +96,10 @@ bool OpenXRInput::createInstance(JNIEnv* env, jobject activity) {
     extensions.push_back("XR_KHR_convert_timespec_time");
 
     XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
-    JavaVM* vm;
-    env->GetJavaVM(&vm);
-    androidInfo.applicationVM = vm;
-    androidInfo.applicationActivity = env->NewGlobalRef(activity);
+    if (!javaVM_) env->GetJavaVM(&javaVM_);
+    androidInfo.applicationVM = javaVM_;
+    activityGlobalRef_ = env->NewGlobalRef(activity);
+    androidInfo.applicationActivity = activityGlobalRef_;
 
     XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
     createInfo.next = &androidInfo;
@@ -518,6 +518,21 @@ void OpenXRInput::handleSessionStateChange(XrSessionState newState) {
 }
 
 void OpenXRInput::shutdown() {
+    // Free JNI global references to prevent leak
+    if (javaVM_) {
+        JNIEnv* env = nullptr;
+        bool attached = false;
+        if (javaVM_->GetEnv((void**)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+            javaVM_->AttachCurrentThread(&env, nullptr);
+            attached = true;
+        }
+        if (env) {
+            if (loaderGlobalRef_) { env->DeleteGlobalRef(loaderGlobalRef_); loaderGlobalRef_ = nullptr; }
+            if (activityGlobalRef_) { env->DeleteGlobalRef(activityGlobalRef_); activityGlobalRef_ = nullptr; }
+        }
+        if (attached) javaVM_->DetachCurrentThread();
+    }
+
     for (int i = 0; i < 2; i++) {
         if (handSpaces_[i] != XR_NULL_HANDLE) {
             xrDestroySpace(handSpaces_[i]);

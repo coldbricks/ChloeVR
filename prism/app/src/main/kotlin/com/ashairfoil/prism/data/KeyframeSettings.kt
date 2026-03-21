@@ -71,7 +71,8 @@ class KeyframeSettings(private val context: Context) {
         private set
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private var keyframes: MutableList<Keyframe> = java.util.concurrent.CopyOnWriteArrayList<Keyframe>()
+    // Volatile reference: all mutations build a new list and swap atomically
+    @Volatile private var keyframes: List<Keyframe> = emptyList()
     private var currentFileId: String = ""
 
     /**
@@ -79,15 +80,15 @@ class KeyframeSettings(private val context: Context) {
      */
     fun loadForFile(fileId: String) {
         currentFileId = fileId
-        keyframes.clear()
         val json = prefs.getString("kf_$fileId", null)
         if (json != null) {
             try {
                 val root = JSONObject(json)
                 val arr = root.getJSONArray("keyframes")
+                val loaded = mutableListOf<Keyframe>()
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    keyframes.add(Keyframe(
+                    loaded.add(Keyframe(
                         timeMs = obj.getLong("time_ms"),
                         brightness = obj.optDouble("brightness", 0.0).toFloat(),
                         contrast = obj.optDouble("contrast", 1.0).toFloat(),
@@ -104,14 +105,15 @@ class KeyframeSettings(private val context: Context) {
                         height = obj.optDouble("height", 0.0).toFloat(),
                     ))
                 }
-                val sorted = keyframes.sortedBy { it.timeMs }
-                keyframes.clear()
-                keyframes.addAll(sorted)
+                // Atomic swap: readers never see partial state
+                keyframes = loaded.sortedBy { it.timeMs }
                 Log.i(TAG, "Loaded ${keyframes.size} keyframes for $fileId")
             } catch (e: Exception) {
                 Log.e(TAG, "Error loading keyframes: ${e.message}")
-                keyframes.clear()
+                keyframes = emptyList()
             }
+        } else {
+            keyframes = emptyList()
         }
     }
 
@@ -150,15 +152,15 @@ class KeyframeSettings(private val context: Context) {
      * If a keyframe exists within 1 second, it's updated. Otherwise a new one is added.
      */
     fun setKeyframe(kf: Keyframe) {
-        val existing = keyframes.indexOfFirst { Math.abs(it.timeMs - kf.timeMs) < 1000 }
+        val current = keyframes.toMutableList()
+        val existing = current.indexOfFirst { Math.abs(it.timeMs - kf.timeMs) < 1000 }
         if (existing >= 0) {
-            keyframes[existing] = kf
+            current[existing] = kf
         } else {
-            keyframes.add(kf)
-            val sorted = keyframes.sortedBy { it.timeMs }
-            keyframes.clear()
-            keyframes.addAll(sorted)
+            current.add(kf)
         }
+        // Atomic swap: build sorted, then assign
+        keyframes = current.sortedBy { it.timeMs }
         save()
     }
 
@@ -166,9 +168,11 @@ class KeyframeSettings(private val context: Context) {
      * Remove the keyframe nearest to the given time (within 2 seconds).
      */
     fun removeKeyframeNear(timeMs: Long): Boolean {
-        val idx = keyframes.indexOfFirst { Math.abs(it.timeMs - timeMs) < 2000 }
+        val current = keyframes.toMutableList()
+        val idx = current.indexOfFirst { Math.abs(it.timeMs - timeMs) < 2000 }
         if (idx >= 0) {
-            keyframes.removeAt(idx)
+            current.removeAt(idx)
+            keyframes = current
             save()
             return true
         }
@@ -178,13 +182,13 @@ class KeyframeSettings(private val context: Context) {
     /**
      * Get all keyframes (for UI display).
      */
-    fun getKeyframes(): List<Keyframe> = keyframes.toList()
+    fun getKeyframes(): List<Keyframe> = keyframes
 
     /**
      * Clear all keyframes for the current file.
      */
     fun clearAll() {
-        keyframes.clear()
+        keyframes = emptyList()
         if (currentFileId.isNotEmpty()) {
             prefs.edit().remove("kf_$currentFileId").apply()
         }

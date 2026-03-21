@@ -39,10 +39,14 @@ class HeadTrackingConfig {
      * Returns filtered rotation (yaw, pitch, roll) in radians.
      */
     fun filterRotation(yaw: Float, pitch: Float, roll: Float): Triple<Float, Float, Float> {
+        // maxYaw/maxPitch/maxRoll are 0-1 scalars.
+        // Input is radians: yaw ±π, pitch ±π/2, roll ±π/4.
+        // Clamp range = max * full_range (e.g. maxYaw=0.5 → ±π/2).
+        val pi = Math.PI.toFloat()
         return Triple(
-            if (yawEnabled) yaw.coerceIn(-maxYaw * Math.PI.toFloat(), maxYaw * Math.PI.toFloat()) else 0f,
-            if (pitchEnabled) pitch.coerceIn(-maxPitch * Math.PI.toFloat() / 2, maxPitch * Math.PI.toFloat() / 2) else 0f,
-            if (rollEnabled) roll.coerceIn(-maxRoll * Math.PI.toFloat() / 4, maxRoll * Math.PI.toFloat() / 4) else 0f,
+            if (yawEnabled) yaw.coerceIn(-maxYaw * pi, maxYaw * pi) else 0f,
+            if (pitchEnabled) pitch.coerceIn(-maxPitch * pi / 2f, maxPitch * pi / 2f) else 0f,
+            if (rollEnabled) roll.coerceIn(-maxRoll * pi / 4f, maxRoll * pi / 4f) else 0f,
         )
     }
 

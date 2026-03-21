@@ -314,7 +314,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
     XrRenderer::PlaneData pd;
     if (!g_renderer->pollPlanes(pd)) return JNI_FALSE;
 
-    float* data = new float[XrRenderer::PlaneData::SIZE];
+    // Pre-allocated scratch buffer — avoids per-frame heap allocation (~19KB)
+    static thread_local float data[XrRenderer::PlaneData::SIZE];
     memset(data, 0, XrRenderer::PlaneData::SIZE * sizeof(float));
     data[0] = pd.valid ? 1.0f : 0.0f;
     data[1] = (float)pd.planeCount;
@@ -338,7 +339,6 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
         }
     }
     env->SetFloatArrayRegion(outData, 0, XrRenderer::PlaneData::SIZE, data);
-    delete[] data;
     return JNI_TRUE;
 }
 

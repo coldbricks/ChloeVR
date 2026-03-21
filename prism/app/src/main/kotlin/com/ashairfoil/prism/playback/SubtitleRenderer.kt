@@ -142,70 +142,69 @@ class SubtitleRenderer(private val parent: ViewGroup) {
     private fun parseSrt(file: File): List<SubtitleCue> {
         val result = mutableListOf<SubtitleCue>()
         try {
-            val reader = BufferedReader(FileReader(file))
-            var line: String?
-            var state = 0 // 0=index, 1=timing, 2=text
-            var startMs = 0L
-            var endMs = 0L
-            val textLines = mutableListOf<String>()
+            BufferedReader(FileReader(file)).use { reader ->
+                var line: String?
+                var state = 0 // 0=index, 1=timing, 2=text
+                var startMs = 0L
+                var endMs = 0L
+                val textLines = mutableListOf<String>()
 
-            while (reader.readLine().also { line = it } != null) {
-                val trimmed = line!!.trim()
+                while (reader.readLine().also { line = it } != null) {
+                    val trimmed = line!!.trim()
 
-                when (state) {
-                    0 -> {
-                        // Expect cue index number
-                        if (trimmed.matches(Regex("\\d+"))) {
-                            state = 1
-                        }
-                    }
-                    1 -> {
-                        // Expect timing line
-                        val matcher = SRT_TIME_PATTERN.matcher(trimmed)
-                        if (matcher.find()) {
-                            startMs = srtTimeToMs(
-                                matcher.group(1)!!, matcher.group(2)!!,
-                                matcher.group(3)!!, matcher.group(4) ?: "0"
-                            )
-                            endMs = srtTimeToMs(
-                                matcher.group(5)!!, matcher.group(6)!!,
-                                matcher.group(7)!!, matcher.group(8) ?: "0"
-                            )
-                            textLines.clear()
-                            state = 2
-                        }
-                    }
-                    2 -> {
-                        // Collect text lines until blank line
-                        if (trimmed.isEmpty()) {
-                            if (textLines.isNotEmpty()) {
-                                val text = textLines.joinToString("\n")
-                                    .replace(Regex("<[^>]+>"), "") // Strip HTML tags
-                                    .replace("{\\an\\d}", "")     // Strip ASS alignment
-                                    .trim()
-                                if (text.isNotEmpty()) {
-                                    result.add(SubtitleCue(startMs, endMs, text))
-                                }
+                    when (state) {
+                        0 -> {
+                            // Expect cue index number
+                            if (trimmed.matches(Regex("\\d+"))) {
+                                state = 1
                             }
-                            state = 0
-                        } else {
-                            textLines.add(trimmed)
+                        }
+                        1 -> {
+                            // Expect timing line
+                            val matcher = SRT_TIME_PATTERN.matcher(trimmed)
+                            if (matcher.find()) {
+                                startMs = srtTimeToMs(
+                                    matcher.group(1)!!, matcher.group(2)!!,
+                                    matcher.group(3)!!, matcher.group(4) ?: "0"
+                                )
+                                endMs = srtTimeToMs(
+                                    matcher.group(5)!!, matcher.group(6)!!,
+                                    matcher.group(7)!!, matcher.group(8) ?: "0"
+                                )
+                                textLines.clear()
+                                state = 2
+                            }
+                        }
+                        2 -> {
+                            // Collect text lines until blank line
+                            if (trimmed.isEmpty()) {
+                                if (textLines.isNotEmpty()) {
+                                    val text = textLines.joinToString("\n")
+                                        .replace(Regex("<[^>]+>"), "") // Strip HTML tags
+                                        .replace("{\\an\\d}", "")     // Strip ASS alignment
+                                        .trim()
+                                    if (text.isNotEmpty()) {
+                                        result.add(SubtitleCue(startMs, endMs, text))
+                                    }
+                                }
+                                state = 0
+                            } else {
+                                textLines.add(trimmed)
+                            }
                         }
                     }
                 }
-            }
 
-            // Don't forget last cue if file doesn't end with blank line
-            if (state == 2 && textLines.isNotEmpty()) {
-                val text = textLines.joinToString("\n")
-                    .replace(Regex("<[^>]+>"), "")
-                    .trim()
-                if (text.isNotEmpty()) {
-                    result.add(SubtitleCue(startMs, endMs, text))
+                // Don't forget last cue if file doesn't end with blank line
+                if (state == 2 && textLines.isNotEmpty()) {
+                    val text = textLines.joinToString("\n")
+                        .replace(Regex("<[^>]+>"), "")
+                        .trim()
+                    if (text.isNotEmpty()) {
+                        result.add(SubtitleCue(startMs, endMs, text))
+                    }
                 }
             }
-
-            reader.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing SRT: ${e.message}")
         }
@@ -224,50 +223,50 @@ class SubtitleRenderer(private val parent: ViewGroup) {
     private fun parseAss(file: File): List<SubtitleCue> {
         val result = mutableListOf<SubtitleCue>()
         try {
-            val reader = BufferedReader(FileReader(file))
-            var line: String?
-            var inEvents = false
-            var formatFields: List<String> = emptyList()
-            var textIndex = -1
-            var startIndex = -1
-            var endIndex = -1
+            BufferedReader(FileReader(file)).use { reader ->
+                var line: String?
+                var inEvents = false
+                var formatFields: List<String> = emptyList()
+                var textIndex = -1
+                var startIndex = -1
+                var endIndex = -1
 
-            while (reader.readLine().also { line = it } != null) {
-                val trimmed = line!!.trim()
+                while (reader.readLine().also { line = it } != null) {
+                    val trimmed = line!!.trim()
 
-                if (trimmed.equals("[Events]", ignoreCase = true)) {
-                    inEvents = true
-                    continue
-                }
-                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                    inEvents = false
-                    continue
-                }
+                    if (trimmed.equals("[Events]", ignoreCase = true)) {
+                        inEvents = true
+                        continue
+                    }
+                    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                        inEvents = false
+                        continue
+                    }
 
-                if (inEvents) {
-                    if (trimmed.startsWith("Format:", ignoreCase = true)) {
-                        formatFields = trimmed.substringAfter(":").split(",").map { it.trim() }
-                        textIndex = formatFields.indexOfFirst { it.equals("Text", ignoreCase = true) }
-                        startIndex = formatFields.indexOfFirst { it.equals("Start", ignoreCase = true) }
-                        endIndex = formatFields.indexOfFirst { it.equals("End", ignoreCase = true) }
-                    } else if (trimmed.startsWith("Dialogue:", ignoreCase = true) && textIndex >= 0 && startIndex >= 0 && endIndex >= 0) {
-                        val parts = trimmed.substringAfter(":").split(",", limit = formatFields.size)
-                        if (parts.size > maxOf(textIndex, startIndex, endIndex)) {
-                            val startMs = assTimeToMs(parts[startIndex].trim())
-                            val endMs = assTimeToMs(parts[endIndex].trim())
-                            val text = parts[textIndex].trim()
-                                .replace(Regex("\\{[^}]*\\}"), "") // Strip ASS style overrides
-                                .replace("\\N", "\n")
-                                .replace("\\n", "\n")
-                                .trim()
-                            if (text.isNotEmpty()) {
-                                result.add(SubtitleCue(startMs, endMs, text))
+                    if (inEvents) {
+                        if (trimmed.startsWith("Format:", ignoreCase = true)) {
+                            formatFields = trimmed.substringAfter(":").split(",").map { it.trim() }
+                            textIndex = formatFields.indexOfFirst { it.equals("Text", ignoreCase = true) }
+                            startIndex = formatFields.indexOfFirst { it.equals("Start", ignoreCase = true) }
+                            endIndex = formatFields.indexOfFirst { it.equals("End", ignoreCase = true) }
+                        } else if (trimmed.startsWith("Dialogue:", ignoreCase = true) && textIndex >= 0 && startIndex >= 0 && endIndex >= 0) {
+                            val parts = trimmed.substringAfter(":").split(",", limit = formatFields.size)
+                            if (parts.size > maxOf(textIndex, startIndex, endIndex)) {
+                                val startMs = assTimeToMs(parts[startIndex].trim())
+                                val endMs = assTimeToMs(parts[endIndex].trim())
+                                val text = parts[textIndex].trim()
+                                    .replace(Regex("\\{[^}]*\\}"), "") // Strip ASS style overrides
+                                    .replace("\\N", "\n")
+                                    .replace("\\n", "\n")
+                                    .trim()
+                                if (text.isNotEmpty()) {
+                                    result.add(SubtitleCue(startMs, endMs, text))
+                                }
                             }
                         }
                     }
                 }
             }
-            reader.close()
         } catch (e: Exception) {
             Log.e(TAG, "Error parsing ASS: ${e.message}")
         }

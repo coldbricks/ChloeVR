@@ -2,6 +2,7 @@ package com.ashairfoil.prism
 
 import android.media.audiofx.Visualizer
 import android.util.Log
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * AudioReactor — BCC BeatReactor clone for driving lighting parameters.
@@ -29,7 +30,12 @@ class AudioReactor {
     @Volatile var boxFillPct = 0f; private set
 
     // ── Spectrum display bins (for UI visualization) ──
-    @Volatile var spectrumBins = FloatArray(DISPLAY_BINS)
+    // AtomicReference ensures the render thread always sees a complete buffer,
+    // never a half-written one (prevents torn reads across FFT/render threads).
+    private val spectrumBinsRef = AtomicReference(FloatArray(DISPLAY_BINS))
+    var spectrumBins: FloatArray
+        get() = spectrumBinsRef.get()
+        set(value) { spectrumBinsRef.set(value) }
 
     // ── Per-band meters (for B/M/H display) ──
     @Volatile var bass = 0f; private set
@@ -110,10 +116,10 @@ class AudioReactor {
     // Temp buffer to avoid allocation in FFT callback
     private val tempBins = FloatArray(DISPLAY_BINS)
     private val tempBinMax = FloatArray(DISPLAY_BINS)
-    // Double-buffered spectrum output to avoid torn reads across threads
+    // Double-buffered spectrum output — atomic swap prevents torn reads
     private val specBufA = FloatArray(DISPLAY_BINS)
     private val specBufB = FloatArray(DISPLAY_BINS)
-    @Volatile private var specWriteToA = true
+    private var specWriteToA = true
     // Pre-allocated beat color result
     private val beatColorBuf = FloatArray(3)
 
@@ -234,13 +240,13 @@ class AudioReactor {
 
         // Store raw bin values UNCLAMPED — fill calc needs values above 1.0
         // to reach 100% fill with tight boxes. Display will clamp for rendering.
-        // Double-buffer: write to inactive buffer, then swap pointer atomically
+        // Double-buffer: write to inactive buffer, then atomically publish via AtomicReference
         val buf = if (specWriteToA) specBufA else specBufB
         for (j in 0 until DISPLAY_BINS) {
             buf[j] = tempBinMax[j].coerceAtLeast(0f)
         }
         specWriteToA = !specWriteToA
-        spectrumBins = buf
+        spectrumBinsRef.set(buf)
 
         // Per-band values (average, clamped)
         rawBass = if (bassCnt > 0) (bassE / bassCnt).coerceIn(0f, 1f) else 0f

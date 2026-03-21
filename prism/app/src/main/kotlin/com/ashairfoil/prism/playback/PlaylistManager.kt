@@ -35,15 +35,21 @@ class PlaylistManager {
     val hasNext: Boolean get() {
         if (files.isEmpty()) return false
         if (repeatMode == RepeatMode.ALL) return true
-        val idx = if (shuffleEnabled) shuffledIndices.indexOf(currentIndex) else currentIndex
-        return idx < files.size - 1
+        if (shuffleEnabled) {
+            val idx = shuffledIndices.indexOf(currentIndex)
+            return idx >= 0 && idx < shuffledIndices.size - 1
+        }
+        return currentIndex < files.size - 1
     }
     val hasPrevious: Boolean get() {
         if (files.isEmpty()) return false
         if (repeatMode == RepeatMode.ALL) return true
         if (history.isNotEmpty()) return true
-        val idx = if (shuffleEnabled) shuffledIndices.indexOf(currentIndex) else currentIndex
-        return idx > 0
+        if (shuffleEnabled) {
+            val idx = shuffledIndices.indexOf(currentIndex)
+            return idx > 0
+        }
+        return currentIndex > 0
     }
 
     /**

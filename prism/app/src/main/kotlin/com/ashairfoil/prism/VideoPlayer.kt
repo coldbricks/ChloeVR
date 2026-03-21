@@ -95,19 +95,16 @@ class VideoPlayer(private val context: Context) {
                 android.util.Log.i("ChloeVR-Video", "Direct MediaCodec output (no effects)")
             }
 
-            // Resize surface buffer to actual video resolution once known
+            setVideoSurface(surface)
+            setMediaItem(MediaItem.fromUri(file.toURI().toString()))
+
+            // Single consolidated listener (avoids listener accumulation)
             addListener(object : androidx.media3.common.Player.Listener {
                 override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                     if (videoSize.width > 0 && videoSize.height > 0) {
                         OpenXRInput.nativeSetSurfaceSize(surface, videoSize.width, videoSize.height)
                     }
                 }
-            })
-
-            setVideoSurface(surface)
-            setMediaItem(MediaItem.fromUri(file.toURI().toString()))
-
-            addListener(object : androidx.media3.common.Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     val stateStr = when (playbackState) {
                         1 -> "IDLE"; 2 -> "BUFFERING"; 3 -> "READY"; 4 -> "ENDED"; else -> "UNKNOWN($playbackState)"

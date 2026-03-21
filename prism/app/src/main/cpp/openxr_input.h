@@ -65,6 +65,11 @@ private:
     bool createActions();
     void handleSessionStateChange(XrSessionState state);
 
+    // JNI global refs (must be freed in shutdown)
+    JavaVM* javaVM_ = nullptr;
+    jobject loaderGlobalRef_ = nullptr;
+    jobject activityGlobalRef_ = nullptr;
+
     XrInstance instance_ = XR_NULL_HANDLE;
     XrSystemId systemId_ = XR_NULL_SYSTEM_ID;
     XrSession session_ = XR_NULL_HANDLE;

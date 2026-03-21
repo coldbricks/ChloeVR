@@ -79,14 +79,14 @@ class MediaLibrary(private val context: Context) {
     }
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private var entries: MutableList<MediaEntry> = mutableListOf()
+    private var entries: MutableList<MediaEntry> = java.util.concurrent.CopyOnWriteArrayList()
 
     /**
      * Build media entries from a list of files (from FilePicker scan).
      * Loads persisted metadata for each file.
      */
     fun buildFromFiles(files: List<File>): List<MediaEntry> {
-        entries = files.map { file ->
+        val built = files.map { file ->
             val fileId = fileIdFor(file)
             val meta = FileNameParser.parse(file)
             val entry = MediaEntry(
@@ -106,7 +106,9 @@ class MediaLibrary(private val context: Context) {
             // Check for subtitle files
             entry.hasSubtitles = checkSubtitles(file)
             entry
-        }.toMutableList()
+        }
+        // Atomic swap: build full list, then replace reference in one operation
+        entries = java.util.concurrent.CopyOnWriteArrayList(built)
 
         Log.i(TAG, "Built library: ${entries.size} entries, " +
                 "${entries.count { it.isFavorite }} favorites, " +
