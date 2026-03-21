@@ -71,8 +71,11 @@ JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeWaitFrame(
         JNIEnv* env, jobject thiz, jfloatArray outFrameData) {
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_renderer || !g_renderer->isRunning()) return JNI_FALSE;
+    if (!g_renderer) return JNI_FALSE;
 
+    // Always call waitFrame — it pumps XR events even when session is paused.
+    // Without this, STOPPING→IDLE→READY transitions are never received
+    // and the app becomes invisible after minimize/restore.
     if (!g_renderer->waitFrame(g_frameData)) return JNI_FALSE;
 
     float data[69];
