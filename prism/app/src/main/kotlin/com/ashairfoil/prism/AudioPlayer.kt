@@ -44,6 +44,7 @@ class AudioPlayer(private val context: Context) {
     // A/B loop (volatile: read from render thread, written from UI thread)
     @Volatile var loopA: Long = -1; private set
     @Volatile var loopB: Long = -1; private set
+    @Volatile private var loopSeekPending = false  // guard against seek storms
 
     // Speed
     var speedIndex = 2  // default 1.0x
@@ -94,6 +95,8 @@ class AudioPlayer(private val context: Context) {
                         RepeatMode.OFF -> {}
                     }
                 }
+                // Clear seek guard when player reaches READY after a seek
+                if (state == Player.STATE_READY) loopSeekPending = false
             }
         }
         playerListener = listener
@@ -195,12 +198,13 @@ class AudioPlayer(private val context: Context) {
         if (loopA >= 0 && loopB < loopA) { val tmp = loopA; loopA = loopB; loopB = tmp }
         Log.i(TAG, "Loop B: ${loopB}ms (A=${loopA}ms)")
     }
-    fun clearLoop() { loopA = -1; loopB = -1 }
+    fun clearLoop() { loopA = -1; loopB = -1; loopSeekPending = false }
     fun hasLoop(): Boolean = loopA >= 0 && loopB > loopA
 
     /** Call from UI-thread Handler to enforce A/B loop. */
     fun updateLoop() {
-        if (hasLoop() && isPlaying && currentPositionMs >= loopB) {
+        if (hasLoop() && isPlaying && !loopSeekPending && currentPositionMs >= loopB) {
+            loopSeekPending = true
             player?.seekTo(loopA)
         }
     }

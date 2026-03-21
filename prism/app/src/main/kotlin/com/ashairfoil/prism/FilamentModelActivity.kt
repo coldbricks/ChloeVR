@@ -128,7 +128,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var lastBCloseTime = 0L
     @Volatile private var uiRenderQueued = false
     private val loopHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var loopRunning = false
+    @Volatile private var loopRunning = false
 
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
@@ -956,8 +956,9 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     internal fun stopLoopHandler() {
-        loopRunning = false
-        loopHandler.removeCallbacks(loopRunnable)
+        loopRunning = false  // volatile — immediately visible to handler thread
+        // removeCallbacks must run on the handler's own looper thread
+        loopHandler.post { loopHandler.removeCallbacks(loopRunnable) }
     }
 
     private fun getAudioCacheFile(): File = File(cacheDir, "audio_cache.txt")
