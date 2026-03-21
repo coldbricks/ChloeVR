@@ -19,6 +19,17 @@ class GlesModelRenderer {
         const val GIZMO_LENGTH = 0.25f
         const val GIZMO_HIT_RADIUS = 0.04f
         const val LASER_BASE_LENGTH = 5.0f
+        private val DEFAULT_LASER_COLOR = floatArrayOf(0f, 0.8f, 1f)
+        private val GIZMO_AXES = arrayOf(
+            floatArrayOf(1f, 0f, 0f),
+            floatArrayOf(0f, 1f, 0f),
+            floatArrayOf(0f, 0f, 1f)
+        )
+        // Plane vis colors (floor, ceiling, table, wall)
+        private val PV_COLOR_FLOOR   = floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)
+        private val PV_COLOR_CEILING = floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)
+        private val PV_COLOR_TABLE   = floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)
+        private val PV_COLOR_WALL    = floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)
     }
 
     // ── Per-model GPU state ──
@@ -150,7 +161,7 @@ class GlesModelRenderer {
     private var uiUTex = -1
     private var uiUMvp = -1
 
-    // Model shader uniforms
+    // Model shader uniforms (cached at init)
     private var uMVP = -1
     private var uModelView = -1
     private var uNormalMatrix = -1
@@ -169,6 +180,10 @@ class GlesModelRenderer {
     private var uSelected = -1
     private var uContrast = -1
     private var uSaturation = -1
+    private var uClipY = -1
+    private var uUseSH = -1
+    private var uSH = -1
+    private var uModelMat = -1  // "uModel" in main shader
     // PBR map uniforms
     private var uHasNormalMap = -1
     private var uNormalMap = -1
@@ -177,6 +192,55 @@ class GlesModelRenderer {
     private var uHasEmissiveMap = -1
     private var uEmissiveMap = -1
     private var uEmissiveFactor = -1
+
+    // Grid shader uniforms (cached at init)
+    private var uGridMVP = -1
+    private var uGridY = -1
+    private var uGridScale = -1
+    private var uGridAlpha = -1
+    private var uGridShadowMVP = -1
+    private var uGridShadowDarkness = -1
+    private var uGridShadowSoftness = -1
+    private var uGridLightSize = -1
+    private var uGridShadowMap = -1
+
+    // Laser shader uniforms (cached at init)
+    private var uLaserMVP = -1
+    private var uLaserColor = -1
+    private var uLaserLenScale = -1
+
+    // Gizmo shader uniforms (cached at init)
+    private var uGizmoMVP = -1
+    private var uGizmoHighlight = -1
+
+    // Color wash uniform (cached at init)
+    private var uWashColor = -1
+
+    // Shadow depth uniform (cached at init)
+    private var uShadowDepthMVP = -1
+
+    // Shadow plane uniforms (cached at init)
+    private var uSpShadowMap = -1
+    private var uSpShadowMVP = -1
+    private var uSpShadowDarkness = -1
+    private var uSpShadowSoftness = -1
+    private var uSpLightSize = -1
+    private var uSpMVP = -1
+    private var uSpModel = -1
+
+    // Plane vis uniforms (cached at init)
+    private var uPvMVP = -1
+    private var uPvModel = -1
+    private var uPvColor = -1
+    private var uPvTime = -1
+
+    // Bloom uniforms (cached at init)
+    private var uBloomBrightScene = -1
+    private var uBloomBrightThreshold = -1
+    private var uBloomBlurTex = -1
+    private var uBloomBlurDir = -1
+    private var uBloomCompBloom = -1
+    private var uBloomCompIntensity = -1
 
     // Lighting state
     var lightDir = floatArrayOf(0.3f, 1.0f, 0.5f)
@@ -239,6 +303,10 @@ class GlesModelRenderer {
         uHasEmissiveMap = GLES30.glGetUniformLocation(programId, "uHasEmissiveMap")
         uEmissiveMap = GLES30.glGetUniformLocation(programId, "uEmissiveMap")
         uEmissiveFactor = GLES30.glGetUniformLocation(programId, "uEmissiveFactor")
+        uClipY = GLES30.glGetUniformLocation(programId, "uClipY")
+        uUseSH = GLES30.glGetUniformLocation(programId, "uUseSH")
+        uSH = GLES30.glGetUniformLocation(programId, "uSH")
+        uModelMat = GLES30.glGetUniformLocation(programId, "uModel")
 
         // Main FBO
         val fboBuf = intArrayOf(0)
@@ -251,11 +319,13 @@ class GlesModelRenderer {
         // Shadow map
         shadowDepthProgramId = createProgram(SHADOW_VERTEX_SHADER, SHADOW_FRAGMENT_SHADER)
         if (shadowDepthProgramId == 0) { Log.e(TAG, "Failed to create shadow shader"); return false }
+        uShadowDepthMVP = GLES30.glGetUniformLocation(shadowDepthProgramId, "uMVP")
         initShadowMap()
 
         // Color wash overlay
         washProgramId = createProgram(WASH_VERTEX_SHADER, WASH_FRAGMENT_SHADER)
         if (washProgramId != 0) {
+            uWashColor = GLES30.glGetUniformLocation(washProgramId, "uColor")
             val vaoBuf = intArrayOf(0)
             GLES30.glGenVertexArrays(1, vaoBuf, 0)
             washVao = vaoBuf[0]
@@ -267,6 +337,12 @@ class GlesModelRenderer {
         bloomBlurProgramId = createProgram(BLOOM_FULLSCREEN_VS, BLOOM_BLUR_FS)
         bloomCompositeProgramId = createProgram(BLOOM_FULLSCREEN_VS, BLOOM_COMPOSITE_FS)
         if (bloomBrightProgramId != 0 && bloomBlurProgramId != 0 && bloomCompositeProgramId != 0) {
+            uBloomBrightScene = GLES30.glGetUniformLocation(bloomBrightProgramId, "uScene")
+            uBloomBrightThreshold = GLES30.glGetUniformLocation(bloomBrightProgramId, "uThreshold")
+            uBloomBlurTex = GLES30.glGetUniformLocation(bloomBlurProgramId, "uTex")
+            uBloomBlurDir = GLES30.glGetUniformLocation(bloomBlurProgramId, "uDirection")
+            uBloomCompBloom = GLES30.glGetUniformLocation(bloomCompositeProgramId, "uBloom")
+            uBloomCompIntensity = GLES30.glGetUniformLocation(bloomCompositeProgramId, "uIntensity")
             Log.i(TAG, "Bloom shaders ready")
         } else {
             Log.w(TAG, "Bloom shader compilation failed, bloom disabled")
@@ -276,20 +352,45 @@ class GlesModelRenderer {
         // Laser
         laserProgramId = createProgram(LASER_VERTEX_SHADER, LASER_FRAGMENT_SHADER)
         if (laserProgramId == 0) { Log.e(TAG, "Failed to create laser shader"); return false }
+        uLaserMVP = GLES30.glGetUniformLocation(laserProgramId, "uMVP")
+        uLaserColor = GLES30.glGetUniformLocation(laserProgramId, "uColor")
+        uLaserLenScale = GLES30.glGetUniformLocation(laserProgramId, "uLenScale")
         initLaserGeometry()
 
         // Grid (with shadow sampling)
         gridProgramId = createProgram(GRID_VERTEX_SHADER, GRID_FRAGMENT_SHADER)
         if (gridProgramId == 0) { Log.e(TAG, "Failed to create grid shader"); return false }
+        uGridMVP = GLES30.glGetUniformLocation(gridProgramId, "uMVP")
+        uGridY = GLES30.glGetUniformLocation(gridProgramId, "uGridY")
+        uGridScale = GLES30.glGetUniformLocation(gridProgramId, "uGridScale")
+        uGridAlpha = GLES30.glGetUniformLocation(gridProgramId, "uAlpha")
+        uGridShadowMVP = GLES30.glGetUniformLocation(gridProgramId, "uShadowMVP")
+        uGridShadowDarkness = GLES30.glGetUniformLocation(gridProgramId, "uShadowDarkness")
+        uGridShadowSoftness = GLES30.glGetUniformLocation(gridProgramId, "uShadowSoftness")
+        uGridLightSize = GLES30.glGetUniformLocation(gridProgramId, "uLightSize")
+        uGridShadowMap = GLES30.glGetUniformLocation(gridProgramId, "uShadowMap")
         initGridGeometry()
 
         // Shadow planes
         shadowPlaneProgramId = createProgram(SP_VERTEX_SHADER, SP_FRAGMENT_SHADER)
         if (shadowPlaneProgramId == 0) { Log.e(TAG, "Failed to create shadow plane shader"); return false }
+        uSpShadowMap = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMap")
+        uSpShadowMVP = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMVP")
+        uSpShadowDarkness = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowDarkness")
+        uSpShadowSoftness = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowSoftness")
+        uSpLightSize = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uLightSize")
+        uSpMVP = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uMVP")
+        uSpModel = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uModel")
 
         // Plane visualization (reuses SP_VERTEX_SHADER for the same quad geometry)
         planeVisProgramId = createProgram(SP_VERTEX_SHADER, PLANE_VIS_FRAGMENT_SHADER)
         if (planeVisProgramId == 0) Log.w(TAG, "Plane vis shader failed — non-fatal")
+        if (planeVisProgramId != 0) {
+            uPvMVP = GLES30.glGetUniformLocation(planeVisProgramId, "uMVP")
+            uPvModel = GLES30.glGetUniformLocation(planeVisProgramId, "uModel")
+            uPvColor = GLES30.glGetUniformLocation(planeVisProgramId, "uPlaneColor")
+            uPvTime = GLES30.glGetUniformLocation(planeVisProgramId, "uTime")
+        }
         run {
             val quadVerts = floatArrayOf(
                 -1f, 0f, -1f, 0f, 0f,
@@ -319,6 +420,8 @@ class GlesModelRenderer {
         // Gizmo
         gizmoProgramId = createProgram(GIZMO_VERTEX_SHADER, GIZMO_FRAGMENT_SHADER)
         if (gizmoProgramId == 0) { Log.e(TAG, "Failed to create gizmo shader"); return false }
+        uGizmoMVP = GLES30.glGetUniformLocation(gizmoProgramId, "uMVP")
+        uGizmoHighlight = GLES30.glGetUniformLocation(gizmoProgramId, "uHighlight")
         initGizmoGeometry()
         initEmitterGeometry()
 
@@ -867,18 +970,18 @@ class GlesModelRenderer {
     fun renderEmitter(projection: FloatArray, viewMatrix: FloatArray, highlighted: Boolean) {
         if (!emitterVisible || emitterVao == 0 || gizmoProgramId == 0) return
         // Translate to emitter position
-        val model = floatArrayOf(
-            1f, 0f, 0f, 0f,  0f, 1f, 0f, 0f,  0f, 0f, 1f, 0f,
-            emitterPos[0], emitterPos[1], emitterPos[2], 1f
-        )
-        multiplyMat4(viewMatrix, model, scratchMat4A)
+        scratchEmitterModel[0] = 1f; scratchEmitterModel[1] = 0f; scratchEmitterModel[2] = 0f; scratchEmitterModel[3] = 0f
+        scratchEmitterModel[4] = 0f; scratchEmitterModel[5] = 1f; scratchEmitterModel[6] = 0f; scratchEmitterModel[7] = 0f
+        scratchEmitterModel[8] = 0f; scratchEmitterModel[9] = 0f; scratchEmitterModel[10] = 1f; scratchEmitterModel[11] = 0f
+        scratchEmitterModel[12] = emitterPos[0]; scratchEmitterModel[13] = emitterPos[1]; scratchEmitterModel[14] = emitterPos[2]; scratchEmitterModel[15] = 1f
+        multiplyMat4(viewMatrix, scratchEmitterModel, scratchMat4A)
         multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glUseProgram(gizmoProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, scratchMat4B, 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gizmoProgramId, "uHighlight"), if (highlighted) 1f else 0f)
+        GLES30.glUniformMatrix4fv(uGizmoMVP, 1, false, scratchMat4B, 0)
+        GLES30.glUniform1f(uGizmoHighlight, if (highlighted) 1f else 0f)
         // Override gizmo color to yellow/white glow
         GLES30.glBindVertexArray(emitterVao)
         // Use vertex attrib for color (yellow)
@@ -932,7 +1035,6 @@ class GlesModelRenderer {
 
         // Use shadow depth shader (just transforms positions, no color)
         GLES30.glUseProgram(shadowDepthProgramId)
-        val uLightMVP = GLES30.glGetUniformLocation(shadowDepthProgramId, "uMVP")
 
         for (plane in shadowPlanes) {
             // Only occlude with large planes above the floor (bed, table, furniture)
@@ -941,23 +1043,10 @@ class GlesModelRenderer {
             if (plane.posY < gridHeight + 0.15f) continue  // skip floor-level planes
             if (plane.extentX < 0.25f || plane.extentY < 0.25f) continue  // skip small planes
 
-            // Build model matrix from plane pose + extents
-            val q = plane
-            val sx = q.extentX; val sz = q.extentY
-            val x2 = q.rotX*2; val y2 = q.rotY*2; val z2 = q.rotZ*2
-            val xx = q.rotX*x2; val xy = q.rotX*y2; val xz = q.rotX*z2
-            val yy = q.rotY*y2; val yz = q.rotY*z2; val zz = q.rotZ*z2
-            val wx = q.rotW*x2; val wy = q.rotW*y2; val wz = q.rotW*z2
-
-            val model = floatArrayOf(
-                (1f-(yy+zz))*sx, (xy+wz)*sx, (xz-wy)*sx, 0f,
-                (xy-wz), (1f-(xx+zz)), (yz+wx), 0f,
-                (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
-                q.posX, q.posY, q.posZ, 1f
-            )
-            multiplyMat4(viewMatrix, model, scratchMat4A)
+            buildPlaneModel(plane)
+            multiplyMat4(viewMatrix, scratchPlaneModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
-            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, scratchMat4B, 0)
+            GLES30.glUniformMatrix4fv(uShadowDepthMVP, 1, false, scratchMat4B, 0)
 
             GLES30.glBindVertexArray(spVao)  // reuse shadow plane quad geometry
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
@@ -997,12 +1086,11 @@ class GlesModelRenderer {
         GLES30.glDisable(GLES30.GL_BLEND)
 
         GLES30.glUseProgram(shadowDepthProgramId)
-        val uLightMVP = GLES30.glGetUniformLocation(shadowDepthProgramId, "uMVP")
 
         for (m in models) {
             if (m.indexCount == 0) continue
             multiplyMat4(shadowLightMatrix, m.modelMatrix, scratchMat4A)
-            GLES30.glUniformMatrix4fv(uLightMVP, 1, false, scratchMat4A, 0)
+            GLES30.glUniformMatrix4fv(uShadowDepthMVP, 1, false, scratchMat4A, 0)
             GLES30.glBindVertexArray(m.vao)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, m.indexCount, GLES30.GL_UNSIGNED_INT, 0)
         }
@@ -1071,10 +1159,10 @@ class GlesModelRenderer {
         GLES30.glUniform1f(uFillLightIntensity, fillLightIntensity)
         GLES30.glUniform3f(uAmbientColor, ambientColor[0], ambientColor[1], ambientColor[2])
         GLES30.glUniform1f(uAmbientIntensity, ambientIntensity)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uClipY"), gridHeight)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uUseSH"), if (useSH) 1.0f else 0.0f)
+        GLES30.glUniform1f(uClipY, gridHeight)
+        GLES30.glUniform1f(uUseSH, if (useSH) 1.0f else 0.0f)
         if (useSH) {
-            GLES30.glUniform3fv(GLES30.glGetUniformLocation(programId, "uSH"), 9, shCoefficients, 0)
+            GLES30.glUniform3fv(uSH, 9, shCoefficients, 0)
         }
 
         for (m in models) {
@@ -1084,7 +1172,7 @@ class GlesModelRenderer {
             extractNormalMatrix(scratchMat4A, scratchNormal)
             GLES30.glUniformMatrix4fv(uMVP, 1, false, scratchMat4B, 0)
             GLES30.glUniformMatrix4fv(uModelView, 1, false, scratchMat4A, 0)
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(programId, "uModel"), 1, false, m.modelMatrix, 0)
+            GLES30.glUniformMatrix4fv(uModelMat, 1, false, m.modelMatrix, 0)
             GLES30.glUniformMatrix3fv(uNormalMatrix, 1, false, scratchNormal, 0)
             GLES30.glUniform1f(uMetallic, m.metallic)
             GLES30.glUniform1f(uRoughness, m.roughness)
@@ -1144,25 +1232,28 @@ class GlesModelRenderer {
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
 
         // Grid model matrix: translate to gridHeight
-        val gridModel = floatArrayOf(1f,0f,0f,0f, 0f,1f,0f,0f, 0f,0f,1f,0f, 0f,gridHeight,0f,1f)
-        multiplyMat4(viewMatrix, gridModel, scratchMat4A)
+        scratchGridModel[0] = 1f; scratchGridModel[1] = 0f; scratchGridModel[2] = 0f; scratchGridModel[3] = 0f
+        scratchGridModel[4] = 0f; scratchGridModel[5] = 1f; scratchGridModel[6] = 0f; scratchGridModel[7] = 0f
+        scratchGridModel[8] = 0f; scratchGridModel[9] = 0f; scratchGridModel[10] = 1f; scratchGridModel[11] = 0f
+        scratchGridModel[12] = 0f; scratchGridModel[13] = gridHeight; scratchGridModel[14] = 0f; scratchGridModel[15] = 1f
+        multiplyMat4(viewMatrix, scratchGridModel, scratchMat4A)
         multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glUseProgram(gridProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gridProgramId, "uMVP"), 1, false, scratchMat4B, 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uGridY"), gridHeight)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uGridScale"), gridScale)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uAlpha"), gridAlpha)
+        GLES30.glUniformMatrix4fv(uGridMVP, 1, false, scratchMat4B, 0)
+        GLES30.glUniform1f(uGridY, gridHeight)
+        GLES30.glUniform1f(uGridScale, gridScale)
+        GLES30.glUniform1f(uGridAlpha, gridAlpha)
 
         // Shadow uniforms
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gridProgramId, "uShadowMVP"), 1, false, shadowLightMatrix, 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uShadowDarkness"), if (shadowEnabled) shadowDarkness else 0f)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uShadowSoftness"), shadowSoftness)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(gridProgramId, "uLightSize"), lightSize)
+        GLES30.glUniformMatrix4fv(uGridShadowMVP, 1, false, shadowLightMatrix, 0)
+        GLES30.glUniform1f(uGridShadowDarkness, if (shadowEnabled) shadowDarkness else 0f)
+        GLES30.glUniform1f(uGridShadowSoftness, shadowSoftness)
+        GLES30.glUniform1f(uGridLightSize, lightSize)
 
         // Bind shadow map to texture unit 0
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(gridProgramId, "uShadowMap"), 0)
+        GLES30.glUniform1i(uGridShadowMap, 0)
 
         GLES30.glBindVertexArray(gridVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
@@ -1201,7 +1292,7 @@ class GlesModelRenderer {
         }
 
         GLES30.glUseProgram(washProgramId)
-        GLES30.glUniform4f(GLES30.glGetUniformLocation(washProgramId, "uColor"), fr, fg, fb, fa)
+        GLES30.glUniform4f(uWashColor, fr, fg, fb, fa)
         GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
         GLES30.glBindVertexArray(0)
@@ -1223,35 +1314,21 @@ class GlesModelRenderer {
         // Shadow map on texture unit 0
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMap"), 0)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMVP"), 1, false, shadowLightMatrix, 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowDarkness"), shadowDarkness)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowSoftness"), shadowSoftness)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uLightSize"), lightSize)
+        GLES30.glUniform1i(uSpShadowMap, 0)
+        GLES30.glUniformMatrix4fv(uSpShadowMVP, 1, false, shadowLightMatrix, 0)
+        GLES30.glUniform1f(uSpShadowDarkness, shadowDarkness)
+        GLES30.glUniform1f(uSpShadowSoftness, shadowSoftness)
+        GLES30.glUniform1f(uSpLightSize, lightSize)
 
         for (plane in shadowPlanes) {
             if (plane.label == 3) continue  // skip ceilings (C++: 3=ceiling)
 
-            // Build model matrix: translate + rotate(quat) + scale(extents)
-            val q = plane
-            val sx = q.extentX; val sz = q.extentY
-            val x2 = q.rotX*2; val y2 = q.rotY*2; val z2 = q.rotZ*2
-            val xx = q.rotX*x2; val xy = q.rotX*y2; val xz = q.rotX*z2
-            val yy = q.rotY*y2; val yz = q.rotY*z2; val zz = q.rotZ*z2
-            val wx = q.rotW*x2; val wy = q.rotW*y2; val wz = q.rotW*z2
-
-            // Column-major: rotation columns scaled by extents, then translation
-            val model = floatArrayOf(
-                (1f-(yy+zz))*sx, (xy+wz)*sx, (xz-wy)*sx, 0f,
-                (xy-wz), (1f-(xx+zz)), (yz+wx), 0f,
-                (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
-                q.posX, q.posY, q.posZ, 1f
-            )
-            multiplyMat4(viewMatrix, model, scratchMat4A)
+            buildPlaneModel(plane)
+            multiplyMat4(viewMatrix, scratchPlaneModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uMVP"), 1, false, scratchMat4B, 0)
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(shadowPlaneProgramId, "uModel"), 1, false, model, 0)
+            GLES30.glUniformMatrix4fv(uSpMVP, 1, false, scratchMat4B, 0)
+            GLES30.glUniformMatrix4fv(uSpModel, 1, false, scratchPlaneModel, 0)
 
             GLES30.glBindVertexArray(spVao)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
@@ -1278,12 +1355,7 @@ class GlesModelRenderer {
         GLES30.glDepthMask(false)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
 
-        val uMVP = GLES30.glGetUniformLocation(planeVisProgramId, "uMVP")
-        val uModel = GLES30.glGetUniformLocation(planeVisProgramId, "uModel")
-        val uColor = GLES30.glGetUniformLocation(planeVisProgramId, "uPlaneColor")
-        val uTime = GLES30.glGetUniformLocation(planeVisProgramId, "uTime")
-
-        GLES30.glUniform1f(uTime, time)
+        GLES30.glUniform1f(uPvTime, time)
 
         for (plane in shadowPlanes) {
             // Samsung labels are unreliable — use pure geometry for colors.
@@ -1292,35 +1364,19 @@ class GlesModelRenderer {
             val isHorizontal = normalY > 0.7f
             val heightAboveFloor = plane.posY - gridHeight
             val color = when {
-                isHorizontal && heightAboveFloor < 0.3f ->
-                    floatArrayOf(0.06f, 0.92f, 0.5f, 0.5f)   // floor - electric green
-                isHorizontal && heightAboveFloor > 1.8f ->
-                    floatArrayOf(0.35f, 0.35f, 0.45f, 0.25f)  // ceiling - steel gray
-                isHorizontal ->
-                    floatArrayOf(1.0f, 0.55f, 0.08f, 0.55f)   // table/surface - hot orange
-                else ->
-                    floatArrayOf(0.18f, 0.55f, 1.0f, 0.45f)   // wall/vertical - neon blue
+                isHorizontal && heightAboveFloor < 0.3f -> PV_COLOR_FLOOR
+                isHorizontal && heightAboveFloor > 1.8f -> PV_COLOR_CEILING
+                isHorizontal -> PV_COLOR_TABLE
+                else -> PV_COLOR_WALL
             }
 
-            val q = plane
-            val sx = q.extentX; val sz = q.extentY
-            val x2 = q.rotX*2; val y2 = q.rotY*2; val z2 = q.rotZ*2
-            val xx = q.rotX*x2; val xy = q.rotX*y2; val xz = q.rotX*z2
-            val yy = q.rotY*y2; val yz = q.rotY*z2; val zz = q.rotZ*z2
-            val wx = q.rotW*x2; val wy = q.rotW*y2; val wz = q.rotW*z2
-
-            val model = floatArrayOf(
-                (1f-(yy+zz))*sx, (xy+wz)*sx, (xz-wy)*sx, 0f,
-                (xy-wz), (1f-(xx+zz)), (yz+wx), 0f,
-                (xz+wy)*sz, (yz-wx)*sz, (1f-(xx+yy))*sz, 0f,
-                q.posX, q.posY, q.posZ, 1f
-            )
-            multiplyMat4(viewMatrix, model, scratchMat4A)
+            buildPlaneModel(plane)
+            multiplyMat4(viewMatrix, scratchPlaneModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
-            GLES30.glUniformMatrix4fv(uMVP, 1, false, scratchMat4B, 0)
-            GLES30.glUniformMatrix4fv(uModel, 1, false, model, 0)
-            GLES30.glUniform4fv(uColor, 1, color, 0)
+            GLES30.glUniformMatrix4fv(uPvMVP, 1, false, scratchMat4B, 0)
+            GLES30.glUniformMatrix4fv(uPvModel, 1, false, scratchPlaneModel, 0)
+            GLES30.glUniform4fv(uPvColor, 1, color, 0)
 
             GLES30.glBindVertexArray(spVao)
             GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
@@ -1347,13 +1403,13 @@ class GlesModelRenderer {
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
         GLES30.glUseProgram(gizmoProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(gizmoProgramId, "uMVP"), 1, false, scratchMat4B, 0)
+        GLES30.glUniformMatrix4fv(uGizmoMVP, 1, false, scratchMat4B, 0)
 
         GLES30.glBindVertexArray(gizmoVao)
         // Draw each axis with highlight
         for (axis in 0..2) {
             val hl = if (axis == highlightAxis) 1.0f else 0.0f
-            GLES30.glUniform1f(GLES30.glGetUniformLocation(gizmoProgramId, "uHighlight"), hl)
+            GLES30.glUniform1f(uGizmoHighlight, hl)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, gizmoIndicesPerAxis,
                 GLES30.GL_UNSIGNED_INT, axis * gizmoIndicesPerAxis * 4)
         }
@@ -1365,17 +1421,12 @@ class GlesModelRenderer {
     /** Test laser ray against gizmo axes. Returns (axis, distance) or (NONE, -1) */
     fun testGizmoHit(rayOrigin: FloatArray, rayDir: FloatArray,
                      modelPos: FloatArray, modelRot: FloatArray): Pair<Int, Float> {
-        val axes = arrayOf(
-            floatArrayOf(1f, 0f, 0f),
-            floatArrayOf(0f, 1f, 0f),
-            floatArrayOf(0f, 0f, 1f)
-        )
         var bestAxis = GIZMO_AXIS_NONE
         var bestDist = Float.MAX_VALUE
 
         for (i in 0..2) {
             // Transform axis to world space
-            rotateVecByQuat(axes[i], modelRot, scratchVec3)
+            rotateVecByQuat(GIZMO_AXES[i], modelRot, scratchVec3)
             // Ray-line closest distance
             val result = rayLineClosest(rayOrigin, rayDir, modelPos, scratchVec3, GIZMO_LENGTH)
             if (result != null && result.first < GIZMO_HIT_RADIUS && result.second < bestDist) {
@@ -1387,16 +1438,11 @@ class GlesModelRenderer {
     }
 
     /** Get world-space axis direction for a gizmo axis */
+    private val scratchGizmoAxis = FloatArray(3)
     fun getGizmoWorldAxis(axis: Int, modelRot: FloatArray): FloatArray {
-        val local = when (axis) {
-            GIZMO_AXIS_X -> floatArrayOf(1f, 0f, 0f)
-            GIZMO_AXIS_Y -> floatArrayOf(0f, 1f, 0f)
-            GIZMO_AXIS_Z -> floatArrayOf(0f, 0f, 1f)
-            else -> floatArrayOf(0f, 0f, 0f)
-        }
-        val r = FloatArray(3)
-        rotateVecByQuat(local, modelRot, r)
-        return r
+        val local = if (axis in 0..2) GIZMO_AXES[axis] else GIZMO_AXES[0]
+        rotateVecByQuat(local, modelRot, scratchGizmoAxis)
+        return scratchGizmoAxis
     }
 
     // ── Laser ──
@@ -1404,7 +1450,7 @@ class GlesModelRenderer {
     fun renderLaser(swapchainTexId: Int, width: Int, height: Int,
                     projection: FloatArray, viewMatrix: FloatArray,
                     handPos: FloatArray, aimQuat: FloatArray,
-                    hitDistance: Float, color: FloatArray = floatArrayOf(0f, 0.8f, 1f)) {
+                    hitDistance: Float, color: FloatArray = DEFAULT_LASER_COLOR) {
         if (!initialized || laserProgramId == 0) return
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
@@ -1415,11 +1461,11 @@ class GlesModelRenderer {
         multiplyMat4(projection, scratchMat4A, scratchMat4B)
 
         GLES30.glUseProgram(laserProgramId)
-        GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, scratchMat4B, 0)
-        GLES30.glUniform3f(GLES30.glGetUniformLocation(laserProgramId, "uColor"), color[0], color[1], color[2])
+        GLES30.glUniformMatrix4fv(uLaserMVP, 1, false, scratchMat4B, 0)
+        GLES30.glUniform3f(uLaserColor, color[0], color[1], color[2])
         val beamLength = if (hitDistance > 0f) hitDistance.coerceAtLeast(0.02f) else LASER_BASE_LENGTH
         val lenScale = beamLength / LASER_BASE_LENGTH
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(laserProgramId, "uLenScale"), lenScale)
+        GLES30.glUniform1f(uLaserLenScale, lenScale)
 
         GLES30.glBindVertexArray(laserVao)
         GLES30.glDrawElements(GLES30.GL_TRIANGLES, laserIndexCount, GLES30.GL_UNSIGNED_INT, 0)
@@ -1431,16 +1477,17 @@ class GlesModelRenderer {
             quatForward(aimQuat, scratchVec3)
             // Nudge dot 2mm toward camera to prevent z-fighting
             val dotDist = hitDistance - 0.002f
-            val dotModel = floatArrayOf(
-                0.01f,0f,0f,0f, 0f,0.01f,0f,0f, 0f,0f,0.01f,0f,
-                handPos[0] + scratchVec3[0] * dotDist,
-                handPos[1] + scratchVec3[1] * dotDist,
-                handPos[2] + scratchVec3[2] * dotDist, 1f
-            )
-            multiplyMat4(viewMatrix, dotModel, scratchMat4A)
+            scratchDotModel[0] = 0.01f; scratchDotModel[1] = 0f; scratchDotModel[2] = 0f; scratchDotModel[3] = 0f
+            scratchDotModel[4] = 0f; scratchDotModel[5] = 0.01f; scratchDotModel[6] = 0f; scratchDotModel[7] = 0f
+            scratchDotModel[8] = 0f; scratchDotModel[9] = 0f; scratchDotModel[10] = 0.01f; scratchDotModel[11] = 0f
+            scratchDotModel[12] = handPos[0] + scratchVec3[0] * dotDist
+            scratchDotModel[13] = handPos[1] + scratchVec3[1] * dotDist
+            scratchDotModel[14] = handPos[2] + scratchVec3[2] * dotDist
+            scratchDotModel[15] = 1f
+            multiplyMat4(viewMatrix, scratchDotModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
-            GLES30.glUniformMatrix4fv(GLES30.glGetUniformLocation(laserProgramId, "uMVP"), 1, false, scratchMat4B, 0)
-            GLES30.glUniform3f(GLES30.glGetUniformLocation(laserProgramId, "uColor"), 1f, 1f, 1f)
+            GLES30.glUniformMatrix4fv(uLaserMVP, 1, false, scratchMat4B, 0)
+            GLES30.glUniform3f(uLaserColor, 1f, 1f, 1f)
             GLES30.glBindVertexArray(dotVao)
             GLES30.glDrawArrays(GLES30.GL_LINES, 0, 4)
             GLES30.glBindVertexArray(0)
@@ -1490,14 +1537,12 @@ class GlesModelRenderer {
         val bupZ = fwdX*rightY - fwdY*rightX
 
         // Column-major: right axis scaled by W, up axis (negated) scaled by H, fwd, translation
-        val panelModel = floatArrayOf(
-            rightX*panelW,  rightY*panelW,  rightZ*panelW,  0f,
-            -bupX*panelH,  -bupY*panelH,  -bupZ*panelH,   0f,
-            fwdX,          fwdY,          fwdZ,          0f,
-            panelX,        panelY,        panelZ,        1f
-        )
+        scratchPanelModel[0] = rightX*panelW;  scratchPanelModel[1] = rightY*panelW;  scratchPanelModel[2] = rightZ*panelW;  scratchPanelModel[3] = 0f
+        scratchPanelModel[4] = -bupX*panelH;   scratchPanelModel[5] = -bupY*panelH;   scratchPanelModel[6] = -bupZ*panelH;   scratchPanelModel[7] = 0f
+        scratchPanelModel[8] = fwdX;           scratchPanelModel[9] = fwdY;           scratchPanelModel[10] = fwdZ;          scratchPanelModel[11] = 0f
+        scratchPanelModel[12] = panelX;         scratchPanelModel[13] = panelY;         scratchPanelModel[14] = panelZ;        scratchPanelModel[15] = 1f
 
-        multiplyMat4(viewMatrix, panelModel, scratchMat4A)
+        multiplyMat4(viewMatrix, scratchPanelModel, scratchMat4A)
         multiplyMat4(projection, scratchMat4A, scratchMat4B)
         GLES30.glUseProgram(uiProgramId)
         GLES30.glUniformMatrix4fv(uiUMvp, 1, false, scratchMat4B, 0)
@@ -1566,8 +1611,8 @@ class GlesModelRenderer {
         GLES30.glUseProgram(bloomBrightProgramId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, swapchainTexId)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(bloomBrightProgramId, "uScene"), 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(bloomBrightProgramId, "uThreshold"), bloomThreshold)
+        GLES30.glUniform1i(uBloomBrightScene, 0)
+        GLES30.glUniform1f(uBloomBrightThreshold, bloomThreshold)
         GLES30.glBindVertexArray(washVao)  // reuse empty VAO for fullscreen triangle
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
@@ -1576,8 +1621,8 @@ class GlesModelRenderer {
         GLES30.glUseProgram(bloomBlurProgramId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexA)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(bloomBlurProgramId, "uTex"), 0)
-        GLES30.glUniform2f(GLES30.glGetUniformLocation(bloomBlurProgramId, "uDirection"), 1f / bloomW, 0f)
+        GLES30.glUniform1i(uBloomBlurTex, 0)
+        GLES30.glUniform2f(uBloomBlurDir, 1f / bloomW, 0f)
         GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
@@ -1585,7 +1630,7 @@ class GlesModelRenderer {
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, bloomFboA)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexB)
-        GLES30.glUniform2f(GLES30.glGetUniformLocation(bloomBlurProgramId, "uDirection"), 0f, 1f / bloomH)
+        GLES30.glUniform2f(uBloomBlurDir, 0f, 1f / bloomH)
         GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
@@ -1600,8 +1645,8 @@ class GlesModelRenderer {
         GLES30.glUseProgram(bloomCompositeProgramId)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, bloomTexA)
-        GLES30.glUniform1i(GLES30.glGetUniformLocation(bloomCompositeProgramId, "uBloom"), 0)
-        GLES30.glUniform1f(GLES30.glGetUniformLocation(bloomCompositeProgramId, "uIntensity"), bloomIntensity)
+        GLES30.glUniform1i(uBloomCompBloom, 0)
+        GLES30.glUniform1f(uBloomCompIntensity, bloomIntensity)
         GLES30.glBindVertexArray(washVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLES, 0, 3)
 
@@ -1817,6 +1862,13 @@ class GlesModelRenderer {
     private val scratchNormal = FloatArray(9)
     private val scratchQuat = FloatArray(16)
     private val scratchVec3 = FloatArray(3)
+    // Reusable model matrices for render passes (avoid per-frame alloc)
+    private val scratchGridModel = FloatArray(16)
+    private val scratchDotModel = FloatArray(16)
+    private val scratchPanelModel = FloatArray(16)
+    private val scratchEmitterModel = FloatArray(16)
+    private val scratchPlaneModel = FloatArray(16)
+    private val scratchRayW = FloatArray(3)
 
     private fun multiplyMat4(a: FloatArray, b: FloatArray, r: FloatArray): FloatArray {
         for (col in 0..3) for (row in 0..3)
@@ -1869,18 +1921,31 @@ class GlesModelRenderer {
     /** Ray-line segment closest approach. Returns (distance, rayT) or null if segment param out of range */
     private fun rayLineClosest(rayO: FloatArray, rayD: FloatArray,
                                lineO: FloatArray, lineD: FloatArray, lineLen: Float): Pair<Float, Float>? {
-        val w = floatArrayOf(rayO[0]-lineO[0], rayO[1]-lineO[1], rayO[2]-lineO[2])
+        scratchRayW[0] = rayO[0]-lineO[0]; scratchRayW[1] = rayO[1]-lineO[1]; scratchRayW[2] = rayO[2]-lineO[2]
         val a = dot3(rayD, rayD); val b = dot3(rayD, lineD); val c = dot3(lineD, lineD)
-        val d = dot3(rayD, w); val e = dot3(lineD, w)
+        val d = dot3(rayD, scratchRayW); val e = dot3(lineD, scratchRayW)
         val denom = a*c - b*b
         if (kotlin.math.abs(denom) < 0.00001f) return null
         val sc = (b*e - c*d) / denom
         val tc = (a*e - b*d) / denom
         if (sc < 0f || tc < 0f || tc > lineLen) return null
-        val dx = w[0]+sc*rayD[0]-tc*lineD[0]
-        val dy = w[1]+sc*rayD[1]-tc*lineD[1]
-        val dz = w[2]+sc*rayD[2]-tc*lineD[2]
+        val dx = scratchRayW[0]+sc*rayD[0]-tc*lineD[0]
+        val dy = scratchRayW[1]+sc*rayD[1]-tc*lineD[1]
+        val dz = scratchRayW[2]+sc*rayD[2]-tc*lineD[2]
         return Pair(kotlin.math.sqrt(dx*dx+dy*dy+dz*dz), sc)
+    }
+
+    /** Build plane model matrix from quat + extents into scratchPlaneModel (zero-alloc) */
+    private fun buildPlaneModel(p: ShadowPlane) {
+        val sx = p.extentX; val sz = p.extentY
+        val x2 = p.rotX*2; val y2 = p.rotY*2; val z2 = p.rotZ*2
+        val xx = p.rotX*x2; val xy = p.rotX*y2; val xz = p.rotX*z2
+        val yy = p.rotY*y2; val yz = p.rotY*z2; val zz = p.rotZ*z2
+        val wx = p.rotW*x2; val wy = p.rotW*y2; val wz = p.rotW*z2
+        scratchPlaneModel[0] = (1f-(yy+zz))*sx; scratchPlaneModel[1] = (xy+wz)*sx; scratchPlaneModel[2] = (xz-wy)*sx; scratchPlaneModel[3] = 0f
+        scratchPlaneModel[4] = (xy-wz); scratchPlaneModel[5] = (1f-(xx+zz)); scratchPlaneModel[6] = (yz+wx); scratchPlaneModel[7] = 0f
+        scratchPlaneModel[8] = (xz+wy)*sz; scratchPlaneModel[9] = (yz-wx)*sz; scratchPlaneModel[10] = (1f-(xx+yy))*sz; scratchPlaneModel[11] = 0f
+        scratchPlaneModel[12] = p.posX; scratchPlaneModel[13] = p.posY; scratchPlaneModel[14] = p.posZ; scratchPlaneModel[15] = 1f
     }
 
     private fun dot3(a: FloatArray, b: FloatArray) = a[0]*b[0] + a[1]*b[1] + a[2]*b[2]

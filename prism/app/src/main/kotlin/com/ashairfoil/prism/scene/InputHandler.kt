@@ -41,9 +41,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var grabStartModelRot = floatArrayOf(0f, 0f, 0f, 1f)
 
-    // Laser / selection
-    var laserHandPos = floatArrayOf(0f, 0f, 0f)
-    var laserAimRot = floatArrayOf(0f, 0f, 0f, 1f)
+    // Laser / selection (preallocated, written in-place)
+    val laserHandPos = floatArrayOf(0f, 0f, 0f)
+    val laserAimRot = floatArrayOf(0f, 0f, 0f, 1f)
+    // Scratch buffers for per-frame math (avoid alloc in hot path)
+    private val scratchPanelRot = FloatArray(4)
+    private val scratchAxisX = floatArrayOf(1f, 0f, 0f)
+    private val scratchAxisY = floatArrayOf(0f, 1f, 0f)
+    private val scratchAxisZ = floatArrayOf(0f, 0f, 1f)
+    private val scratchRight = FloatArray(3)
+    private val scratchUp = FloatArray(3)
+    private val scratchNormal = FloatArray(3)
     var laserActive = false
     var hoveredModelIndex = -1
     var hitDistance = -1f
@@ -57,8 +65,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
     var hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
     private var gizmoDragging = false
     private var gizmoDragAxis = GlesModelRenderer.GIZMO_AXIS_NONE
-    private var gizmoDragStartHandPos = floatArrayOf(0f, 0f, 0f)
-    private var gizmoDragStartModelPos = floatArrayOf(0f, 0f, 0f)
+    private val gizmoDragStartHandPos = floatArrayOf(0f, 0f, 0f)
+    private val gizmoDragStartModelPos = floatArrayOf(0f, 0f, 0f)
+    private val scratchGizmoPos = FloatArray(3)
+    private val scratchGizmoRot = FloatArray(4)
 
     // Panel drag
     var draggingPanel = false
@@ -300,8 +310,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
         val renderer = activity.glesRenderer
         if (rightHandValid && rightAimValid && renderer != null) {
             laserActive = true
-            laserHandPos = floatArrayOf(rightHandPosX, rightHandPosY, rightHandPosZ)
-            laserAimRot = floatArrayOf(rightAimRotX, rightAimRotY, rightAimRotZ, rightAimRotW)
+            laserHandPos[0] = rightHandPosX; laserHandPos[1] = rightHandPosY; laserHandPos[2] = rightHandPosZ
+            laserAimRot[0] = rightAimRotX; laserAimRot[1] = rightAimRotY; laserAimRot[2] = rightAimRotZ; laserAimRot[3] = rightAimRotW
 
             val rayDir = renderer.quatForward(laserAimRot)
 
@@ -319,16 +329,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 val pcz = renderer.panelZ
                 val panelHW = (renderer.panelW * 0.5f).coerceAtLeast(0.001f)
                 val panelHH = (renderer.panelH * 0.5f).coerceAtLeast(0.001f)
-                val panelRot = floatArrayOf(
-                    activity.panelRotX, activity.panelRotY, activity.panelRotZ, activity.panelRotW
-                )
+                scratchPanelRot[0] = activity.panelRotX; scratchPanelRot[1] = activity.panelRotY
+                scratchPanelRot[2] = activity.panelRotZ; scratchPanelRot[3] = activity.panelRotW
                 // Match compositor panel orientation exactly (XR quad uses this pose).
-                val rightAxis = renderer.rotateVecByQuat(floatArrayOf(1f, 0f, 0f), panelRot)
-                val upAxis = renderer.rotateVecByQuat(floatArrayOf(0f, 1f, 0f), panelRot)
-                val normalAxis = renderer.rotateVecByQuat(floatArrayOf(0f, 0f, 1f), panelRot)
-                val rx = rightAxis[0]; val ry = rightAxis[1]; val rz = rightAxis[2]
-                val ux = upAxis[0]; val uy = upAxis[1]; val uz = upAxis[2]
-                val nx = normalAxis[0]; val ny = normalAxis[1]; val nz = normalAxis[2]
+                renderer.rotateVecByQuat(scratchAxisX, scratchPanelRot, scratchRight)
+                renderer.rotateVecByQuat(scratchAxisY, scratchPanelRot, scratchUp)
+                renderer.rotateVecByQuat(scratchAxisZ, scratchPanelRot, scratchNormal)
+                val rx = scratchRight[0]; val ry = scratchRight[1]; val rz = scratchRight[2]
+                val ux = scratchUp[0]; val uy = scratchUp[1]; val uz = scratchUp[2]
+                val nx = scratchNormal[0]; val ny = scratchNormal[1]; val nz = scratchNormal[2]
 
                 val denom = rayDir[0]*nx + rayDir[1]*ny + rayDir[2]*nz
                 if (kotlin.math.abs(denom) > 0.01f) {
@@ -700,9 +709,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
             hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
             val selModel = models.getOrNull(selectedModelIndex)
             if (!activity.menuVisible && activity.gizmoVisible && selModel != null && !gizmoDragging) {
-                val gPos = floatArrayOf(selModel.posX, selModel.posY, selModel.posZ)
-                val gRot = floatArrayOf(selModel.rotX, selModel.rotY, selModel.rotZ, selModel.rotW)
-                val (axis, _) = renderer.testGizmoHit(laserHandPos, rayDir, gPos, gRot)
+                scratchGizmoPos[0] = selModel.posX; scratchGizmoPos[1] = selModel.posY; scratchGizmoPos[2] = selModel.posZ
+                scratchGizmoRot[0] = selModel.rotX; scratchGizmoRot[1] = selModel.rotY; scratchGizmoRot[2] = selModel.rotZ; scratchGizmoRot[3] = selModel.rotW
+                val (axis, _) = renderer.testGizmoHit(laserHandPos, rayDir, scratchGizmoPos, scratchGizmoRot)
                 hoveredGizmoAxis = axis
             }
 
@@ -730,11 +739,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         emitterGrabDist += rightThumbY * 0.02f
                         emitterGrabDist = emitterGrabDist.coerceIn(0.3f, 5f)
                     }
-                    renderer.emitterPos = floatArrayOf(
-                        laserHandPos[0] + rayDir[0] * emitterGrabDist,
-                        laserHandPos[1] + rayDir[1] * emitterGrabDist,
-                        laserHandPos[2] + rayDir[2] * emitterGrabDist
-                    )
+                    renderer.emitterPos[0] = laserHandPos[0] + rayDir[0] * emitterGrabDist
+                    renderer.emitterPos[1] = laserHandPos[1] + rayDir[1] * emitterGrabDist
+                    renderer.emitterPos[2] = laserHandPos[2] + rayDir[2] * emitterGrabDist
                     var scX = 0f; var scY = 0f; var scZ = 0f
                     if (models.isNotEmpty()) {
                         for (m in models) { scX += m.posX; scY += m.posY; scZ += m.posZ }
@@ -754,13 +761,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val worldCx = m[0]*gpuModel.boundsCenterX + m[4]*gpuModel.boundsCenterY + m[8]*gpuModel.boundsCenterZ + m[12]
                     val worldCy = m[1]*gpuModel.boundsCenterX + m[5]*gpuModel.boundsCenterY + m[9]*gpuModel.boundsCenterZ + m[13]
                     val worldCz = m[2]*gpuModel.boundsCenterX + m[6]*gpuModel.boundsCenterY + m[10]*gpuModel.boundsCenterZ + m[14]
-                    val center = floatArrayOf(worldCx, worldCy, worldCz)
+                    scratchGizmoPos[0] = worldCx; scratchGizmoPos[1] = worldCy; scratchGizmoPos[2] = worldCz
                     val sx = kotlin.math.sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2])
                     val worldR = gpuModel.boundsRadius * sx
-                    var dist = raySphereIntersect(laserHandPos, rayDir, center, worldR)
+                    var dist = raySphereIntersect(laserHandPos, rayDir, scratchGizmoPos, worldR)
                     if (dist < 0f) {
                         val coreR = (worldR * 0.15f).coerceIn(0.05f, 0.15f)
-                        dist = raySphereIntersect(laserHandPos, rayDir, center, coreR)
+                        dist = raySphereIntersect(laserHandPos, rayDir, scratchGizmoPos, coreR)
                     }
                     if (dist in 0.01f..nearestDist) { nearestDist = dist; nearestIdx = i }
                 }
@@ -799,8 +806,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 // Start gizmo drag
                 gizmoDragging = true
                 gizmoDragAxis = hoveredGizmoAxis
-                gizmoDragStartHandPos = floatArrayOf(rightHandPosX, rightHandPosY, rightHandPosZ)
-                gizmoDragStartModelPos = floatArrayOf(selModel.posX, selModel.posY, selModel.posZ)
+                gizmoDragStartHandPos[0] = rightHandPosX; gizmoDragStartHandPos[1] = rightHandPosY; gizmoDragStartHandPos[2] = rightHandPosZ
+                gizmoDragStartModelPos[0] = selModel.posX; gizmoDragStartModelPos[1] = selModel.posY; gizmoDragStartModelPos[2] = selModel.posZ
             }
         } else {
             laserActive = false

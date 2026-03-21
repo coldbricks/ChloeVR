@@ -124,7 +124,7 @@ class FilamentModelActivity : ComponentActivity() {
     )
     // 0=auto (adaptive budget), 1=4096 (original), 2=2048, 3=1024
     internal var textureQuality = 0
-    internal var uiNeedsRefresh = false
+    @Volatile internal var uiNeedsRefresh = false
     private var lastBCloseTime = 0L
     @Volatile private var uiRenderQueued = false
     private val loopHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -743,7 +743,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         nativeReleaseUiImage()
                                     }
                                 }
-                                bmp.recycle()
+                                // Don't recycle — bitmap is preallocated and reused by UiRenderer
                             }
 
                             // ── Yeet animation: flying deleted models ──
@@ -814,8 +814,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                             // Left eye: models -> ground/shadow -> gizmo -> laser
                             gr.renderEye(leftTexId, width, height, leftProj, leftView)
-                            gr.renderGrid(leftTexId, width, height, leftProj, leftView,
-                                gridAlpha = if (gridVisible) 0.3f else 0f)
+                            if (gridVisible) gr.renderGrid(leftTexId, width, height, leftProj, leftView)
                             gr.renderShadowPlanes(leftProj, leftView)
                             gr.renderPlaneVisualization(leftProj, leftView)
                             if (gizmoVisible && hasGizmoPose)
@@ -823,15 +822,13 @@ class FilamentModelActivity : ComponentActivity() {
                             gr.renderEmitter(leftProj, leftView, ih.emitterHovered)
                             if (ih.laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 ih.laserHandPos, ih.laserAimRot, ih.hitDistance)
-                            // Color wash: tints ENTIRE view (passthrough + scene)
                             if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(leftTexId, width, height)
                             gr.finishEyePass()
 
                             // Right eye
                             gr.renderEye(rightTexId, width, height, rightProj, rightView)
-                            gr.renderGrid(rightTexId, width, height, rightProj, rightView,
-                                gridAlpha = if (gridVisible) 0.3f else 0f)
+                            if (gridVisible) gr.renderGrid(rightTexId, width, height, rightProj, rightView)
                             gr.renderShadowPlanes(rightProj, rightView)
                             gr.renderPlaneVisualization(rightProj, rightView)
                             if (gizmoVisible && hasGizmoPose)
@@ -842,9 +839,6 @@ class FilamentModelActivity : ComponentActivity() {
                             if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(rightTexId, width, height)
                             gr.finishEyePass()
-                            // Menu rendered via compositor quad layer (stereo-correct)
-
-                            android.opengl.GLES30.glFlush()
                         } catch (e: Exception) {
                             Log.e(TAG, "Render error", e)
                         }

@@ -34,17 +34,17 @@ class OpenXRInput(private val activity: Activity) {
     var leftStickClick = false; private set
     var rightStickClick = false; private set
 
-    // Hand poses (in local/stage space)
-    var leftHandPos = floatArrayOf(0f, 0f, 0f); private set
-    var leftHandRot = floatArrayOf(0f, 0f, 0f, 1f); private set
-    var rightHandPos = floatArrayOf(0f, 0f, 0f); private set
-    var rightHandRot = floatArrayOf(0f, 0f, 0f, 1f); private set
+    // Hand poses (in local/stage space) — preallocated, written in-place
+    val leftHandPos = floatArrayOf(0f, 0f, 0f)
+    val leftHandRot = floatArrayOf(0f, 0f, 0f, 1f)
+    val rightHandPos = floatArrayOf(0f, 0f, 0f)
+    val rightHandRot = floatArrayOf(0f, 0f, 0f, 1f)
     var leftHandValid = false; private set
     var rightHandValid = false; private set
 
-    // Aim pose rotation (laser pointer direction)
-    var leftAimRot = floatArrayOf(0f, 0f, 0f, 1f); private set
-    var rightAimRot = floatArrayOf(0f, 0f, 0f, 1f); private set
+    // Aim pose rotation (laser pointer direction) — preallocated, written in-place
+    val leftAimRot = floatArrayOf(0f, 0f, 0f, 1f)
+    val rightAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     var leftAimValid = false; private set
     var rightAimValid = false; private set
 
@@ -98,14 +98,14 @@ class OpenXRInput(private val activity: Activity) {
                 menuButton = stateBuffer[12] > 0.5f
                 leftStickClick = stateBuffer[13] > 0.5f
                 rightStickClick = stateBuffer[14] > 0.5f
-                leftHandPos = floatArrayOf(stateBuffer[15], stateBuffer[17], stateBuffer[19])
-                rightHandPos = floatArrayOf(stateBuffer[16], stateBuffer[18], stateBuffer[20])
-                leftHandRot = floatArrayOf(stateBuffer[21], stateBuffer[23], stateBuffer[25], stateBuffer[27])
-                rightHandRot = floatArrayOf(stateBuffer[22], stateBuffer[24], stateBuffer[26], stateBuffer[28])
+                leftHandPos[0] = stateBuffer[15]; leftHandPos[1] = stateBuffer[17]; leftHandPos[2] = stateBuffer[19]
+                rightHandPos[0] = stateBuffer[16]; rightHandPos[1] = stateBuffer[18]; rightHandPos[2] = stateBuffer[20]
+                leftHandRot[0] = stateBuffer[21]; leftHandRot[1] = stateBuffer[23]; leftHandRot[2] = stateBuffer[25]; leftHandRot[3] = stateBuffer[27]
+                rightHandRot[0] = stateBuffer[22]; rightHandRot[1] = stateBuffer[24]; rightHandRot[2] = stateBuffer[26]; rightHandRot[3] = stateBuffer[28]
                 leftHandValid = stateBuffer[29] > 0.5f
                 rightHandValid = stateBuffer[30] > 0.5f
-                leftAimRot = floatArrayOf(stateBuffer[31], stateBuffer[33], stateBuffer[35], stateBuffer[37])
-                rightAimRot = floatArrayOf(stateBuffer[32], stateBuffer[34], stateBuffer[36], stateBuffer[38])
+                leftAimRot[0] = stateBuffer[31]; leftAimRot[1] = stateBuffer[33]; leftAimRot[2] = stateBuffer[35]; leftAimRot[3] = stateBuffer[37]
+                rightAimRot[0] = stateBuffer[32]; rightAimRot[1] = stateBuffer[34]; rightAimRot[2] = stateBuffer[36]; rightAimRot[3] = stateBuffer[38]
                 leftAimValid = stateBuffer[39] > 0.5f
                 rightAimValid = stateBuffer[40] > 0.5f
                 listener?.onControllerState(this@OpenXRInput)

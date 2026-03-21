@@ -33,6 +33,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     var uiFlipCanvas: Canvas? = null
     val uiFlipMatrix = Matrix()
 
+    // Preallocated render bitmap (reused every frame to avoid GC pressure)
+    private var renderBitmap: Bitmap? = null
+    private var renderCanvas: Canvas? = null
+    private val clearPaint = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+
+    // Reusable Paint objects for hot-path rendering (avoid per-frame allocations)
+    private val tmpPaint = Paint().apply { isAntiAlias = true }
+    private val tmpPaint2 = Paint().apply { isAntiAlias = true }
+
     // All other UI state lives on the activity or inputHandler.
     // Convenience accessors to avoid verbose chains in rendering code:
     private inline val ih get() = activity.inputHandler
@@ -44,8 +53,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     fun renderUiToBitmap() {
         val uiW = 1024
         val uiH = 1280
-        val bitmap = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
+        if (renderBitmap == null || renderBitmap!!.width != uiW || renderBitmap!!.height != uiH) {
+            renderBitmap?.recycle()
+            renderBitmap = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
+            renderCanvas = Canvas(renderBitmap!!)
+        }
+        val bitmap = renderBitmap!!
+        val canvas = renderCanvas!!
+        canvas.drawPaint(clearPaint)  // erase previous frame
 
         // ── Convenience accessors: activity state ──
         val models = activity.sceneManager.models
