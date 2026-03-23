@@ -133,8 +133,8 @@ class FilamentModelActivity : ComponentActivity() {
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
     internal var panelRotX = 0f; internal var panelRotY = 0f; internal var panelRotZ = 0f; internal var panelRotW = 1f
-    internal val PANEL_WIDTH = 0.9f   // meters in world space (base size)
-    internal val PANEL_HEIGHT = 1.0f
+    internal val PANEL_WIDTH = 1.1f   // meters in world space (base size)
+    internal val PANEL_HEIGHT = 1.25f
     internal var panelScale = 1.0f    // zoom factor (0.5..2.0)
 
     // GLB picker sub-menu (shown when ADD MODEL is tapped)

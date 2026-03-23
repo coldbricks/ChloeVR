@@ -444,7 +444,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(0xFF111111.toInt())
+            setBackgroundColor(0xFF0F0F14.toInt())
         }
 
         val layout = LinearLayout(this).apply {
@@ -454,17 +454,26 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         layout.addView(TextView(this).apply {
             text = "ChloeVR"
-            textSize = 48f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 12)
+            textSize = 52f
+            setTextColor(0xFFEC4899.toInt())
+            setPadding(0, 0, 0, 4)
+            gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+
+        layout.addView(TextView(this).apply {
+            text = "3D Model Viewer & VR Media Player"
+            textSize = 16f
+            setTextColor(0xFF6B7280.toInt())
+            setPadding(0, 0, 0, 16)
             gravity = Gravity.CENTER
         })
 
         filePickerCountLabel = TextView(this).apply {
-            textSize = 24f
-            setTextColor(0xFF666666.toInt())
+            textSize = 20f
+            setTextColor(0xFF10B981.toInt())
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 16)
+            setPadding(0, 0, 0, 12)
         }
         layout.addView(filePickerCountLabel)
 
@@ -484,12 +493,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
         layout.addView(EditText(this).apply {
             setText(filePickerSearchQuery)
-            hint = "Type to filter files"
+            hint = "Type to filter files..."
             setSingleLine(true)
-            setBackgroundColor(0xFF222222.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
-            setHintTextColor(0xFF777777.toInt())
-            setPadding(20, 12, 20, 12)
+            setBackgroundColor(0xFF1A1A26.toInt())
+            setTextColor(0xFFF3F4F6.toInt())
+            setHintTextColor(0xFF505868.toInt())
+            setPadding(24, 14, 24, 14)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -1133,19 +1142,19 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 val isSelected = selected(option)
                 val btn = Button(this@MainActivity).apply {
                     text = option.second
-                    textSize = 16f
-                    minHeight = 72
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setBackgroundColor(if (isSelected) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                    setPadding(20, 16, 20, 16)
+                    textSize = 15f
+                    minHeight = 64
+                    setTextColor(if (isSelected) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt())
+                    setBackgroundColor(if (isSelected) 0xFF7C5CFC.toInt() else 0xFF1A1A26.toInt())
+                    setPadding(16, 12, 16, 12)
                     val btnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    btnParams.setMargins(5, 0, 5, 0)
+                    btnParams.setMargins(4, 0, 4, 0)
                     layoutParams = btnParams
                     setOnClickListener {
                         onSelect(option)
-                        // Update button colors
                         buttons.forEachIndexed { j, b ->
-                            b.setBackgroundColor(if (j == i) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                            b.setBackgroundColor(if (j == i) 0xFF7C5CFC.toInt() else 0xFF1A1A26.toInt())
+                            b.setTextColor(if (j == i) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt())
                         }
                     }
                 }
@@ -1225,10 +1234,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun makeSectionLabel(text: String): TextView {
         return TextView(this).apply {
-            this.text = text
-            textSize = 19f
-            setTextColor(0xFFCCCCCC.toInt())
-            setPadding(0, 0, 0, 8)
+            this.text = text.uppercase()
+            textSize = 14f
+            setTextColor(0xFFF59E0B.toInt())
+            letterSpacing = 0.15f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 8, 0, 6)
         }
     }
 

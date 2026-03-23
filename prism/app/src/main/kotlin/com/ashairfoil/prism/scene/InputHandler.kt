@@ -738,9 +738,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     activity.uiNeedsRefresh = true
                 }
 
-                // When menu is up, block ALL model/gizmo interaction
-                hoveredModelIndex = -1
-                hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
+                // When menu is up and laser is on the panel, block model interaction
+                // But allow model hover when laser points away from the panel
+                if (laserOnPanel) {
+                    hoveredModelIndex = -1
+                    hoveredGizmoAxis = GlesModelRenderer.GIZMO_AXIS_NONE
+                }
             }
 
             // Test gizmo + model only when menu is NOT up
@@ -1287,10 +1290,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     }
                 }
                 activity.uiNeedsRefresh = true
-            } else if (!activity.menuVisible && hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
+            } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
                 selectedModelIndex = hoveredModelIndex
                 activity.uiNeedsRefresh = true
-            } else if (!activity.menuVisible && hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0) {
+            } else if (hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0 && !activity.menuVisible) {
                 selectedModelIndex = -1
                 if (renderer != null) {
                     for (placed in models) {

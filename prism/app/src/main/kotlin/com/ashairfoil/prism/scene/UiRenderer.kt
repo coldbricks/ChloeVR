@@ -45,6 +45,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val tmpPaint = Paint().apply { isAntiAlias = true }
     private val tmpPaint2 = Paint().apply { isAntiAlias = true }
 
+    // Pre-allocated paint bank to eliminate per-frame Paint() allocations in main menu
+    private val pBg = Paint().apply { isAntiAlias = true }
+    private val pBorder = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE }
+    private val pText = Paint().apply { isAntiAlias = true }
+    private val pFill = Paint().apply { isAntiAlias = true }
+    private val pGlow = Paint().apply { isAntiAlias = true }
+    private val pDim = Paint().apply { isAntiAlias = true }
+
     // All other UI state lives on the activity or inputHandler.
     // Convenience accessors to avoid verbose chains in rendering code:
     private inline val ih get() = activity.inputHandler
@@ -1498,23 +1506,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
             // Row background
             if (isSelected) {
-                val glowPaint = Paint().apply {
-                    isAntiAlias = true; color = 0x2030D8D0.toInt()
-                    maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
-                }
-                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, glowPaint)
-                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f,
-                    Paint().apply { color = 0x2818C8C0.toInt() })
-                val accentGlow = Paint().apply {
-                    color = 0xFFEC4899.toInt(); isAntiAlias = true
-                    maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
-                }
-                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, accentGlow)
-                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f,
-                    Paint().apply { color = 0xFFEC4899.toInt() })
+                pGlow.color = 0x2030D8D0.toInt()
+                pGlow.maskFilter = BlurMaskFilter(8f, BlurMaskFilter.Blur.NORMAL)
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pGlow)
+                pBg.color = 0x2818C8C0.toInt()
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pBg)
+                pGlow.color = 0xFFEC4899.toInt()
+                pGlow.maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.NORMAL)
+                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, pGlow)
+                pBg.color = 0xFFEC4899.toInt()
+                canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, pBg)
+                pGlow.maskFilter = null
             } else if (isHovered) {
-                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f,
-                    Paint().apply { color = 0x14EC4899.toInt() })
+                pBg.color = 0x14EC4899.toInt()
+                canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pBg)
             }
 
             val isPerModel = i <= 4
@@ -1522,9 +1527,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val labelP = when {
                 isDead -> disabled
                 isSelected -> highlight
-                isHovered -> Paint().apply {
-                    isAntiAlias = true; textSize = 29f; color = 0xFFD8D0E0.toInt()
-                }
+                isHovered -> { pDim.textSize = 29f; pDim.color = 0xFFD8D0E0.toInt(); pDim }
                 else -> normal
             }
             val arrow = if (isSelected) "\u25B6 " else "  "
@@ -1542,18 +1545,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val fillRight = sliderLeft + (sliderRight - sliderLeft) * t
 
                 // Track
-                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f,
-                    Paint().apply { color = 0xFF0E0E1C.toInt(); isAntiAlias = true })
-                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f,
-                    Paint().apply {
-                        style = Paint.Style.STROKE; strokeWidth = 0.5f
-                        color = 0xFF202035.toInt(); isAntiAlias = true
-                    })
+                pBg.color = 0xFF0E0E1C.toInt(); pBg.style = Paint.Style.FILL
+                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f, pBg)
+                pBorder.strokeWidth = 0.5f; pBorder.color = 0xFF202035.toInt()
+                canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f, pBorder)
 
                 if (!isDead) {
                     // Section-appropriate slider gradient colors
                     val secColor = when { i <= 4 -> 0xFF10B981.toInt(); i <= 12 -> 0xFFF59E0B.toInt(); else -> 0xFF8B5CF6.toInt() }
-                    val fillPaint = Paint().apply { isAntiAlias = true }
+                    pFill.shader = null; pFill.style = Paint.Style.FILL
+                    val fillPaint = pFill
                     if (isSelected) {
                         fillPaint.shader = LinearGradient(
                             sliderLeft, 0f, fillRight, 0f,
@@ -1574,30 +1575,26 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     canvas.drawRoundRect(sliderLeft, sliderY, fillRight, sliderY + sliderH, 4f, 4f, fillPaint)
 
                     if (isSelected && t > 0.02f) {
-                        val glowP = Paint().apply {
-                            isAntiAlias = true; color = 0x6030D8D0.toInt()
-                            maskFilter = BlurMaskFilter(6f, BlurMaskFilter.Blur.NORMAL)
-                        }
-                        canvas.drawCircle(fillRight, sliderY + sliderH / 2f, 6f, glowP)
+                        pGlow.color = 0x6030D8D0.toInt()
+                        pGlow.maskFilter = BlurMaskFilter(6f, BlurMaskFilter.Blur.NORMAL)
+                        canvas.drawCircle(fillRight, sliderY + sliderH / 2f, 6f, pGlow)
+                        pGlow.maskFilter = null
                     }
 
                     // Thumb
                     val thumbX = fillRight.coerceIn(sliderLeft + 4f, sliderRight - 4f)
                     val thumbR = if (isSelected) 6f else 4f
                     if (isSelected) {
-                        canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR + 3f,
-                            Paint().apply {
-                                isAntiAlias = true; color = 0x4030D8D0.toInt()
-                                maskFilter = BlurMaskFilter(3f, BlurMaskFilter.Blur.NORMAL)
-                            })
+                        pGlow.color = 0x4030D8D0.toInt()
+                        pGlow.maskFilter = BlurMaskFilter(3f, BlurMaskFilter.Blur.NORMAL)
+                        canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR + 3f, pGlow)
+                        pGlow.maskFilter = null
                     }
-                    canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR,
-                        Paint().apply {
-                            isAntiAlias = true
-                            color = if (isSelected) 0xFFFFFFFF.toInt()
-                                else if (isHovered) 0xFFC0B0D0.toInt()
-                                else 0xFF707888.toInt()
-                        })
+                    pBg.color = if (isSelected) 0xFFFFFFFF.toInt()
+                        else if (isHovered) 0xFFC0B0D0.toInt()
+                        else 0xFF707888.toInt()
+                    pBg.style = Paint.Style.FILL
+                    canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR, pBg)
 
                     val vp = if (isSelected) valueHighlight else valuePaint
                     val valStr = param.second
@@ -1620,32 +1617,28 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 } else {
                     0x18404050.toInt()
                 }
-                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f,
-                    Paint().apply { color = badgeBg; isAntiAlias = true })
-                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f,
-                    Paint().apply {
-                        style = Paint.Style.STROKE; strokeWidth = 0.8f
-                        color = if (isOn && isSelected) 0x6030D8D0.toInt()
-                            else if (isOn) 0x3010B981.toInt()
-                            else 0x20505060.toInt()
-                        isAntiAlias = true
-                    })
-                val textP = Paint().apply {
-                    isAntiAlias = true; textSize = 18f; textAlign = Paint.Align.CENTER
-                    color = if (isOn) {
-                        if (isSelected) 0xFF30D8D0.toInt() else 0xFF10B981.toInt()
-                    } else 0xFF606068.toInt()
-                    isFakeBoldText = isSelected
-                }
-                canvas.drawText(valStr, badgeLeft + badgeW / 2f, badgeY + 15f, textP)
+                pBg.color = badgeBg; pBg.style = Paint.Style.FILL
+                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f, pBg)
+                pBorder.strokeWidth = 0.8f
+                pBorder.color = if (isOn && isSelected) 0x6030D8D0.toInt()
+                    else if (isOn) 0x3010B981.toInt()
+                    else 0x20505060.toInt()
+                canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f, pBorder)
+                pText.textSize = 18f; pText.textAlign = Paint.Align.CENTER
+                pText.color = if (isOn) {
+                    if (isSelected) 0xFF30D8D0.toInt() else 0xFF10B981.toInt()
+                } else 0xFF606068.toInt()
+                pText.isFakeBoldText = isSelected
+                canvas.drawText(valStr, badgeLeft + badgeW / 2f, badgeY + 15f, pText)
+                pText.textAlign = Paint.Align.LEFT; pText.isFakeBoldText = false
             }
 
             y += rowH
         }
 
         // Controls hint
-        val hint = Paint().apply { isAntiAlias = true; textSize = 14f; color = 0xFF404048.toInt() }
-        canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y + 4f, hint)
+        pDim.textSize = 14f; pDim.color = 0xFF404048.toInt()
+        canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y + 4f, pDim)
 
         // ── Action buttons (2 rows) ──
         val btnGap = 8f

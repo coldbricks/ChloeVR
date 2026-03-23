@@ -2108,7 +2108,7 @@ void main() {
         float smoothness = 1.0 - roughness;
         color += specEnv * F_env * smoothness * smoothness * uAmbientIntensity;
     } else {
-        color += albedo * mix(vec3(0.05, 0.05, 0.08), vec3(0.15, 0.15, 0.12), N.y * 0.5 + 0.5) * uAmbientColor * uAmbientIntensity;
+        color += albedo * mix(vec3(0.02, 0.02, 0.04), vec3(0.08, 0.08, 0.06), N.y * 0.5 + 0.5) * uAmbientColor * uAmbientIntensity;
     }
 
     // Emissive
@@ -2117,8 +2117,8 @@ void main() {
         color += emissive;
     }
 
-    // Selection rim
-    if (uSelected > 0.5) { float rim = pow(1.0 - NdotV, 3.0); color += vec3(0.0, 0.8, 1.0) * rim * 0.8; }
+    // Selection rim — subtle edge highlight only, no full glow
+    if (uSelected > 0.5) { float rim = pow(1.0 - NdotV, 5.0); color += vec3(0.0, 0.6, 0.8) * rim * 0.25; }
 
     color *= exp2(uExposure);
     // ACES tone mapping
