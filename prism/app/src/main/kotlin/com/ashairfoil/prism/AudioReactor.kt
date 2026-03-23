@@ -102,6 +102,10 @@ class AudioReactor {
     // Graphic limiter
     @Volatile var graphicLimiter = true  // soft-clip display so pinned bars still show detail
 
+    // ── Chloe-Vibes advanced engine (optional) ──
+    val vibesEngine = com.ashairfoil.prism.haptics.ChloeVibesEngine()
+    @Volatile var useVibesEngine = false  // toggle between simple/advanced pipeline
+
     // ── Input ──
     @Volatile var sensitivity = 3.0f  // display gain — FFT bytes are tiny, needs to be high
     @Volatile var enabled = false
@@ -253,6 +257,18 @@ class AudioReactor {
         rawMid = if (midCnt > 0) (midE / midCnt).coerceIn(0f, 1f) else 0f
         rawHigh = if (highCnt > 0) (highE / highCnt).coerceIn(0f, 1f) else 0f
         fftFrameStamp = updateFrameCount  // mark that we got fresh data
+
+        // Feed Chloe-Vibes engine with FFT magnitudes (if enabled)
+        if (useVibesEngine) {
+            // Build magnitude array from raw FFT data for the engine
+            val mags = FloatArray(binCount)
+            for (i in 1 until binCount) {
+                val real = fft[2 * i].toFloat()
+                val imag = fft[2 * i + 1].toFloat()
+                mags[i] = kotlin.math.sqrt(real * real + imag * imag) / 128f * sensitivity
+            }
+            vibesEngine.processVisualizerFFT(mags)
+        }
     }
 
     /**

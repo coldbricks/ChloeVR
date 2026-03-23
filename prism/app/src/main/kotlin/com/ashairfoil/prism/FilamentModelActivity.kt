@@ -226,6 +226,10 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile private var audioScanQueued = false
     @Volatile private var lastAudioScanStartMs = 0L
 
+    // Lighting presets sub-menu
+    @Volatile internal var lightingPresetMode = false
+    @Volatile internal var activeLightingPresetName: String? = null
+
     // BeatReactor settings sub-menu
     @Volatile internal var beatSettingsMode = false
     @Volatile internal var beatCursorX = -1f  // laser position on panel (bitmap coords)
@@ -678,15 +682,21 @@ class FilamentModelActivity : ComponentActivity() {
                                     (intensity * 0.4f).coerceAtMost(0.85f)
                                 } else 0f
 
-                                // Haptic output: box fill drives vibrator directly.
-                                // 100% fill = 100% vibrator, 0% fill = 0% (release handled by AudioReactor envelope)
+                                // Haptic output: drives vibrator from audio signal
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
-                                    if (sensorPollFrame % 200 == 0) {
-                                        Log.i(TAG, "Haptic: pct=%.2f hm=%s dual=%s split=%s".format(
-                                            pct, hm != null, hm?.isDualMotor, hapticDualMotorSplit))
-                                    }
-                                    if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
+                                    if (hm != null && reactor.useVibesEngine) {
+                                        // ── Chloe-Vibes engine: dithered output + dual motor phasing ──
+                                        val engine = reactor.vibesEngine
+                                        val m1 = engine.getDitheredLevel()
+                                        val m2 = if (hm.isDualMotor) engine.getDitheredLevel2() else m1
+                                        if (m1 != lastHapticMotor1 || m2 != lastHapticMotor2) {
+                                            lastHapticMotor1 = m1
+                                            lastHapticMotor2 = m2
+                                            if (hm.isDualMotor) hm.setDualIntensity(m1, m2)
+                                            else hm.setIntensity(m1)
+                                        }
+                                    } else if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
                                         // Split mode: box A → motor 1, box B → motor 2
                                         val m1 = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         val m2 = (reactor.box2FillPct * 20f + 0.5f).toInt().coerceIn(0, 20)
@@ -851,7 +861,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                             // Left eye: models -> ground/shadow -> gizmo -> laser
                             gr.renderEye(leftTexId, width, height, leftProj, leftView)
-                            if (gridVisible) gr.renderGrid(leftTexId, width, height, leftProj, leftView)
+                            if (gridVisible || gr.shadowEnabled) gr.renderGrid(leftTexId, width, height, leftProj, leftView, gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(leftProj, leftView)
                             gr.renderPlaneVisualization(leftProj, leftView)
                             if (gizmoVisible && hasGizmoPose)
@@ -865,7 +875,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                             // Right eye
                             gr.renderEye(rightTexId, width, height, rightProj, rightView)
-                            if (gridVisible) gr.renderGrid(rightTexId, width, height, rightProj, rightView)
+                            if (gridVisible || gr.shadowEnabled) gr.renderGrid(rightTexId, width, height, rightProj, rightView, gridAlpha = if (gridVisible) 0.3f else 0f)
                             gr.renderShadowPlanes(rightProj, rightView)
                             gr.renderPlaneVisualization(rightProj, rightView)
                             if (gizmoVisible && hasGizmoPose)

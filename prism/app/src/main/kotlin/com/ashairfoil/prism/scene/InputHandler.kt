@@ -108,6 +108,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
     var hoveredSaveButton = -1
     private var lastHoveredSaveButton = -1
 
+    // Lighting preset hover
+    var hoveredLightingPresetIndex = -1
+    private var lastHoveredLightingPresetIndex = -1
+
+    // Virtual keyboard hover
+    var hoveredKeyboardKey = -1
+    private var lastHoveredKeyboardKey = -1
+
     // Slider dragging
     private var sliderDragging = -1
     private var lastLaserBx = 0f
@@ -574,15 +582,37 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         beatLockedSlider = -1
                                     }
                                 }
+                            } else if (activity.lightingPresetMode) {
+                                hoveredLightingPresetIndex = -1
+                                hoveredActionButton = -1
+                                val presetCount = com.ashairfoil.prism.settings.LightingPresets.getAllPresets().size
+                                // Preset rows: startY=140, rowH=65, max 12 visible
+                                if (by in 140f..920f) {
+                                    val maxVisible = minOf(12, presetCount)
+                                    if (maxVisible > 0) {
+                                        val idx = ((by - 140f) / 65f).toInt()
+                                        if (idx < presetCount) hoveredLightingPresetIndex = idx
+                                    }
+                                }
+                                if (by in 1130f..1180f) hoveredActionButton = 132 // SAVE CURRENT
+                                if (by > 1200f) {
+                                    if (bx < 520f) hoveredActionButton = 133 // SET DEFAULT
+                                    else hoveredActionButton = 131 // BACK
+                                }
                             } else if (activity.saveNameMode) {
                                 hoveredSaveButton = -1
                                 hoveredSceneIndex = -1
-                                // UiRenderer: SAVE button at saveBtnY=200, height 50; scene rows at 310, rowH=55
-                                if (by in 200f..250f) hoveredSaveButton = 0
-                                if (by in 310f..860f) {
+                                hoveredKeyboardKey = -1
+                                // Keyboard: y=260 to ~544 (5 rows x 52+6)
+                                if (by in 260f..550f) {
+                                    hoveredKeyboardKey = activity.uiRenderer.keyboard.hitTest(bx, by)
+                                }
+                                // SAVE button at saveBtnY=555, height 50
+                                if (by in 555f..605f) hoveredSaveButton = 0
+                                // Scene overwrite list at startY=650, rowH=50
+                                if (by in 650f..1150f) {
                                     val maxVisible = 10
-                                    val frac = (by - 310f) / (860f - 310f)
-                                    val idx = (frac * maxVisible).toInt()
+                                    val idx = ((by - 650f) / 50f).toInt()
                                     if (idx < activity.savedSceneFiles.size) hoveredSceneIndex = idx
                                 }
                                 if (by > 1200f) hoveredSaveButton = 1 // BACK at uiH-80=1200
@@ -613,20 +643,25 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     }
                                 }
                             } else {
-                                // Action buttons: 3 rows at bottom (UiRenderer: row1Y=1110, row2Y=1166, row3Y=1222, btnH=48)
-                                if (by in 1110f..1158f) {
+                                // Action buttons: 4 rows at bottom (UiRenderer: row1Y=1054, btnH=48, btnGap=8)
+                                if (by in 1054f..1102f) {
                                     if (bx < 520f) hoveredActionButton = 104
                                     else hoveredActionButton = 105
                                 }
-                                if (by in 1166f..1214f) {
+                                if (by in 1110f..1158f) {
                                     if (bx < 360f) hoveredActionButton = 101
                                     else if (bx < 690f) hoveredActionButton = 107
                                     else hoveredActionButton = 108
                                 }
-                                if (by > 1222f) {
+                                if (by in 1166f..1214f) {
                                     if (bx < 360f) hoveredActionButton = 109
                                     else if (bx < 690f) hoveredActionButton = 100
                                     else hoveredActionButton = 102
+                                }
+                                if (by > 1222f) {
+                                    if (bx < 360f) hoveredActionButton = 130
+                                    else if (bx < 690f) hoveredActionButton = 134
+                                    else hoveredActionButton = 135
                                 }
 
                                 // Param rows with section headers (rowH=46px, 10px section pad)
@@ -685,7 +720,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton
                     || (activity.glbPickerMode && hoveredGlbIndex != lastHoveredGlbIndex)
                     || (activity.scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)
-                    || (activity.saveNameMode && (hoveredSaveButton != lastHoveredSaveButton || hoveredSceneIndex != lastHoveredSceneIndex))
+                    || (activity.lightingPresetMode && (hoveredLightingPresetIndex != lastHoveredLightingPresetIndex || hoveredActionButton != lastHoveredActionButton))
+                    || (activity.saveNameMode && (hoveredSaveButton != lastHoveredSaveButton || hoveredSceneIndex != lastHoveredSceneIndex || hoveredKeyboardKey != lastHoveredKeyboardKey))
                     || (activity.audioPlayerMode && (
                         hoveredAudioButton != lastHoveredAudioButton ||
                             (activity.audioPickerMode && hoveredAudioFileIndex != lastHoveredAudioFileIndex)))
@@ -697,6 +733,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     lastHoveredSaveButton = hoveredSaveButton
                     lastHoveredAudioButton = hoveredAudioButton
                     lastHoveredAudioFileIndex = hoveredAudioFileIndex
+                    lastHoveredLightingPresetIndex = hoveredLightingPresetIndex
+                    lastHoveredKeyboardKey = hoveredKeyboardKey
                     activity.uiNeedsRefresh = true
                 }
 
@@ -990,6 +1028,89 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.hapticDualMotorSplit = !activity.hapticDualMotorSplit
                 Log.i(TAG, "Dual motor split: ${activity.hapticDualMotorSplit}")
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.lightingPresetMode && hoveredLightingPresetIndex >= 0) {
+                val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
+                val preset = presets.getOrNull(hoveredLightingPresetIndex)
+                if (preset != null) {
+                    val renderer = activity.glesRenderer
+                    if (renderer != null) {
+                        com.ashairfoil.prism.settings.LightingPresets.applyPreset(preset, renderer) { activity.autoAmbient = it }
+                        activity.activeLightingPresetName = preset.name
+                        Log.i(TAG, "Applied lighting preset: ${preset.name}")
+                    }
+                }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.lightingPresetMode && hoveredActionButton == 131) {
+                activity.lightingPresetMode = false
+                hoveredLightingPresetIndex = -1
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.lightingPresetMode && hoveredActionButton == 132) {
+                // SAVE CURRENT: open save name editor to name the preset
+                activity.lightingPresetMode = false
+                val renderer = activity.glesRenderer
+                if (renderer != null) {
+                    val preset = com.ashairfoil.prism.settings.LightingPresets.captureCurrentLighting("Custom", renderer, activity.autoAmbient)
+                    com.ashairfoil.prism.settings.LightingPresets.saveCustomPreset(preset)
+                    activity.activeLightingPresetName = preset.name
+                    Log.i(TAG, "Saved custom lighting preset")
+                    activity.uiRenderer?.showMessage("Lighting preset saved: Custom")
+                }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.lightingPresetMode && hoveredActionButton == 133) {
+                // SET DEFAULT
+                val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
+                val preset = presets.getOrNull(hoveredLightingPresetIndex)
+                val name = preset?.name ?: activity.activeLightingPresetName
+                if (name != null) {
+                    com.ashairfoil.prism.settings.LightingPresets.setDefaultPresetName(name)
+                    Log.i(TAG, "Set default lighting preset: $name")
+                    activity.uiRenderer?.showMessage("Default lighting: $name")
+                }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 130) {
+                Log.i(TAG, "Action: Lighting presets")
+                activity.lightingPresetMode = true
+                hoveredLightingPresetIndex = -1
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 134) {
+                activity.sensorHudVisible = !activity.sensorHudVisible
+                Log.i(TAG, "Sensor HUD: ${activity.sensorHudVisible}")
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 135) {
+                val gr = activity.glesRenderer
+                if (gr != null) {
+                    gr.bloomEnabled = !gr.bloomEnabled
+                    Log.i(TAG, "Bloom: ${gr.bloomEnabled}")
+                }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.saveNameMode && hoveredKeyboardKey >= 0) {
+                val kb = activity.uiRenderer.keyboard
+                val (action, ch) = kb.getKeyChar(hoveredKeyboardKey)
+                when (action) {
+                    VirtualKeyboard.KeyAction.INSERT -> {
+                        if (activity.saveNameLen < 20) {
+                            activity.saveNameChars[activity.saveNameLen] = ch
+                            activity.saveNameLen++
+                            activity.saveNameCursor = activity.saveNameLen.coerceAtMost(19)
+                        }
+                    }
+                    VirtualKeyboard.KeyAction.BACKSPACE -> {
+                        if (activity.saveNameLen > 0) {
+                            activity.saveNameLen--
+                            activity.saveNameChars[activity.saveNameLen] = ' '
+                            activity.saveNameCursor = activity.saveNameLen.coerceAtMost(19)
+                        }
+                    }
+                    VirtualKeyboard.KeyAction.SHIFT -> kb.isShifted = !kb.isShifted
+                    VirtualKeyboard.KeyAction.SPACE -> {
+                        if (activity.saveNameLen < 20) {
+                            activity.saveNameChars[activity.saveNameLen] = ' '
+                            activity.saveNameLen++
+                            activity.saveNameCursor = activity.saveNameLen.coerceAtMost(19)
+                        }
+                    }
+                }
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.saveNameMode && hoveredSaveButton == 0) {
                 val name = String(activity.saveNameChars, 0, activity.saveNameLen).trim()
                 if (name.isNotEmpty()) {
@@ -1266,6 +1387,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
             }
             if (activity.beatSettingsMode) {
                 activity.beatSettingsMode = false
+                activity.uiNeedsRefresh = true
+                lastBState = bButton
+                return
+            }
+            if (activity.lightingPresetMode) {
+                activity.lightingPresetMode = false
+                hoveredLightingPresetIndex = -1
                 activity.uiNeedsRefresh = true
                 lastBState = bButton
                 return

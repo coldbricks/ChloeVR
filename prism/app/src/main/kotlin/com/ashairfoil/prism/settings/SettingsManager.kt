@@ -109,6 +109,14 @@ object SettingsManager {
         check(::prefs.isInitialized) { "SettingsManager.init(context) must be called before use" }
     }
 
+    // ── Generic accessors (for cross-module use) ──────────────────────
+    fun getString(key: String, default: String): String {
+        ensureInit(); return prefs.getString(key, default) ?: default
+    }
+    fun putString(key: String, value: String) {
+        ensureInit(); prefs.edit().putString(key, value).apply()
+    }
+
     // ── Last played file ────────────────────────────────────────────────
 
     var lastPlayedFile: String?

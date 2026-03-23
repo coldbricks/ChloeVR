@@ -38,6 +38,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private var renderCanvas: Canvas? = null
     private val clearPaint = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
 
+    // On-screen keyboard for save name editor
+    internal val keyboard = VirtualKeyboard()
+
     // Reusable Paint objects for hot-path rendering (avoid per-frame allocations)
     private val tmpPaint = Paint().apply { isAntiAlias = true }
     private val tmpPaint2 = Paint().apply { isAntiAlias = true }
@@ -97,6 +100,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val hoveredAudioFileIndex = ih.hoveredAudioFileIndex
         val beatDraggingSlider = ih.beatDraggingSlider
         val draggingPanel = ih.draggingPanel
+        val hoveredLightingPresetIndex = ih.hoveredLightingPresetIndex
 
         // ── Convenience accessors: activity mode state ──
         val audioPlayerMode = activity.audioPlayerMode
@@ -105,6 +109,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val beatSettingsMode = activity.beatSettingsMode
         val glbPickerMode = activity.glbPickerMode
         val scenePickerMode = activity.scenePickerMode
+        val lightingPresetMode = activity.lightingPresetMode
+        val activeLightingPresetName = activity.activeLightingPresetName
         val saveNameMode = activity.saveNameMode
         val selectedParam = activity.selectedParam
         val audioPickerScrollOffset = activity.audioPickerScrollOffset
@@ -889,6 +895,129 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             return
         }
 
+        // ═══ Lighting Presets Sub-Menu ═══
+        if (lightingPresetMode) {
+            val headerPaint = Paint().apply {
+                isAntiAlias = true; textSize = 36f; color = 0xFFF59E0B.toInt(); isFakeBoldText = true
+            }
+            canvas.drawText("Lighting Presets", 50f, 115f, headerPaint)
+
+            val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
+            val maxVisible = 12
+            val rowH = 65f
+            val startY = 140f
+            val normalPaint = Paint().apply {
+                isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt()
+            }
+            val hoverPaint = Paint().apply {
+                isAntiAlias = true; textSize = 32f; color = 0xFFF59E0B.toInt(); isFakeBoldText = true
+            }
+            val summaryPaint = Paint().apply {
+                isAntiAlias = true; textSize = 20f; color = 0xFF6B7280.toInt()
+                typeface = android.graphics.Typeface.MONOSPACE
+            }
+            val builtInBadge = Paint().apply {
+                isAntiAlias = true; textSize = 14f; color = 0xFF505868.toInt()
+            }
+            val hoverBg = Paint().apply { color = 0x20F59E0B.toInt() }
+            val activeDot = Paint().apply { color = 0xFF10B981.toInt(); isAntiAlias = true }
+
+            for (vi in 0 until minOf(maxVisible, presets.size)) {
+                val preset = presets[vi]
+                val ry = startY + vi * rowH
+                val isHovered = vi == hoveredLightingPresetIndex
+                val isActive = preset.name == activeLightingPresetName
+
+                if (isHovered) {
+                    canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                }
+
+                // Active preset indicator dot
+                if (isActive) {
+                    canvas.drawCircle(38f, ry + 24f, 5f, activeDot)
+                    canvas.drawCircle(38f, ry + 24f, 8f, Paint().apply {
+                        color = 0x4010B981.toInt(); isAntiAlias = true
+                        maskFilter = BlurMaskFilter(3f, BlurMaskFilter.Blur.NORMAL)
+                    })
+                }
+
+                val nameX = if (isActive) 56f else 50f
+                canvas.drawText(preset.name, nameX, ry + 28f, if (isHovered) hoverPaint else normalPaint)
+
+                if (preset.isBuiltIn) {
+                    val nameW = normalPaint.measureText(preset.name)
+                    canvas.drawText("built-in", nameX + nameW + 12f, ry + 28f, builtInBadge)
+                }
+
+                // Summary line
+                val summary = "L:%.1f  F:%.1f  A:%.1f  Shd:%.0f%%  %s".format(
+                    preset.lightIntensity, preset.fillLightIntensity,
+                    preset.ambientIntensity, preset.shadowDarkness * 100,
+                    if (preset.autoAmbient) "Auto" else "Manual"
+                )
+                canvas.drawText(summary, nameX, ry + 50f, summaryPaint)
+            }
+
+            // SAVE CURRENT button
+            val saveBtnY = uiH - 150f
+            val isSaveHovered = hoveredActionButton == 132
+            val saveBg = Paint().apply {
+                color = if (isSaveHovered) 0x808B5CF6.toInt() else 0x308B5CF6.toInt()
+            }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBg)
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f,
+                Paint().apply {
+                    style = Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 3f else 1.5f
+                    color = 0xFF8B5CF6.toInt(); isAntiAlias = true
+                })
+            canvas.drawText("SAVE CURRENT LIGHTING", uiW / 2f, saveBtnY + 34f,
+                Paint().apply {
+                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
+                    color = if (isSaveHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt()
+                    isFakeBoldText = true
+                })
+
+            // SET DEFAULT / BACK row
+            val row2Y = uiH - 80f
+            val halfW = (uiW - 68f) / 2f
+            val isDefaultHovered = hoveredActionButton == 133
+            val isBackHovered = hoveredActionButton == 131
+
+            // SET DEFAULT button
+            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f,
+                Paint().apply {
+                    color = if (isDefaultHovered) 0x70F59E0B.toInt() else 0x20F59E0B.toInt()
+                })
+            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f,
+                Paint().apply {
+                    style = Paint.Style.STROKE; strokeWidth = if (isDefaultHovered) 3f else 1.5f
+                    color = if (isDefaultHovered) 0xFFF59E0B.toInt() else 0x60F59E0B.toInt()
+                    isAntiAlias = true
+                })
+            canvas.drawText("SET DEFAULT", 30f + halfW / 2f, row2Y + 40f,
+                Paint().apply {
+                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
+                    color = if (isDefaultHovered) 0xFFFFFFFF.toInt() else 0xFFF59E0B.toInt()
+                    isFakeBoldText = true
+                })
+
+            // BACK button
+            canvas.drawRoundRect(38f + halfW, row2Y, uiW - 30f, row2Y + 60f, 12f, 12f,
+                Paint().apply {
+                    color = if (isBackHovered) 0x70EC4899.toInt() else 0x20EC4899.toInt()
+                })
+            canvas.drawText("\u25C0 BACK", 38f + halfW + (uiW - 68f - halfW) / 2f, row2Y + 40f,
+                Paint().apply {
+                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
+                    color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+                    isFakeBoldText = true
+                })
+
+            drawLaserCursorOverlay()
+            pendingUiBitmap = bitmap
+            return
+        }
+
         // ═══ Save Name Editor ═══
         if (saveNameMode) {
             val headerPaint = Paint().apply {
@@ -919,13 +1048,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val underPaint = Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f }
             canvas.drawLine(nameStartX, nameY + 8f, nameStartX + 20 * charW, nameY + 8f, underPaint)
 
-            val hintPaint = Paint().apply {
-                isAntiAlias = true; textSize = 20f; color = 0xFF58585F.toInt()
-            }
-            canvas.drawText("Stick \u2195:letter  \u2194:cursor  A:backspace", 50f, nameY + 30f, hintPaint)
+            // On-screen QWERTY keyboard
+            val hoveredKey = ih.hoveredKeyboardKey
+            keyboard.render(canvas, hoveredKey)
 
-            // SAVE button
-            val saveBtnY = 200f
+            // SAVE button (below keyboard)
+            val saveBtnY = 555f
             val isSaveHovered = hoveredSaveButton == 0
             val saveBg = Paint().apply {
                 color = if (isSaveHovered) 0x808B5CF6.toInt() else 0x308B5CF6.toInt()
@@ -951,10 +1079,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val secHeader = Paint().apply {
                     isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
                 }
-                canvas.drawText("Or overwrite existing:", 50f, 290f, secHeader)
+                canvas.drawText("Or overwrite existing:", 50f, 630f, secHeader)
 
-                val rowH = 55f
-                val startY = 310f
+                val rowH = 50f
+                val startY = 650f
                 val normalPaint = Paint().apply {
                     isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt()
                 }
@@ -1221,10 +1349,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             return
         }
 
-        // ── Status line ──
-        val dim = Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF6B7280.toInt() }
-        val teal = Paint().apply { isAntiAlias = true; textSize = 28f; color = 0xFF10B981.toInt() }
-
+        // ── Status chips ──
         var y = 110f
         val luxStr = when {
             !autoAmbient -> "Manual"
@@ -1233,20 +1358,34 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             else -> "%.0f lux".format(roomLux)
         }
         val gridStr = if (gridVisible) "ON" else "OFF"
-        canvas.drawText("${models.size} mdl  |  Grid: $gridStr  |  $luxStr", 50f, y, dim)
+        val gridColor = if (gridVisible) 0xFF10B981.toInt() else 0xFF6B7280.toInt()
+
+        var chipX = 40f
+        chipX = drawStatusChip(canvas, chipX, y, "${models.size} mdl", 0xFF10B981.toInt())
+        chipX = drawStatusChip(canvas, chipX + 8f, y, "Grid: $gridStr", gridColor)
+        chipX = drawStatusChip(canvas, chipX + 8f, y, luxStr, 0xFFF59E0B.toInt())
+        if (hapticConnected) {
+            drawStatusChip(canvas, chipX + 8f, y, "Haptic", 0xFF8B5CF6.toInt())
+        }
         y += 28f
 
         val model = models.getOrNull(selectedModelIndex)
         val modelName = model?.file?.nameWithoutExtension ?: "No selection"
-        val namePaint = Paint().apply {
-            isAntiAlias = true; textSize = 30f; color = 0xFF30D8D0.toInt(); isFakeBoldText = true
+        tmpPaint.textSize = 30f; tmpPaint.color = 0xFF30D8D0.toInt(); tmpPaint.isFakeBoldText = true
+        canvas.drawText(modelName, 50f, y, tmpPaint)
+        tmpPaint.isFakeBoldText = false
+        if (selectedModelIndex >= 0 && models.size > 1) {
+            tmpPaint.textSize = 20f; tmpPaint.color = 0xFF6B7280.toInt()
+            tmpPaint.typeface = Typeface.MONOSPACE
+            canvas.drawText("[${selectedModelIndex + 1}/${models.size}]",
+                50f + tmpPaint.measureText(modelName) + 10f, y, tmpPaint)
+            tmpPaint.typeface = Typeface.DEFAULT
         }
-        canvas.drawText(modelName, 50f, y, namePaint)
         y += 12f
 
         // ── Separator ──
-        val sepPaint = Paint().apply { color = 0x30EC4899.toInt(); strokeWidth = 1f }
-        canvas.drawLine(40f, y, uiW - 40f, y, sepPaint)
+        tmpPaint.color = 0x30EC4899.toInt(); tmpPaint.strokeWidth = 1f
+        canvas.drawLine(40f, y, uiW - 40f, y, tmpPaint)
         y += 14f
 
         // ── Parameters ──
@@ -1317,21 +1456,38 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             else -> 0f
         }
 
-        // Section dividers
+        // Section dividers with colored accents
         val sectionLabelPaint = Paint().apply {
-            isAntiAlias = true; textSize = 16f; color = 0xFF6B5080.toInt()
-            letterSpacing = 0.15f; isFakeBoldText = true
+            isAntiAlias = true; textSize = 18f; letterSpacing = 0.15f; isFakeBoldText = true
         }
         val sections = mapOf(0 to "MODEL", 5 to "LIGHTING", 13 to "SYSTEM")
+        val sectionColors = mapOf(0 to 0xFF10B981.toInt(), 5 to 0xFFF59E0B.toInt(), 13 to 0xFF8B5CF6.toInt())
+        val sectionDotPaint = Paint().apply { isAntiAlias = true }
 
         for ((i, param) in params.withIndex()) {
-            // Section header
+            // Section header with colored dot and gradient line
             if (i in sections) {
-                y += 4f  // extra padding before section header
-                canvas.drawText(sections[i]!!, 56f, y + 2f, sectionLabelPaint)
-                canvas.drawLine(56f + sectionLabelPaint.measureText(sections[i]!!) + 8f, y - 2f,
-                    uiW - 40f, y - 2f, Paint().apply { color = 0x18EC4899.toInt(); strokeWidth = 1f })
+                val sColor = sectionColors[i] ?: 0xFF6B5080.toInt()
                 y += 6f
+
+                // Colored dot
+                sectionDotPaint.color = sColor
+                canvas.drawCircle(44f, y - 2f, 4f, sectionDotPaint)
+
+                // Section label
+                sectionLabelPaint.color = sColor
+                canvas.drawText(sections[i]!!, 56f, y + 2f, sectionLabelPaint)
+
+                // Gradient separator line
+                val lineStart = 56f + sectionLabelPaint.measureText(sections[i]!!) + 10f
+                val linePaint = Paint().apply {
+                    strokeWidth = 1.5f; isAntiAlias = true
+                    shader = LinearGradient(lineStart, 0f, uiW - 40f, 0f,
+                        (sColor and 0x00FFFFFF) or 0x40000000, 0x00000000,
+                        Shader.TileMode.CLAMP)
+                }
+                canvas.drawLine(lineStart, y - 2f, uiW - 40f, y - 2f, linePaint)
+                y += 8f
             }
 
             val rowTop = y - 4f
@@ -1379,7 +1535,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val sliderLeft = 240f
                 val sliderRight = uiW - 120f
                 val sliderY = y + 6f
-                val sliderH = 8f
+                val sliderH = 10f
                 val range = paramRanges[i]
                 val value = getParamValue(i)
                 val t = ((value - range.first) / (range.second - range.first)).coerceIn(0f, 1f)
@@ -1395,6 +1551,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     })
 
                 if (!isDead) {
+                    // Section-appropriate slider gradient colors
+                    val secColor = when { i <= 4 -> 0xFF10B981.toInt(); i <= 12 -> 0xFFF59E0B.toInt(); else -> 0xFF8B5CF6.toInt() }
                     val fillPaint = Paint().apply { isAntiAlias = true }
                     if (isSelected) {
                         fillPaint.shader = LinearGradient(
@@ -1402,15 +1560,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                             0xFF0A4040.toInt(), 0xFF30D8D0.toInt(),
                             Shader.TileMode.CLAMP)
                     } else if (isHovered) {
+                        val darkSec = (secColor and 0x00FFFFFF) or 0xFF0A0000.toInt()
                         fillPaint.shader = LinearGradient(
                             sliderLeft, 0f, fillRight, 0f,
-                            0xFF1A1028.toInt(), 0xFF9060B0.toInt(),
-                            Shader.TileMode.CLAMP)
+                            darkSec, secColor, Shader.TileMode.CLAMP)
                     } else {
+                        val dimSec = (secColor and 0x00FFFFFF) or 0xFF080000.toInt()
+                        val midSec = (secColor and 0x00FFFFFF) or 0xFF1A0000.toInt()
                         fillPaint.shader = LinearGradient(
                             sliderLeft, 0f, fillRight, 0f,
-                            0xFF141424.toInt(), 0xFF3A4858.toInt(),
-                            Shader.TileMode.CLAMP)
+                            dimSec, midSec, Shader.TileMode.CLAMP)
                     }
                     canvas.drawRoundRect(sliderLeft, sliderY, fillRight, sliderY + sliderH, 4f, 4f, fillPaint)
 
@@ -1520,7 +1679,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         }
 
         // Row 1: SAVE / LOAD
-        val row1Y = uiH - 170f
+        val row1Y = uiH - 226f
         val btn2W = (uiW - 60f - btnGap) / 2f
         drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
         drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
@@ -1538,6 +1697,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         drawButton(r2b1, r2b1 + btn3W, row3Y, "AUDIO", hoveredActionButton == 109, 0xFF8B5CF6.toInt())
         drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
         drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
+
+        // Row 4: LIGHTS / SENSOR HUD
+        val row4Y = row3Y + btnH + btnGap
+        drawButton(r2b1, r2b1 + btn3W, row4Y, "LIGHTS", hoveredActionButton == 130, 0xFFF59E0B.toInt())
+        drawButton(r2b2, r2b2 + btn3W, row4Y, "SENSOR HUD", hoveredActionButton == 134, 0xFF10B981.toInt())
+        drawButton(r2b3, r2b3 + btn3W, row4Y, "BLOOM", hoveredActionButton == 135, 0xFF8B5CF6.toInt())
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
@@ -1735,6 +1900,32 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         scrollView.addView(layout)
         return scrollView
+    }
+
+    // ── Canvas UI Helpers ──
+
+    private val chipBgPaint = Paint().apply { isAntiAlias = true }
+    private val chipBorderPaint = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 0.8f }
+    private val chipTextPaint = Paint().apply { isAntiAlias = true; textSize = 18f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+
+    /** Draw a colored status chip. Returns the right edge X for chaining. */
+    private fun drawStatusChip(canvas: Canvas, x: Float, y: Float, text: String, color: Int): Float {
+        chipTextPaint.textSize = 18f
+        val textW = chipTextPaint.measureText(text)
+        val chipW = textW + 20f
+        val chipH = 22f
+        val cy = y - 16f
+
+        chipBgPaint.color = (color and 0x00FFFFFF) or 0x28000000
+        canvas.drawRoundRect(x, cy, x + chipW, cy + chipH, 8f, 8f, chipBgPaint)
+
+        chipBorderPaint.color = (color and 0x00FFFFFF) or 0x50000000
+        canvas.drawRoundRect(x, cy, x + chipW, cy + chipH, 8f, 8f, chipBorderPaint)
+
+        chipTextPaint.color = color
+        canvas.drawText(text, x + chipW / 2f, cy + 16f, chipTextPaint)
+
+        return x + chipW
     }
 
     // ── UI Helpers ──
