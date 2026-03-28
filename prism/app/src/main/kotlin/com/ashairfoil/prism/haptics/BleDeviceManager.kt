@@ -119,6 +119,9 @@ class BleDeviceManager(private val context: Context) {
     // Auto-connect: when true, connect to first Lovense device found
     private var autoConnect = true
 
+    // Known-device allowlist: only auto-connect to previously approved devices
+    private val knownDeviceAddresses = mutableSetOf<String>()
+
     // Known Lovense service/characteristic UUID sets.
     // Older devices use Nordic UART; newer firmware uses Lovense-specific UUIDs.
     data class ServiceUuids(val service: UUID, val tx: UUID, val rx: UUID)
@@ -189,8 +192,8 @@ class BleDeviceManager(private val context: Context) {
             discoveredDevices[device.address] = info
             onDeviceDiscovered?.invoke(info)
 
-            // Auto-connect to first Lovense device found
-            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected) {
+            // Auto-connect to first Lovense device found (only if previously approved)
+            if (isLovense && autoConnect && device.address in knownDeviceAddresses && connectionState == ConnectionState.Disconnected) {
                 android.util.Log.i(TAG, "Auto-connecting to Lovense: $displayName (${device.address})")
                 autoConnect = false
                 stopScan()
@@ -208,8 +211,14 @@ class BleDeviceManager(private val context: Context) {
     // Connection
     // -----------------------------------------------------------------------
 
+    /** Approve a device address for auto-connect. */
+    fun approveDevice(address: String) {
+        knownDeviceAddresses.add(address)
+    }
+
     /** Connect to a device by address. */
     fun connect(address: String): Boolean {
+        knownDeviceAddresses.add(address)
         if (!hasBlePermissions()) {
             android.util.Log.e(TAG, "BLE permissions not granted for connect!")
             return false
@@ -231,6 +240,16 @@ class BleDeviceManager(private val context: Context) {
     /** Disconnect from the current device. */
     fun disconnect() {
         stopScan()
+        // Safety: stop motors before tearing down connection
+        try {
+            val wc = writeCharacteristic
+            val g0 = gatt
+            if (wc != null && g0 != null) {
+                wc.value = "Vibrate:0;".toByteArray(Charsets.US_ASCII)
+                wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                g0.writeCharacteristic(wc)
+            }
+        } catch (_: Exception) {}
         val g = gatt
         gatt = null
         // disconnect() is async — close() should ideally wait for onConnectionStateChange,
@@ -255,6 +274,15 @@ class BleDeviceManager(private val context: Context) {
 
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (isStale(gatt)) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                android.util.Log.e(TAG, "GATT error: status=$status newState=$newState")
+                gatt.close()
+                this@BleDeviceManager.gatt = null
+                writeCharacteristic = null
+                connectionState = ConnectionState.Disconnected
+                handler.post { onConnectionStateChanged?.invoke(connectionState) }
+                return
+            }
             when (newState) {
                 BluetoothGatt.STATE_CONNECTED -> {
                     connectionState = ConnectionState.Connected

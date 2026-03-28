@@ -103,13 +103,19 @@ class DeoVrApi {
         return withContext(Dispatchers.IO) {
             try {
                 val url = URL(apiUrl)
+                if (url.protocol != "https" && url.protocol != "http") {
+                    Log.e(TAG, "Rejected non-HTTP URL scheme: ${url.protocol}")
+                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0)
+                }
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "GET"
                 conn.connectTimeout = CONNECT_TIMEOUT
                 conn.readTimeout = READ_TIMEOUT
                 conn.setRequestProperty("User-Agent", USER_AGENT)
                 conn.setRequestProperty("Accept", "application/json")
-                if (authToken != null) {
+                if (authToken != null && url.protocol != "https") {
+                    Log.w(TAG, "Refusing to send auth token over non-HTTPS connection")
+                } else if (authToken != null) {
                     conn.setRequestProperty("Authorization", "Bearer $authToken")
                 }
 

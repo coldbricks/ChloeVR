@@ -287,14 +287,16 @@ class FilamentModelActivity : ComponentActivity() {
                     availableGlbFiles = cached
                     Log.i(TAG, "Loaded ${cached.size} GLB files from cache")
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "GLB cache read failed", e)
+            }
         }
         loadCachedAudioFiles()
         // Rescan in background and update cache
         Thread {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
             availableGlbFiles = glbFiles
-            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (_: Exception) {}
+            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (e: Exception) { Log.w(TAG, "GLB cache write failed", e) }
             Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated)")
         }.start()
 
@@ -848,12 +850,13 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             val ih = inputHandler  // local ref for render state
-                            val washActive = beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f
+                            val r = if (beatReactorEnabled && beatWashAlpha > 0.005f) reactor else null
+                            val washActive = r != null
                             var washR = 0f; var washG = 0f; var washB = 0f; var washMode = 0
-                            if (washActive) {
-                                val wc = reactor!!.getBeatColor()
+                            if (r != null) {
+                                val wc = r.getBeatColor()
                                 washR = wc[0]; washG = wc[1]; washB = wc[2]
-                                washMode = reactor.blendMode.ordinal
+                                washMode = r.blendMode.ordinal
                             }
 
                             // Sync room edit highlight
@@ -1014,7 +1017,9 @@ class FilamentModelActivity : ComponentActivity() {
                 availableAudioFiles = scanned
                 try {
                     getAudioCacheFile().writeText(scanned.joinToString("\n") { it.absolutePath })
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    Log.w(TAG, "Audio cache write failed", e)
+                }
                 Log.i(TAG, "Scanned ${scanned.size} audio files")
             } catch (e: Exception) {
                 Log.w(TAG, "Audio scan failed: ${e.message}")
@@ -1026,8 +1031,6 @@ class FilamentModelActivity : ComponentActivity() {
             }
         }.start()
     }
-
-    private fun buildModelPanelView(): android.view.View = uiRenderer.buildModelPanelView()
 
     internal fun showMessage(text: String) = uiRenderer.showMessage(text)
 
@@ -1097,12 +1100,14 @@ class FilamentModelActivity : ComponentActivity() {
         running = false
 
         // Auto-save current scene for next launch
-        if (models.isNotEmpty()) {
-            try {
-                saveScene("_autosave")
-                Log.i(TAG, "Auto-saved scene (${models.size} models)")
-            } catch (e: Exception) {
-                Log.e(TAG, "Auto-save failed", e)
+        if (::sceneManager.isInitialized) {
+            if (models.isNotEmpty()) {
+                try {
+                    saveScene("_autosave")
+                    Log.i(TAG, "Auto-saved scene (${models.size} models)")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Auto-save failed", e)
+                }
             }
         }
 

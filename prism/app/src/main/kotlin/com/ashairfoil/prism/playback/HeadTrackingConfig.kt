@@ -31,9 +31,6 @@ class HeadTrackingConfig {
     @Volatile var maxPosY: Float = 0.4f
     @Volatile var maxPosZ: Float = 0.4f
 
-    // Smoothing factor (0 = no smoothing, 1 = maximum smoothing)
-    @Volatile var smoothing: Float = 0.1f
-
     /**
      * Apply tracking config to raw rotation values.
      * Returns filtered rotation (yaw, pitch, roll) in radians.
@@ -70,7 +67,6 @@ class HeadTrackingConfig {
         posXEnabled = true; posYEnabled = true; posZEnabled = true
         maxYaw = 1.0f; maxPitch = 1.0f; maxRoll = 0.3f
         maxPosX = 0.4f; maxPosY = 0.4f; maxPosZ = 0.4f
-        smoothing = 0.1f
     }
 
     /**
@@ -79,7 +75,7 @@ class HeadTrackingConfig {
     fun applyComfortPreset() {
         yawEnabled = true; pitchEnabled = false; rollEnabled = false
         posXEnabled = false; posYEnabled = false; posZEnabled = false
-        maxYaw = 0.5f; smoothing = 0.3f
+        maxYaw = 0.5f
     }
 
     /**
@@ -90,6 +86,5 @@ class HeadTrackingConfig {
         posXEnabled = true; posYEnabled = true; posZEnabled = true
         maxYaw = 1.0f; maxPitch = 1.0f; maxRoll = 0.3f
         maxPosX = 0.4f; maxPosY = 0.4f; maxPosZ = 0.4f
-        smoothing = 0.1f
     }
 }

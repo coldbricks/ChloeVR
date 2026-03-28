@@ -30,8 +30,8 @@
 
     <!-- Bluetooth for Lovense haptic device control -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
 
     <!-- XR features -->
     <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
@@ -49,7 +49,9 @@
         android:label="ChloeVR"
         android:icon="@android:drawable/ic_media_play"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config">
 
         <!-- OpenXR native runtime -->
         <uses-native-library android:name="libopenxr.google.so" android:required="false" />

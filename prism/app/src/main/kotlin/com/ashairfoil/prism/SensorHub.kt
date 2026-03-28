@@ -5,6 +5,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 
 /**
@@ -20,6 +22,8 @@ class SensorHub(context: Context) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val activeSensors = mutableMapOf<Int, Sensor>()
+    private val sensorThread = HandlerThread("SensorHub").apply { start() }
+    private val sensorHandler = Handler(sensorThread.looper)
 
     // ── Sensor data (all @Volatile for cross-thread reads) ──
 
@@ -198,7 +202,7 @@ class SensorHub(context: Context) : SensorEventListener {
                         SensorManager.SENSOR_DELAY_GAME
                     else -> SensorManager.SENSOR_DELAY_UI
                 }
-                sensorManager.registerListener(this, sensor, rate)
+                sensorManager.registerListener(this, sensor, rate, sensorHandler)
                 activeSensors[type] = sensor
                 Log.i(TAG, "  ✓ Registered: ${sensorTypeName[type] ?: "Type$type"}")
             }
@@ -227,6 +231,7 @@ class SensorHub(context: Context) : SensorEventListener {
             sensorManager.cancelTriggerSensor(sigMotionTrigger, sigMotion)
         }
         activeSensors.clear()
+        sensorThread.quitSafely()
         Log.i(TAG, "All sensors unregistered")
     }
 

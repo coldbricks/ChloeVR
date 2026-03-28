@@ -3,6 +3,7 @@ package com.ashairfoil.prism.effects
 import android.content.Context
 import android.opengl.GLES20
 import androidx.media3.common.util.GlProgram
+import androidx.media3.common.util.GlUtil
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
@@ -31,14 +32,16 @@ private class AnaglyphShaderProgram(
 ) : BaseGlShaderProgram(false, 1) {
 
     companion object {
-        private const val VERTEX_SHADER = """
-            attribute vec4 aFramePosition;
-            varying vec2 vTexCoords;
-            void main() {
-                gl_Position = vec4(aFramePosition.xy, 0.0, 1.0);
-                vTexCoords = aFramePosition.zw;
-            }
-        """
+        private const val VERTEX_SHADER =
+            "attribute vec4 aFramePosition;\n" +
+                "uniform mat4 uTransformationMatrix;\n" +
+                "uniform mat4 uTexTransformationMatrix;\n" +
+                "varying vec2 vTexCoords;\n" +
+                "void main() {\n" +
+                "  gl_Position = uTransformationMatrix * aFramePosition;\n" +
+                "  vec4 texCoord = uTexTransformationMatrix * vec4((aFramePosition.xy + 1.0) * 0.5, 0.0, 1.0);\n" +
+                "  vTexCoords = texCoord.xy;\n" +
+                "}\n"
         private const val FRAGMENT_SHADER = """
             precision mediump float;
             uniform sampler2D uTexSampler;
@@ -75,6 +78,7 @@ private class AnaglyphShaderProgram(
     }
 
     private var glProgram: GlProgram? = null
+    private val identityMatrix = GlUtil.create4x4IdentityMatrix()
 
     override fun configure(inputWidth: Int, inputHeight: Int): androidx.media3.common.util.Size {
         if (glProgram == null) {
@@ -91,6 +95,13 @@ private class AnaglyphShaderProgram(
         program.setIntUniform("uStereoLayout", state.stereoLayout)
         program.setIntUniform("uSwapEyes", if (state.swapEyes) 1 else 0)
         program.setFloatUniform("uGhosting", state.ghosting)
+        program.setBufferAttribute(
+            "aFramePosition",
+            GlUtil.getNormalizedCoordinateBounds(),
+            GlUtil.HOMOGENEOUS_COORDINATE_VECTOR_SIZE
+        )
+        program.setFloatsUniform("uTransformationMatrix", identityMatrix)
+        program.setFloatsUniform("uTexTransformationMatrix", identityMatrix)
         program.bindAttributesAndUniforms()
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }

@@ -137,7 +137,11 @@ class SpectralAnalyzer(private val sampleRate: Float = 48000f) {
     /**
      * Analyze a buffer of interleaved audio samples.
      * Returns a SpectralData with all extracted features.
+     *
+     * Currently unused -- will be wired when funscript/haptic integration
+     * processes raw PCM instead of Visualizer FFT magnitudes.
      */
+    @Suppress("unused")
     fun analyze(samples: FloatArray, channels: Int = 1): SpectralData {
         // Step 1: Mix to mono
         val monoLen = samples.size / channels.coerceAtLeast(1)

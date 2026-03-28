@@ -34,7 +34,7 @@ object ProUpgrade {
     private const val PRODUCT_ID = "chloe_pro_unlock"
 
     // Set to true during development to bypass billing
-    var DEBUG_PRO_UNLOCKED = BuildConfig.DEBUG
+    val DEBUG_PRO_UNLOCKED = BuildConfig.DEBUG
 
     private var cachedIsPro: Boolean? = null
 
@@ -95,6 +95,7 @@ object ProUpgrade {
      * Should be called on app startup to sync state.
      * STUB: Replace with actual BillingClient.queryPurchasesAsync()
      */
+    // TODO: Replace with BillingClient.queryPurchasesAsync() for Play Store release
     fun verifyPurchaseState(context: Context) {
         if (DEBUG_PRO_UNLOCKED) {
             cachedIsPro = true

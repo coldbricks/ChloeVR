@@ -97,6 +97,11 @@ class GlesModelRenderer {
     var shadowSpread = 8f  // ortho extent in meters — larger = wider shadow area
     var lightSize = 1.0f   // PCSS light size — controls penumbra width
     var shadowEnabled = true
+    private var shadowDirty = true
+    private var lastShadowLightDirX = 0f
+    private var lastShadowLightDirY = 0f
+    private var lastShadowLightDirZ = 0f
+    private var lastShadowSpread = 0f
     var shadowPlanes: List<ShadowPlane> = emptyList()
     var occlusionEnabled = true  // room planes above floor block model rendering
 
@@ -631,15 +636,27 @@ class GlesModelRenderer {
         try {
             if (glbBytes.size < 20) return -1
             val jsonLength = readU32(glbBytes, 12)
+            if (jsonLength < 0 || jsonLength > glbBytes.size - 20) {
+                Log.e(TAG, "Invalid GLB: jsonLength=$jsonLength exceeds bounds")
+                return -1
+            }
             val jsonStr = String(glbBytes, 20, jsonLength.coerceAtMost(glbBytes.size - 20), Charsets.UTF_8)
             val json = org.json.JSONObject(jsonStr)
             val binChunkStart = 12 + 8 + jsonLength + 8
-            if (binChunkStart >= glbBytes.size) { Log.e(TAG, "No binary chunk"); return -1 }
+            if (binChunkStart < 0 || binChunkStart >= glbBytes.size) {
+                Log.e(TAG, "Invalid GLB: binChunkStart=$binChunkStart out of range")
+                return -1
+            }
 
             val bufferViews = json.getJSONArray("bufferViews")
             fun bv(idx: Int): Pair<Int, Int> {
                 val o = bufferViews.getJSONObject(idx)
-                return Pair(binChunkStart + o.optInt("byteOffset", 0), o.getInt("byteLength"))
+                val offset = binChunkStart + o.optInt("byteOffset", 0)
+                val length = o.getInt("byteLength")
+                if (offset < 0 || length < 0 || offset + length > glbBytes.size) {
+                    throw IndexOutOfBoundsException("Buffer view $idx out of bounds: offset=$offset length=$length total=${glbBytes.size}")
+                }
+                return Pair(offset, length)
             }
             val accessors = json.getJSONArray("accessors")
             fun acc(idx: Int): Triple<Int, Int, String> {
@@ -1061,9 +1078,18 @@ class GlesModelRenderer {
 
     // ── Shadow Map ──
 
+    fun markShadowDirty() { shadowDirty = true }
+
     fun renderShadowMap() {
         if (!initialized || !shadowEnabled || models.isEmpty()) return
-        shadowLightMatrix = computeLightSpaceMatrix()
+        val ld = lightDir
+        if (!shadowDirty && lastShadowLightDirX == ld[0] && lastShadowLightDirY == ld[1] && lastShadowLightDirZ == ld[2] && lastShadowSpread == shadowSpread) {
+            return // reuse existing shadow map
+        }
+        shadowDirty = false
+        lastShadowLightDirX = ld[0]; lastShadowLightDirY = ld[1]; lastShadowLightDirZ = ld[2]
+        lastShadowSpread = shadowSpread
+        computeLightSpaceMatrix()
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shadowMapFbo)
 
@@ -1124,12 +1150,13 @@ class GlesModelRenderer {
         }
         GLES30.glViewport(0, 0, width, height)
 
-        val fboStatus = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
-        if (fboStatus != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            if (frameCount < 10 || frameCount % 500 == 0)
+        if (frameCount < 3) {
+            val fboStatus = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
+            if (fboStatus != GLES30.GL_FRAMEBUFFER_COMPLETE) {
                 Log.e(TAG, "FBO incomplete: 0x${Integer.toHexString(fboStatus)}")
-            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-            return
+                GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+                return
+            }
         }
 
         GLES30.glClearColor(0f, 0f, 0f, 0f)
@@ -1167,6 +1194,12 @@ class GlesModelRenderer {
             GLES30.glUniform3fv(uSH, 9, shCoefficients, 0)
         }
 
+        // Bind sampler uniforms once before the model loop (texture unit assignments don't change)
+        GLES30.glUniform1i(uBaseColor, 0)
+        GLES30.glUniform1i(uNormalMap, 1)
+        GLES30.glUniform1i(uMetRoughMap, 2)
+        GLES30.glUniform1i(uEmissiveMap, 3)
+
         for (m in models) {
             if (m.indexCount == 0) continue
             multiplyMat4(viewMatrix, m.modelMatrix, scratchMat4A) // modelView
@@ -1186,14 +1219,12 @@ class GlesModelRenderer {
             if (m.textureId != 0) {
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.textureId)
-                GLES30.glUniform1i(uBaseColor, 0)
             }
             // Normal map (unit 1)
             GLES30.glUniform1f(uHasNormalMap, if (m.hasNormalMap) 1.0f else 0.0f)
             if (m.hasNormalMap) {
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.normalMapTexId)
-                GLES30.glUniform1i(uNormalMap, 1)
             }
             // Metallic-roughness map (unit 2)
             val hasMR = m.metallicRoughnessTexId != 0
@@ -1201,7 +1232,6 @@ class GlesModelRenderer {
             if (hasMR) {
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.metallicRoughnessTexId)
-                GLES30.glUniform1i(uMetRoughMap, 2)
             }
             // Emissive map (unit 3)
             val hasEmissive = m.emissiveTexId != 0
@@ -1209,7 +1239,6 @@ class GlesModelRenderer {
             if (hasEmissive) {
                 GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, m.emissiveTexId)
-                GLES30.glUniform1i(uEmissiveMap, 3)
                 GLES30.glUniform3f(uEmissiveFactor, m.emissiveFactor[0], m.emissiveFactor[1], m.emissiveFactor[2])
             }
             GLES30.glBindVertexArray(m.vao)
@@ -1708,6 +1737,9 @@ class GlesModelRenderer {
         if (bloomTexB != 0) GLES30.glDeleteTextures(1, intArrayOf(bloomTexB), 0)
         if (bloomFboA != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(bloomFboA), 0)
         if (bloomFboB != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(bloomFboB), 0)
+        if (emitterVao != 0) { GLES30.glDeleteVertexArrays(1, intArrayOf(emitterVao), 0); emitterVao = 0 }
+        if (emitterVbo != 0) { GLES30.glDeleteBuffers(1, intArrayOf(emitterVbo), 0); emitterVbo = 0 }
+        if (emitterEbo != 0) { GLES30.glDeleteBuffers(1, intArrayOf(emitterEbo), 0); emitterEbo = 0 }
         Log.i(TAG, "GLES renderer destroyed")
     }
 
@@ -1871,6 +1903,8 @@ class GlesModelRenderer {
     private val scratchEmitterModel = FloatArray(16)
     private val scratchPlaneModel = FloatArray(16)
     private val scratchRayW = FloatArray(3)
+    private val scratchLightView = FloatArray(16)
+    private val scratchLightProj = FloatArray(16)
 
     private fun multiplyMat4(a: FloatArray, b: FloatArray, r: FloatArray): FloatArray {
         for (col in 0..3) for (row in 0..3)
@@ -1881,6 +1915,7 @@ class GlesModelRenderer {
     private fun multiplyMat4(a: FloatArray, b: FloatArray): FloatArray =
         multiplyMat4(a, b, FloatArray(16))
 
+    // Note: Assumes uniform scaling. Non-uniform scale requires transpose(inverse(mat3(mv))).
     private fun extractNormalMatrix(mv: FloatArray, r: FloatArray): FloatArray {
         r[0]=mv[0];r[1]=mv[1];r[2]=mv[2]; r[3]=mv[4];r[4]=mv[5];r[5]=mv[6]; r[6]=mv[8];r[7]=mv[9];r[8]=mv[10]
         return r
@@ -1952,19 +1987,19 @@ class GlesModelRenderer {
 
     private fun dot3(a: FloatArray, b: FloatArray) = a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 
-    private fun computeLightSpaceMatrix(): FloatArray {
+    private fun computeLightSpaceMatrix() {
         // lightDir points FROM surface TOWARD the light, so camera goes along +lightDir
         val ld = lightDir
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
-        val view = lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f)
+        lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f, scratchLightView)
         val s = shadowSpread
-        val proj = ortho(-s, s, -s, s, 0.1f, 30f)
-        return multiplyMat4(proj, view)
+        ortho(-s, s, -s, s, 0.1f, 30f, scratchLightProj)
+        multiplyMat4(scratchLightProj, scratchLightView, shadowLightMatrix)
     }
 
     private fun lookAt(eyeX: Float, eyeY: Float, eyeZ: Float,
-                       cx: Float, cy: Float, cz: Float): FloatArray {
+                       cx: Float, cy: Float, cz: Float, r: FloatArray) {
         var fx = cx-eyeX; var fy = cy-eyeY; var fz = cz-eyeZ
         val fl = kotlin.math.sqrt(fx*fx+fy*fy+fz*fz); fx/=fl; fy/=fl; fz/=fl
         // up = (0,1,0) unless forward is parallel
@@ -1975,17 +2010,18 @@ class GlesModelRenderer {
         val sl = kotlin.math.sqrt(sx*sx+sy*sy+sz*sz); sx/=sl; sy/=sl; sz/=sl
         // u = s × f
         val uux = sy*fz-sz*fy; val uuy = sz*fx-sx*fz; val uuz = sx*fy-sy*fx
-        return floatArrayOf(
-            sx, uux, -fx, 0f,
-            sy, uuy, -fy, 0f,
-            sz, uuz, -fz, 0f,
-            -(sx*eyeX+sy*eyeY+sz*eyeZ), -(uux*eyeX+uuy*eyeY+uuz*eyeZ), fx*eyeX+fy*eyeY+fz*eyeZ, 1f)
+        r[0]=sx; r[1]=uux; r[2]=-fx; r[3]=0f
+        r[4]=sy; r[5]=uuy; r[6]=-fy; r[7]=0f
+        r[8]=sz; r[9]=uuz; r[10]=-fz; r[11]=0f
+        r[12]=-(sx*eyeX+sy*eyeY+sz*eyeZ); r[13]=-(uux*eyeX+uuy*eyeY+uuz*eyeZ); r[14]=fx*eyeX+fy*eyeY+fz*eyeZ; r[15]=1f
     }
 
-    private fun ortho(l: Float, r: Float, b: Float, t: Float, n: Float, f: Float): FloatArray {
+    private fun ortho(l: Float, r: Float, b: Float, t: Float, n: Float, f: Float, out: FloatArray) {
         val rl=r-l; val tb=t-b; val fn=f-n
-        return floatArrayOf(2f/rl,0f,0f,0f, 0f,2f/tb,0f,0f, 0f,0f,-2f/fn,0f,
-            -(r+l)/rl, -(t+b)/tb, -(f+n)/fn, 1f)
+        out[0]=2f/rl; out[1]=0f; out[2]=0f; out[3]=0f
+        out[4]=0f; out[5]=2f/tb; out[6]=0f; out[7]=0f
+        out[8]=0f; out[9]=0f; out[10]=-2f/fn; out[11]=0f
+        out[12]=-(r+l)/rl; out[13]=-(t+b)/tb; out[14]=-(f+n)/fn; out[15]=1f
     }
 }
 
@@ -2094,7 +2130,11 @@ void main() {
     float fNdotL = max(dot(N, fillL), 0.0);
     float fNdotH = max(dot(N, fillH), 0.0);
     float fD = alpha2 / (3.14159265 * pow(fNdotH * fNdotH * (alpha2 - 1.0) + 1.0, 2.0) + 0.0001);
-    vec3 fSpec = fD * F * G / (4.0 * NdotV * fNdotL + 0.0001);
+    vec3 fF = F0 + (1.0 - F0) * pow(1.0 - max(dot(fillH, V), 0.0), 5.0);
+    float fG_L = fNdotL / (fNdotL * (1.0 - k) + k);
+    float fG_V = NdotV / (NdotV * (1.0 - k) + k);
+    float fG = fG_L * fG_V;
+    vec3 fSpec = fD * fF * fG / (4.0 * NdotV * fNdotL + 0.0001);
     color += (diffuse + fSpec * 0.5) * fNdotL * uFillLightColor * uFillLightIntensity;
 
     // Ambient: SH irradiance or hemisphere fallback

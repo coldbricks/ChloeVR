@@ -9,6 +9,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileReader
@@ -71,35 +73,42 @@ class SubtitleRenderer(private val parent: ViewGroup) {
      * Scan for subtitle files matching the video filename and load if found.
      * Returns true if subtitles were found and loaded.
      */
-    fun loadForVideo(videoFile: File): Boolean {
+    suspend fun loadForVideo(videoFile: File): Boolean {
         clear()
         val baseName = videoFile.nameWithoutExtension
         val dir = videoFile.parentFile ?: return false
 
-        // Try SRT first, then ASS/SSA
-        for (ext in SRT_EXTENSIONS) {
-            val subFile = File(dir, "$baseName$ext")
-            if (subFile.exists() && subFile.canRead()) {
-                cues = parseSrt(subFile)
-                if (cues.isNotEmpty()) {
-                    Log.i(TAG, "Loaded ${cues.size} SRT cues from ${subFile.name}")
-                    isLoaded = true
-                    ensureView()
-                    return true
+        // File I/O on background thread
+        val loadedCues = withContext(Dispatchers.IO) {
+            // Try SRT first, then ASS/SSA
+            for (ext in SRT_EXTENSIONS) {
+                val subFile = File(dir, "$baseName$ext")
+                if (subFile.exists() && subFile.canRead()) {
+                    val parsed = parseSrt(subFile)
+                    if (parsed.isNotEmpty()) {
+                        Log.i(TAG, "Loaded ${parsed.size} SRT cues from ${subFile.name}")
+                        return@withContext parsed
+                    }
                 }
             }
+            for (ext in ASS_EXTENSIONS) {
+                val subFile = File(dir, "$baseName$ext")
+                if (subFile.exists() && subFile.canRead()) {
+                    val parsed = parseAss(subFile)
+                    if (parsed.isNotEmpty()) {
+                        Log.i(TAG, "Loaded ${parsed.size} ASS cues from ${subFile.name}")
+                        return@withContext parsed
+                    }
+                }
+            }
+            null
         }
-        for (ext in ASS_EXTENSIONS) {
-            val subFile = File(dir, "$baseName$ext")
-            if (subFile.exists() && subFile.canRead()) {
-                cues = parseAss(subFile)
-                if (cues.isNotEmpty()) {
-                    Log.i(TAG, "Loaded ${cues.size} ASS cues from ${subFile.name}")
-                    isLoaded = true
-                    ensureView()
-                    return true
-                }
-            }
+
+        if (loadedCues != null) {
+            cues = loadedCues
+            isLoaded = true
+            ensureView()
+            return true
         }
 
         Log.d(TAG, "No subtitle files found for ${videoFile.name}")

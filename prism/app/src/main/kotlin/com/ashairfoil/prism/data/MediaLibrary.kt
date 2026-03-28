@@ -7,6 +7,7 @@ import com.ashairfoil.prism.ScreenType
 import com.ashairfoil.prism.StereoMode
 import com.ashairfoil.prism.VideoMetadata
 import kotlinx.coroutines.*
+import org.json.JSONArray
 import java.io.File
 import java.security.MessageDigest
 
@@ -80,6 +81,7 @@ class MediaLibrary(private val context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private var entries: MutableList<MediaEntry> = java.util.concurrent.CopyOnWriteArrayList()
+    private val entryIndex = HashMap<String, MediaEntry>()
 
     /**
      * Build media entries from a list of files (from FilePicker scan).
@@ -109,6 +111,8 @@ class MediaLibrary(private val context: Context) {
         }
         // Atomic swap: build full list, then replace reference in one operation
         entries = java.util.concurrent.CopyOnWriteArrayList(built)
+        entryIndex.clear()
+        entries.forEach { entryIndex[it.fileId] = it }
 
         Log.i(TAG, "Built library: ${entries.size} entries, " +
                 "${entries.count { it.isFavorite }} favorites, " +
@@ -123,7 +127,7 @@ class MediaLibrary(private val context: Context) {
     fun saveResumePosition(file: File, positionMs: Long) {
         val id = fileIdFor(file)
         prefs.edit().putLong("$KEY_PREFIX_RESUME$id", positionMs).apply()
-        entries.find { it.fileId == id }?.resumePositionMs = positionMs
+        entryIndex[id]?.resumePositionMs = positionMs
     }
 
     fun getResumePosition(file: File): Long {
@@ -132,7 +136,7 @@ class MediaLibrary(private val context: Context) {
 
     fun recordPlayback(file: File) {
         val id = fileIdFor(file)
-        val entry = entries.find { it.fileId == id }
+        val entry = entryIndex[id]
         val newCount = (entry?.playCount ?: 0) + 1
         val now = System.currentTimeMillis()
         prefs.edit()
@@ -146,7 +150,7 @@ class MediaLibrary(private val context: Context) {
 
     fun toggleFavorite(file: File): Boolean {
         val id = fileIdFor(file)
-        val entry = entries.find { it.fileId == id }
+        val entry = entryIndex[id]
         val newVal = !(entry?.isFavorite ?: false)
         prefs.edit().putBoolean("$KEY_PREFIX_FAVORITE$id", newVal).apply()
         entry?.isFavorite = newVal
@@ -157,12 +161,12 @@ class MediaLibrary(private val context: Context) {
         val id = fileIdFor(file)
         val clamped = rating.coerceIn(0, 5)
         prefs.edit().putInt("$KEY_PREFIX_RATING$id", clamped).apply()
-        entries.find { it.fileId == id }?.rating = clamped
+        entryIndex[id]?.rating = clamped
     }
 
     fun addTag(file: File, tag: String) {
         val id = fileIdFor(file)
-        val entry = entries.find { it.fileId == id }
+        val entry = entryIndex[id]
         val current = entry?.tags?.toMutableSet() ?: mutableSetOf()
         current.add(tag.trim().lowercase())
         prefs.edit().putStringSet("$KEY_PREFIX_TAGS$id", current).apply()
@@ -171,7 +175,7 @@ class MediaLibrary(private val context: Context) {
 
     fun removeTag(file: File, tag: String) {
         val id = fileIdFor(file)
-        val entry = entries.find { it.fileId == id }
+        val entry = entryIndex[id]
         val current = entry?.tags?.toMutableSet() ?: return
         current.remove(tag.trim().lowercase())
         prefs.edit().putStringSet("$KEY_PREFIX_TAGS$id", current).apply()
@@ -188,7 +192,7 @@ class MediaLibrary(private val context: Context) {
         recent.remove(path)
         recent.add(0, path)
         if (recent.size > MAX_RECENT) recent.subList(MAX_RECENT, recent.size).clear()
-        prefs.edit().putStringSet(KEY_RECENT_FILES, recent.toSet()).apply()
+        prefs.edit().putString(KEY_RECENT_FILES, JSONArray(recent).toString()).apply()
     }
 
     fun getRecentFiles(): List<MediaEntry> {
@@ -199,11 +203,9 @@ class MediaLibrary(private val context: Context) {
     }
 
     private fun getRecentPaths(): List<String> {
-        // Store as set but maintain order via lastPlayed timestamps
-        val set = prefs.getStringSet(KEY_RECENT_FILES, emptySet()) ?: emptySet()
-        return set.toList().sortedByDescending { path ->
-            entries.find { it.file.absolutePath == path }?.lastPlayedMs ?: 0
-        }
+        val json = prefs.getString(KEY_RECENT_FILES, "[]") ?: "[]"
+        val arr = JSONArray(json)
+        return (0 until arr.length()).map { arr.getString(it) }
     }
 
     // -----------------------------------------------------------------------

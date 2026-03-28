@@ -164,6 +164,10 @@ class FunscriptParser {
      */
     fun parse(file: File): Funscript? {
         try {
+            if (file.length() > 50 * 1024 * 1024) {
+                Log.w(TAG, "Funscript too large: ${file.length()} bytes, skipping")
+                return null
+            }
             val json = file.readText()
             return parseJson(json, file.absolutePath)
         } catch (e: Exception) {
@@ -224,7 +228,7 @@ class FunscriptParser {
                 source = source,
             )
 
-            Log.i(TAG, "Parsed funscript: ${actions.size} actions, " +
+            Log.d(TAG, "Parsed funscript: ${actions.size} actions, " +
                     "duration=${funscript.durationMs}ms, source=$source")
             return funscript
         } catch (e: Exception) {

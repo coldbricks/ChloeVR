@@ -53,7 +53,7 @@ class SceneManager(
 
     // ── Public state ──
 
-    val models = mutableListOf<PlacedModel>()
+    val models: MutableList<PlacedModel> = java.util.concurrent.CopyOnWriteArrayList()
     var selectedModelIndex = -1
     val yeetingModels = mutableListOf<YeetingModel>()
 
@@ -330,6 +330,11 @@ class SceneManager(
                 for (i in 0 until modelsArr.length()) {
                     val obj = modelsArr.getJSONObject(i)
                     val file = File(obj.getString("path"))
+                    val canonical = file.canonicalPath
+                    if (!canonical.startsWith("/storage/") && !canonical.startsWith(context.filesDir.path)) {
+                        Log.w(TAG, "Rejected scene path outside storage: $canonical")
+                        continue
+                    }
                     if (!file.exists()) {
                         Log.w(TAG, "Scene model not found: ${file.absolutePath}")
                         continue

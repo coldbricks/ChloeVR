@@ -123,7 +123,7 @@ class AudioReactor {
     // Double-buffered spectrum output — atomic swap prevents torn reads
     private val specBufA = FloatArray(DISPLAY_BINS)
     private val specBufB = FloatArray(DISPLAY_BINS)
-    private var specWriteToA = true
+    @Volatile private var specWriteToA = true
     // Pre-allocated beat color result
     private val beatColorBuf = FloatArray(3)
 

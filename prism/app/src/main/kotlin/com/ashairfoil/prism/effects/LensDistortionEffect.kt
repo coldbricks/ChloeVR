@@ -163,6 +163,8 @@ private class LensDistortionShaderProgram(
                 "  uv.x *= uAspect;\n" +
                 "\n" +
                 // Scale by FOV: wider FOV = larger coordinate range before distortion
+                // Note: FOV clamped to 179 in shader. Presets with FOV > 179 (MKX200, VRCA220)
+                // are effectively limited. Brown-Conrady model breaks down at ultra-wide FOV.
                 "  float fovScale = tan(radians(clamp(uFov, 1.0, 179.0) * 0.5)) / tan(radians(90.0));\n" +
                 "  uv /= fovScale;\n" +
                 "\n" +

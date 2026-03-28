@@ -373,6 +373,11 @@ class FilamentRenderer(
         renderer?.let { engine.destroyRenderer(it) }
         scene?.let { engine.destroyScene(it) }
 
+        if (ownGlTexIds[0] != 0) android.opengl.GLES30.glDeleteTextures(2, ownGlTexIds, 0)
+        if (ownGlDepthRBs[0] != 0) android.opengl.GLES30.glDeleteRenderbuffers(2, ownGlDepthRBs, 0)
+        if (blitFboSrc[0] != 0) android.opengl.GLES30.glDeleteFramebuffers(1, blitFboSrc, 0)
+        if (blitFboDst[0] != 0) android.opengl.GLES30.glDeleteFramebuffers(1, blitFboDst, 0)
+
         engine.destroy()
         this.engine = null
 

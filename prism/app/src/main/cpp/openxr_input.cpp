@@ -251,28 +251,50 @@ bool OpenXRInput::createActions() {
     xrStringToPath(instance_, "/user/hand/right", &handPaths_[1]);
 
     // Create all actions
-    createAction(actionSet_, thumbstickAction_, "thumbstick",
-                 XR_ACTION_TYPE_VECTOR2F_INPUT, 2, handPaths_);
-    createAction(actionSet_, triggerAction_, "trigger",
-                 XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_);
-    createAction(actionSet_, squeezeAction_, "squeeze",
-                 XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_);
-    createAction(actionSet_, thumbstickClickAction_, "thumbstick-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, aClickAction_, "a-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, bClickAction_, "b-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, xClickAction_, "x-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, yClickAction_, "y-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, menuClickAction_, "menu-click",
-                 XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
-    createAction(actionSet_, gripPoseAction_, "grip-pose",
-                 XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
-    createAction(actionSet_, aimPoseAction_, "aim-pose",
-                 XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
+    if (!createAction(actionSet_, thumbstickAction_, "thumbstick",
+                      XR_ACTION_TYPE_VECTOR2F_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create thumbstick action");
+    }
+    if (!createAction(actionSet_, triggerAction_, "trigger",
+                      XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create trigger action");
+    }
+    if (!createAction(actionSet_, squeezeAction_, "squeeze",
+                      XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create squeeze action");
+    }
+    if (!createAction(actionSet_, thumbstickClickAction_, "thumbstick-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create thumbstick-click action");
+    }
+    if (!createAction(actionSet_, aClickAction_, "a-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create a-click action");
+    }
+    if (!createAction(actionSet_, bClickAction_, "b-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create b-click action");
+    }
+    if (!createAction(actionSet_, xClickAction_, "x-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create x-click action");
+    }
+    if (!createAction(actionSet_, yClickAction_, "y-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create y-click action");
+    }
+    if (!createAction(actionSet_, menuClickAction_, "menu-click",
+                      XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create menu-click action");
+    }
+    if (!createAction(actionSet_, gripPoseAction_, "grip-pose",
+                      XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create grip-pose action");
+    }
+    if (!createAction(actionSet_, aimPoseAction_, "aim-pose",
+                      XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_)) {
+        LOGE("Failed to create aim-pose action");
+    }
 
     // Suggest bindings for Oculus Touch Controller (Galaxy XR uses this profile)
     auto path = [this](const char* p) -> XrPath {
@@ -496,10 +518,14 @@ void OpenXRInput::handleSessionStateChange(XrSessionState newState) {
         case XR_SESSION_STATE_READY: {
             XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
             beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-            xrBeginSession(session_, &beginInfo);
-            sessionReady_ = true;
-            running_ = true;
-            LOGI("Session ready and begun");
+            XrResult beginResult = xrBeginSession(session_, &beginInfo);
+            if (XR_SUCCEEDED(beginResult)) {
+                sessionReady_ = true;
+                running_ = true;
+                LOGI("Session ready and begun");
+            } else {
+                LOGE("xrBeginSession failed: %d", beginResult);
+            }
             break;
         }
         case XR_SESSION_STATE_STOPPING:

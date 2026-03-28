@@ -156,9 +156,10 @@ private class ColorGradingShaderProgram(
                 "vec3 acesToneMap(vec3 c) {\n" +
                 "  float a = 2.51;\n" +
                 "  float b = 0.03;\n" +
+                "  float ac = 2.43;\n" +
                 "  float d = 0.59;\n" +
                 "  float e = 0.14;\n" +
-                "  return clamp((c * (a * c + b)) / (c * (d * c + e) + vec3(0.0001)), 0.0, 1.0);\n" +
+                "  return clamp((c * (a * c + b)) / (c * (ac * c + d) + vec3(e)), 0.0, 1.0);\n" +
                 "}\n" +
                 "\n" +
                 "void main() {\n" +

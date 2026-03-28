@@ -312,6 +312,9 @@ private:
     PFN_xrDestroyFoveationProfileFB xrDestroyFoveationProfileFB_ = nullptr;
     PFN_xrUpdateSwapchainFB xrUpdateSwapchainFB_ = nullptr;
 
+    // ── Performance metrics state ──
+    bool metricsEnabled_ = false;
+
     // ── Passthrough camera state ──
     bool passthroughStateSupported_ = false;
 

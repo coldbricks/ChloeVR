@@ -6,6 +6,10 @@
     native <methods>;
 }
 
+# Keep native JNI methods for model viewer
+-keepclasseswithmembers class com.ashairfoil.prism.GlesModelRenderer { native <methods>; }
+-keepclasseswithmembers class com.ashairfoil.prism.FilamentModelActivity { native <methods>; }
+
 # Keep all GLSL effects (they use reflection for shader uniform binding)
 -keep class com.ashairfoil.prism.effects.** { *; }
 -keep class com.ashairfoil.prism.DeoVrAlphaPackedEffect** { *; }
@@ -30,6 +34,9 @@
 # OpenXR loader
 -keep class org.khronos.openxr.** { *; }
 -dontwarn org.khronos.openxr.**
+
+# EncryptedSharedPreferences
+-keep class androidx.security.crypto.** { *; }
 
 # Keep native methods
 -keepclasseswithmembernames class * {

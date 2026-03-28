@@ -2,6 +2,7 @@ package com.ashairfoil.prism.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 
 /**
  * Singleton persistence layer for all ChloeVR user settings.
@@ -12,6 +13,7 @@ import android.content.SharedPreferences
  */
 object SettingsManager {
 
+    private const val TAG = "SettingsManager"
     private const val PREFS_NAME = "chloe_vr_settings"
 
     // ── Keys ────────────────────────────────────────────────────────────
@@ -62,6 +64,10 @@ object SettingsManager {
     private const val KEY_STEREO_VERTICAL_OFFSET = "stereo_vertical_offset"
     private const val KEY_STEREO_ENABLED = "stereo_enabled"
 
+    // Depth simulation / spatial audio
+    private const val KEY_DEPTH_SIM_ENABLED = "depth_sim_enabled"
+    private const val KEY_SPATIAL_AUDIO_ENABLED = "spatial_audio_enabled"
+
     // Screen curvature — stored per projection type
     private const val KEY_SCREEN_CURVATURE = "screen_curvature_"
 
@@ -106,7 +112,10 @@ object SettingsManager {
     }
 
     private fun ensureInit() {
-        check(::prefs.isInitialized) { "SettingsManager.init(context) must be called before use" }
+        if (!::prefs.isInitialized) {
+            Log.w(TAG, "SettingsManager used before init(), attempting late init")
+            throw IllegalStateException("SettingsManager.init(context) must be called in Application.onCreate() or Activity.onCreate() before use")
+        }
     }
 
     // ── Generic accessors (for cross-module use) ──────────────────────
@@ -124,8 +133,9 @@ object SettingsManager {
         set(value) { ensureInit(); prefs.edit().putString(KEY_LAST_PLAYED_FILE, value).apply() }
 
     // ── Resume positions (per-file map) ─────────────────────────────────
-    // Stored as a single serialized string: "path1|pos1;;path2|pos2;;..."
-    // Compact and avoids needing JSON/Gson dependency.
+    // Stored as a single serialized string: "path1\tpos1\npath2\tpos2\n..."
+    // Tab key-value separator and newline entry separator avoid collisions with file paths.
+    // Legacy format used "|" and ";;" — parseResumeMap handles both for migration.
 
     fun getResumePosition(filePath: String): Long {
         ensureInit()
@@ -157,8 +167,11 @@ object SettingsManager {
 
     private fun parseResumeMap(raw: String): Map<String, Long> {
         if (raw.isBlank()) return emptyMap()
-        return raw.split(";;").mapNotNull { entry ->
-            val parts = entry.split("|", limit = 2)
+        // Detect legacy format (uses ";;" entry separator) vs new format (uses "\n")
+        val entries = if (raw.contains(";;")) raw.split(";;") else raw.split("\n")
+        val separator = if (raw.contains(";;")) "|" else "\t"
+        return entries.mapNotNull { entry ->
+            val parts = entry.split(separator, limit = 2)
             if (parts.size == 2) {
                 val path = parts[0]
                 val pos = parts[1].toLongOrNull()
@@ -168,7 +181,7 @@ object SettingsManager {
     }
 
     private fun serializeResumeMap(map: Map<String, Long>): String {
-        return map.entries.joinToString(";;") { "${it.key}|${it.value}" }
+        return map.entries.joinToString("\n") { "${it.key}\t${it.value}" }
     }
 
     // ── Playback speed ──────────────────────────────────────────────────
@@ -350,6 +363,16 @@ object SettingsManager {
     var stereoEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_STEREO_ENABLED, false) }
         set(v) { ensureInit(); prefs.edit().putBoolean(KEY_STEREO_ENABLED, v).apply() }
+
+    // ── Depth simulation / spatial audio ────────────────────────────────
+
+    var depthSimEnabled: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_DEPTH_SIM_ENABLED, false) }
+        set(v) { ensureInit(); prefs.edit().putBoolean(KEY_DEPTH_SIM_ENABLED, v).apply() }
+
+    var spatialAudioEnabled: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_SPATIAL_AUDIO_ENABLED, false) }
+        set(v) { ensureInit(); prefs.edit().putBoolean(KEY_SPATIAL_AUDIO_ENABLED, v).apply() }
 
     // ── Favorite folders ────────────────────────────────────────────────
     // Stored as newline-separated paths

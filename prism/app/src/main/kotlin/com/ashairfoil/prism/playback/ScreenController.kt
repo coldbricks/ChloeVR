@@ -166,6 +166,6 @@ class ScreenController {
         val def = DEFAULTS[projection] ?: DEFAULTS["flat"]!!
         return state.x != def.x || state.y != def.y || state.z != def.z ||
                state.yaw != 0f || state.pitch != 0f || state.roll != 0f ||
-               state.zoom != 1.0f
+               state.scale != def.scale || state.zoom != 1.0f
     }
 }

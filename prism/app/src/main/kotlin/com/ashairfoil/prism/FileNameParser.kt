@@ -30,12 +30,14 @@ object FileNameParser {
 
     private val SBS_PATTERN = Regex("""[_.\-](SBS|LR|3DH)[_.\-]""", RegexOption.IGNORE_CASE)
     private val TB_PATTERN = Regex("""[_.\-](TB|3DV|OverUnder)[_.\-]""", RegexOption.IGNORE_CASE)
+    private val OU_PATTERN = Regex("""[_.\-](OU)[_.\-]""", RegexOption.IGNORE_CASE)
     private val ALPHA_PATTERN = Regex("""_ALPHA""", RegexOption.IGNORE_CASE)
     private val FB360_PATTERN = Regex("""[_\-]FB360""", RegexOption.IGNORE_CASE)
 
     // Projection patterns — more specific first
     private val VRCA220_PATTERN = Regex("""_vrca220""", RegexOption.IGNORE_CASE)
     private val MKX200_PATTERN = Regex("""_mkx200""", RegexOption.IGNORE_CASE)
+    private val RF52_PATTERN = Regex("""[_.\-](rf52|rf5\.2)[_.\-]""", RegexOption.IGNORE_CASE)
     private val FISHEYE190_PATTERN = Regex("""_fisheye190""", RegexOption.IGNORE_CASE)
     private val FISHEYE_PATTERN = Regex("""_fisheye""", RegexOption.IGNORE_CASE)
     private val P360_PATTERN = Regex("""_360""", RegexOption.IGNORE_CASE)
@@ -47,12 +49,14 @@ object FileNameParser {
         val stereoMode = when {
             SBS_PATTERN.containsMatchIn(name) -> StereoMode.SIDE_BY_SIDE
             TB_PATTERN.containsMatchIn(name) -> StereoMode.TOP_BOTTOM
+            OU_PATTERN.containsMatchIn(name) -> StereoMode.TOP_BOTTOM
             else -> StereoMode.MONO
         }
 
         val screenType = when {
             VRCA220_PATTERN.containsMatchIn(name) -> ScreenType.VRCA220
             MKX200_PATTERN.containsMatchIn(name) -> ScreenType.MKX200
+            RF52_PATTERN.containsMatchIn(name) -> ScreenType.RF52
             FISHEYE190_PATTERN.containsMatchIn(name) -> ScreenType.RF52
             FISHEYE_PATTERN.containsMatchIn(name) -> ScreenType.FISHEYE
             P360_PATTERN.containsMatchIn(name) -> ScreenType.SPHERE_360

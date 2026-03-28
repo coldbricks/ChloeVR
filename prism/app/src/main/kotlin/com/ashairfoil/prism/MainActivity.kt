@@ -19,6 +19,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -67,6 +68,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var menuVisible = true
     private var currentFile: File? = null
 
+    // Activity result launcher for MANAGE_EXTERNAL_STORAGE settings screen
+    private val storageSettingsLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+            onPermissionGranted()
+        } else {
+            requestBasicMediaPermissions()
+        }
+    }
+
     // Native OpenXR controller input
     private var openXRInput: OpenXRInput? = null
 
@@ -105,10 +115,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var screenPitch = 0f
     private var screenCurvature = 0f  // 0 = flat, 1 = full hemisphere wrap
 
-    // Trigger tap detection
-    private var triggerDownTime = 0L
-    private val TAP_THRESHOLD_MS = 300
-
     // Seek bar
     private var seekBar: SeekBar? = null
     private var seekLabel: TextView? = null
@@ -128,7 +134,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // Grab-to-reposition: grip+trigger, aim direction drives movement, wrist drives roll
     private var isGrabbing = false
     private var grabStartHandPos = floatArrayOf(0f, 0f, 0f)
-    private var grabStartAimDir = floatArrayOf(0f, 0f, -1f)
     private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var grabStartScreenRoll = 0f
     private var grabStartScreenYaw = 0f
@@ -169,7 +174,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var currentFileIsModel = false
 
     // 3D Model viewer state
-    data class PlacedModel(
+    class PlacedModel(
         val file: File,
         val entity: GltfModelEntity,
         var scale: Float = 1f,
@@ -193,7 +198,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     Vector3(pose.translation.x, -bottomWorldY, pose.translation.z),
                     pose.rotation
                 ))
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("ChloeVR", "groundToFloor failed", e)
+            }
         }
 
         fun applyScale(newScale: Float) {
@@ -208,12 +215,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var modelHandsLocked = false  // when true, ignore all hand/controller input (walk around mode)
     private var floorAnchor: AnchorEntity? = null  // shared floor anchor for all models
     private var modelGrabbing = false
-    private var modelGrabStartAimDir = floatArrayOf(0f, 0f, -1f)
     private var modelGrabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var modelGrabStartHandPos = floatArrayOf(0f, 0f, 0f)
     private var modelGrabStartPose = Pose()
     private var modelGrabStartScale = 1f
-    private var modelGrabDistance = 2f  // hand-to-model distance, scales aim leverage
     private var modelPushOffsetX = 0f  // cumulative push/pull offset
     private var modelPushOffsetY = 0f
     private var modelPushOffsetZ = 0f
@@ -276,13 +281,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     android.net.Uri.parse("package:$packageName")
                 )
-                startActivityForResult(intent, 101)
+                storageSettingsLauncher.launch(intent)
             } catch (e: Exception) {
                 // Fallback: open general file access settings
                 try {
-                    startActivityForResult(
-                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-                        101
+                    storageSettingsLauncher.launch(
+                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                     )
                 } catch (e2: Exception) {
                     // Last resort: request basic media permissions
@@ -316,20 +320,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             onPermissionGranted()
         } else {
             ActivityCompat.requestPermissions(this, permissions, 100)
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 101) {
-            // Returned from MANAGE_EXTERNAL_STORAGE settings
-            if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
-                onPermissionGranted()
-            } else {
-                // User didn't grant full access — fall back to media-only permissions
-                requestBasicMediaPermissions()
-            }
         }
     }
 
@@ -388,6 +378,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         chromaKeyState.tolerance = SettingsManager.chromaTolerance
         chromaKeyState.softness = SettingsManager.chromaSoftness
         chromaKeyState.enabled = SettingsManager.chromaEnabled
+
+        // Load depth simulation / spatial audio state
+        depthSimulation.enabled = SettingsManager.depthSimEnabled
+        spatialAudio.updateEnabled(SettingsManager.spatialAudioEnabled)
     }
 
     private fun saveColorGradingSettings() {
@@ -409,7 +403,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 }
                 else -> {}
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("ChloeVR", "XR session initialization failed", e)
+        }
 
         // Create a root FrameLayout for subtitle overlay
         val rootFrame = FrameLayout(this)
@@ -1644,6 +1640,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             toggleBtn.setOnClickListener {
                 depthSimulation.enabled = !depthSimulation.enabled
+                SettingsManager.depthSimEnabled = depthSimulation.enabled
                 toggleBtn.text = if (depthSimulation.enabled) "6DOF Depth: ON" else "6DOF Depth: OFF"
                 toggleBtn.setBackgroundColor(if (depthSimulation.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
             }
@@ -1737,6 +1734,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
             toggleBtn.setOnClickListener {
                 spatialAudio.updateEnabled(!spatialAudio.enabled)
+                SettingsManager.spatialAudioEnabled = spatialAudio.enabled
                 toggleBtn.text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
                 toggleBtn.setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
             }
@@ -2184,7 +2182,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
         try {
             xrSession?.scene?.mainPanelEntity?.setEnabled(visible)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.w("ChloeVR", "setPanelVisible failed", e)
+        }
     }
 
     private fun toggleMenu() {
@@ -2604,6 +2604,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         lifecycleScope.launch {
             try {
+                if (original.file.length() > 100 * 1024 * 1024) {
+                    showMessage("Model too large to duplicate (${original.file.length() / 1024 / 1024}MB)")
+                    return@launch
+                }
                 val gltfModel = GltfModel.create(session, original.file.readBytes(), original.file.name)
                 val origPose = original.entity.getPose()
 
@@ -3076,7 +3080,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         videoPlayer?.release()
         videoPlayer = VideoPlayer(this).also {
             it.start(
-                file, surfaceEntity!!.getSurface(),
+                file, (surfaceEntity ?: return).getSurface(),
                 useDeoAlphaPacking = useDeoAlphaPacking,
                 chromaKeyState = chromaKeyState,
                 colorGradingState = colorGradingState,
@@ -3109,7 +3113,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         currentFileIsImage = FilePicker.isImageFile(file)
         currentScreenType = metadata.screenType
         currentStereoMode = metadata.stereoMode
-        playbackSpeed = 1.0f
         val useDeoAlphaPacking = !currentFileIsImage && metadata.hasAlpha && supportsDeoAlpha(metadata.screenType)
         if (metadata.hasAlpha && !useDeoAlphaPacking && !currentFileIsImage) {
             android.util.Log.w(
@@ -3177,7 +3180,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             videoPlayer = VideoPlayer(this).also {
                 it.start(
-                    file, surfaceEntity!!.getSurface(),
+                    file, (surfaceEntity ?: return).getSurface(),
                     useDeoAlphaPacking = useDeoAlphaPacking,
                     chromaKeyState = chromaKeyState,
                     colorGradingState = colorGradingState,
@@ -3216,9 +3219,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 android.util.Log.w("ChloeVR", "Spatial audio attach failed", e)
             }
 
-            // Load subtitles
+            // Load subtitles (file I/O on background thread)
             subtitleRenderer?.clear()
-            subtitleRenderer?.loadForVideo(file)
+            lifecycleScope.launch { subtitleRenderer?.loadForVideo(file) }
 
             // Calibrate depth simulation
             depthSimulation.reset()
@@ -3382,8 +3385,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         var resolution = ""
         var codec = ""
         var durationStr = ""
+        val retriever = android.media.MediaMetadataRetriever()
         try {
-            val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(file.absolutePath)
             val width = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH) ?: ""
             val height = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT) ?: ""
@@ -3392,9 +3395,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             resolution = if (width.isNotEmpty() && height.isNotEmpty()) "${width}x${height}" else ""
             codec = mimeType.replace("video/", "").uppercase()
             durationStr = if (durationMs > 0) formatTime(durationMs) else ""
-            retriever.release()
         } catch (e: Exception) {
             android.util.Log.w("ChloeVR", "MediaMetadataRetriever failed", e)
+        } finally {
+            retriever.release()
         }
 
         val infoText = buildString {

@@ -40,7 +40,7 @@ class XrSensorPoller(
     private val reusablePlanes = ArrayList<GlesModelRenderer.ShadowPlane>(32)
 
     // ── XR Sensor state ──
-    @Volatile var xrSensorCaps = 0; private set
+    @Volatile var xrSensorCaps = -1; private set
     @Volatile var handTrackingActive = booleanArrayOf(false, false); private set
     @Volatile var eyeTrackingActive = false; private set
     @Volatile var faceTrackingActive = false; private set
@@ -71,8 +71,8 @@ class XrSensorPoller(
      * [frameCount] is the monotonically increasing sensor-poll frame counter.
      */
     fun poll(frameCount: Int) {
-        // Get capabilities once
-        if (xrSensorCaps == 0) {
+        // Get capabilities once (-1 = not queried, 0 = no caps is valid)
+        if (xrSensorCaps < 0) {
             xrSensorCaps = getSensorCaps()
             Log.i(TAG, "XR Sensor capabilities: 0x${xrSensorCaps.toString(16)}")
             if (xrSensorCaps and (1 shl 0) != 0) Log.i(TAG, "  + Hand tracking")

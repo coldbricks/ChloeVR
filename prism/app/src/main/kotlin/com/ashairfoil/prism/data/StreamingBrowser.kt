@@ -63,7 +63,7 @@ class StreamingBrowser(private val context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
-        Log.w(TAG, "EncryptedSharedPreferences failed, falling back to standard prefs", e)
+        Log.e(TAG, "EncryptedSharedPreferences failed, auth tokens stored unencrypted", e)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
     private var endpoints: MutableList<StreamingEndpoint> = mutableListOf()
