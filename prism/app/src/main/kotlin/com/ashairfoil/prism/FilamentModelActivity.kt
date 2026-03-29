@@ -287,16 +287,14 @@ class FilamentModelActivity : ComponentActivity() {
                     availableGlbFiles = cached
                     Log.i(TAG, "Loaded ${cached.size} GLB files from cache")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "GLB cache read failed", e)
-            }
+            } catch (_: Exception) {}
         }
         loadCachedAudioFiles()
         // Rescan in background and update cache
         Thread {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
             availableGlbFiles = glbFiles
-            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (e: Exception) { Log.w(TAG, "GLB cache write failed", e) }
+            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (_: Exception) {}
             Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated)")
         }.start()
 
@@ -765,31 +763,45 @@ class FilamentModelActivity : ComponentActivity() {
                                 uiNeedsRefresh = true
                             }
 
-                            // Upload pending UI bitmap to compositor quad layer (swapchain texture)
-                            val bmp = uiRenderer.pendingUiBitmap
-                            if (bmp != null) {
-                                uiRenderer.pendingUiBitmap = null
-                                if (menuVisible) {
+                            // Upload UI bitmap to compositor quad layer every visible frame.
+                            // We always submit the latest flipped frame to whichever swapchain image is acquired
+                            // to avoid historical cursor trails from stale images in the rotating swapchain.
+                            if (menuVisible) {
+                                val bmp = uiRenderer.pendingUiBitmap
+                                if (bmp != null) {
+                                    uiRenderer.pendingUiBitmap = null
+                                    // Copy immediately to flip buffer before acquire (acquire can block for a frame).
+                                    var fb = uiRenderer.uiFlipBitmap
+                                    if (fb == null || fb.width != bmp.width || fb.height != bmp.height) {
+                                        fb?.recycle()
+                                        fb = android.graphics.Bitmap.createBitmap(
+                                            bmp.width,
+                                            bmp.height,
+                                            android.graphics.Bitmap.Config.ARGB_8888
+                                        )
+                                        uiRenderer.uiFlipBitmap = fb
+                                        uiRenderer.uiFlipCanvas = android.graphics.Canvas(fb)
+                                        uiRenderer.uiFlipMatrix.setScale(1f, -1f, bmp.width / 2f, bmp.height / 2f)
+                                    }
+                                    uiRenderer.uiFlipCanvas!!.drawBitmap(bmp, uiRenderer.uiFlipMatrix, null)
+                                }
+                                val fb = uiRenderer.uiFlipBitmap
+                                if (fb != null) {
                                     val quadTex = nativeAcquireUiImage()
                                     if (quadTex > 0) {
-                                        // Flip bitmap vertically — compositor quad UVs are bottom-up
-                                        // Reuse cached flip canvas to avoid allocation every frame
-                                        var fb = uiRenderer.uiFlipBitmap
-                                        if (fb == null || fb.width != bmp.width || fb.height != bmp.height) {
-                                            fb?.recycle()
-                                            fb = android.graphics.Bitmap.createBitmap(bmp.width, bmp.height, android.graphics.Bitmap.Config.ARGB_8888)
-                                            uiRenderer.uiFlipBitmap = fb
-                                            uiRenderer.uiFlipCanvas = android.graphics.Canvas(fb)
-                                            uiRenderer.uiFlipMatrix.setScale(1f, -1f, bmp.width / 2f, bmp.height / 2f)
-                                        }
-                                        uiRenderer.uiFlipCanvas!!.drawBitmap(bmp, uiRenderer.uiFlipMatrix, null)
                                         android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
-                                        android.opengl.GLUtils.texSubImage2D(android.opengl.GLES30.GL_TEXTURE_2D, 0, 0, 0, fb)
+                                        android.opengl.GLUtils.texSubImage2D(
+                                            android.opengl.GLES30.GL_TEXTURE_2D,
+                                            0,
+                                            0,
+                                            0,
+                                            fb
+                                        )
                                         android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
                                         nativeReleaseUiImage()
                                     }
                                 }
-                                // Don't recycle — bitmap is preallocated and reused by UiRenderer
+                                // Don't recycle — bitmap is preallocated and reused by UiRenderer.
                             }
 
                             // ── Yeet animation: flying deleted models ──
@@ -850,13 +862,12 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             val ih = inputHandler  // local ref for render state
-                            val r = if (beatReactorEnabled && beatWashAlpha > 0.005f) reactor else null
-                            val washActive = r != null
+                            val washActive = beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f
                             var washR = 0f; var washG = 0f; var washB = 0f; var washMode = 0
-                            if (r != null) {
-                                val wc = r.getBeatColor()
+                            if (washActive) {
+                                val wc = reactor!!.getBeatColor()
                                 washR = wc[0]; washG = wc[1]; washB = wc[2]
-                                washMode = r.blendMode.ordinal
+                                washMode = reactor.blendMode.ordinal
                             }
 
                             // Sync room edit highlight
@@ -1017,9 +1028,7 @@ class FilamentModelActivity : ComponentActivity() {
                 availableAudioFiles = scanned
                 try {
                     getAudioCacheFile().writeText(scanned.joinToString("\n") { it.absolutePath })
-                } catch (e: Exception) {
-                    Log.w(TAG, "Audio cache write failed", e)
-                }
+                } catch (_: Exception) {}
                 Log.i(TAG, "Scanned ${scanned.size} audio files")
             } catch (e: Exception) {
                 Log.w(TAG, "Audio scan failed: ${e.message}")
@@ -1031,6 +1040,8 @@ class FilamentModelActivity : ComponentActivity() {
             }
         }.start()
     }
+
+    private fun buildModelPanelView(): android.view.View = uiRenderer.buildModelPanelView()
 
     internal fun showMessage(text: String) = uiRenderer.showMessage(text)
 
@@ -1100,14 +1111,12 @@ class FilamentModelActivity : ComponentActivity() {
         running = false
 
         // Auto-save current scene for next launch
-        if (::sceneManager.isInitialized) {
-            if (models.isNotEmpty()) {
-                try {
-                    saveScene("_autosave")
-                    Log.i(TAG, "Auto-saved scene (${models.size} models)")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Auto-save failed", e)
-                }
+        if (models.isNotEmpty()) {
+            try {
+                saveScene("_autosave")
+                Log.i(TAG, "Auto-saved scene (${models.size} models)")
+            } catch (e: Exception) {
+                Log.e(TAG, "Auto-save failed", e)
             }
         }
 

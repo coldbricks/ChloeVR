@@ -559,50 +559,28 @@ bool XrRenderer::createActions() {
     xrStringToPath(instance_, "/user/hand/right", &handPaths_[1]);
 
     // Create all actions (same as OpenXRInput)
-    if (!makeAction(actionSet_, thumbstickAction_, "thumbstick",
-                    XR_ACTION_TYPE_VECTOR2F_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create thumbstick action");
-    }
-    if (!makeAction(actionSet_, triggerAction_, "trigger",
-                    XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create trigger action");
-    }
-    if (!makeAction(actionSet_, squeezeAction_, "squeeze",
-                    XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create squeeze action");
-    }
-    if (!makeAction(actionSet_, thumbstickClickAction_, "thumbstick-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create thumbstick-click action");
-    }
-    if (!makeAction(actionSet_, aClickAction_, "a-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create a-click action");
-    }
-    if (!makeAction(actionSet_, bClickAction_, "b-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create b-click action");
-    }
-    if (!makeAction(actionSet_, xClickAction_, "x-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create x-click action");
-    }
-    if (!makeAction(actionSet_, yClickAction_, "y-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create y-click action");
-    }
-    if (!makeAction(actionSet_, menuClickAction_, "menu-click",
-                    XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create menu-click action");
-    }
-    if (!makeAction(actionSet_, gripPoseAction_, "grip-pose",
-                    XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create grip-pose action");
-    }
-    if (!makeAction(actionSet_, aimPoseAction_, "aim-pose",
-                    XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_)) {
-        XR_LOGE("Failed to create aim-pose action");
-    }
+    makeAction(actionSet_, thumbstickAction_, "thumbstick",
+               XR_ACTION_TYPE_VECTOR2F_INPUT, 2, handPaths_);
+    makeAction(actionSet_, triggerAction_, "trigger",
+               XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_);
+    makeAction(actionSet_, squeezeAction_, "squeeze",
+               XR_ACTION_TYPE_FLOAT_INPUT, 2, handPaths_);
+    makeAction(actionSet_, thumbstickClickAction_, "thumbstick-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, aClickAction_, "a-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, bClickAction_, "b-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, xClickAction_, "x-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, yClickAction_, "y-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, menuClickAction_, "menu-click",
+               XR_ACTION_TYPE_BOOLEAN_INPUT, 2, handPaths_);
+    makeAction(actionSet_, gripPoseAction_, "grip-pose",
+               XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
+    makeAction(actionSet_, aimPoseAction_, "aim-pose",
+               XR_ACTION_TYPE_POSE_INPUT, 2, handPaths_);
 
     // Suggest bindings for Oculus Touch Controller (Galaxy XR profile)
     auto path = [this](const char* p) -> XrPath {
@@ -676,13 +654,10 @@ void XrRenderer::handleSessionStateChange(XrSessionState newState) {
             XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
             beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             XrResult r = xrBeginSession(session_, &beginInfo);
-            if (XR_SUCCEEDED(r)) {
-                sessionReady_ = true;
-                running_ = true;
-                XR_LOGI("Session begun and ready for frames");
-            } else {
-                XR_LOGE("xrBeginSession failed: %d", (int)r);
-            }
+            XR_LOGI("xrBeginSession result: %d", (int)r);
+            sessionReady_ = true;
+            running_ = true;
+            XR_LOGI("Session begun and ready for frames");
             break;
         }
         case XR_SESSION_STATE_SYNCHRONIZED:
@@ -1299,6 +1274,23 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     getInfo.space = appSpace_;
     getInfo.time = now;
 
+    // Chain output structs onto root.next
+    XrSphericalHarmonicsANDROID shLight = {};
+    shLight.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
+    shLight.next = nullptr;
+    shLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+    shLight.kind = XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID;
+
+    XrDirectionalLightANDROID dirLight = {};
+    dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dirLight.next = nullptr;  // SH disabled until padding issue resolved
+    dirLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
+    XrAmbientLightANDROID ambLight = {};
+    ambLight.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    ambLight.next = &dirLight;
+    ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
     // Skip first 60 frames (~1 second) to let runtime warm up, then poll every 3 frames
     static int frameCount = 0;
     frameCount++;
@@ -1868,7 +1860,8 @@ bool XrRenderer::pollPerfMetrics(PerfMetrics& data) {
     if (!xrQueryPerfCounter_ || !xrSetPerfState_) return false;
 
     // Enable metrics collection (idempotent) — must pass struct pointer, not raw bool
-    if (!metricsEnabled_) {
+    static bool metricsEnabled = false;
+    if (!metricsEnabled) {
         XrPerformanceMetricsStateANDROID state = {};
         state.type = XR_TYPE_PERFORMANCE_METRICS_STATE_ANDROID;
         state.enabled = XR_TRUE;
@@ -1881,12 +1874,12 @@ bool XrRenderer::pollPerfMetrics(PerfMetrics& data) {
                 return false;
             }
         } else {
-            metricsEnabled_ = true;
+            metricsEnabled = true;
             XR_LOGI("Performance metrics enabled");
         }
     }
 
-    if (metricsEnabled_) {
+    if (metricsEnabled) {
         XrPerformanceMetricsCounterANDROID counter = {};
         counter.type = XR_TYPE_PERFORMANCE_METRICS_COUNTER_ANDROID;
 
