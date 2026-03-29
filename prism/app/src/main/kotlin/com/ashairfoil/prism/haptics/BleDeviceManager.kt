@@ -115,6 +115,7 @@ class BleDeviceManager(private val context: Context) {
     var onDeviceDiscovered: ((BleDeviceInfo) -> Unit)? = null
     var onConnectionStateChanged: ((ConnectionState) -> Unit)? = null
     var onBatteryUpdate: ((Int) -> Unit)? = null
+    var onScanStopped: (() -> Unit)? = null
 
     // Auto-connect: when true, connect to first Lovense device found
     private var autoConnect = true
@@ -163,6 +164,9 @@ class BleDeviceManager(private val context: Context) {
             scanner?.stopScan(scanCallback)
         } catch (_: Exception) { }
         isScanning = false
+        if (connectionState == ConnectionState.Disconnected) {
+            handler.post { onScanStopped?.invoke() }
+        }
     }
 
     fun getDiscoveredDevices(): List<BleDeviceInfo> = synchronized(discoveredDevices) { discoveredDevices.values.toList() }
@@ -192,11 +196,14 @@ class BleDeviceManager(private val context: Context) {
             discoveredDevices[device.address] = info
             onDeviceDiscovered?.invoke(info)
 
-            // Auto-connect to first Lovense device found (only if previously approved)
-            if (isLovense && autoConnect && device.address in knownDeviceAddresses && connectionState == ConnectionState.Disconnected) {
+            // Auto-connect to first Lovense device found
+            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected) {
                 android.util.Log.i(TAG, "Auto-connecting to Lovense: $displayName (${device.address})")
                 autoConnect = false
-                stopScan()
+                // Stop scanner without firing onScanStopped (we're about to connect)
+                isScanning = false
+                val cb: ScanCallback = this
+                try { scanner?.stopScan(cb) } catch (_: Exception) {}
                 connect(device.address)
             }
         }

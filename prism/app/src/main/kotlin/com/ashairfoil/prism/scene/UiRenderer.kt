@@ -32,6 +32,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     var uiFlipBitmap: Bitmap? = null
     var uiFlipCanvas: Canvas? = null
     val uiFlipMatrix = Matrix()
+    val bitmapLock = java.util.concurrent.locks.ReentrantLock()  // non-blocking guard for flip buffer
 
     // Preallocated render bitmap (reused every frame to avoid GC pressure)
     private var renderBitmap: Bitmap? = null
@@ -185,6 +186,26 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     // All other UI state lives on the activity or inputHandler.
     // Convenience accessors to avoid verbose chains in rendering code:
     private inline val ih get() = activity.inputHandler
+
+    /** Flip-copy renderBitmap into uiFlipBitmap under lock, then publish. */
+    private fun publishBitmap(bitmap: Bitmap) {
+        val w = bitmap.width; val h = bitmap.height
+        bitmapLock.lock()
+        try {
+            var fb = uiFlipBitmap
+            if (fb == null || fb.width != w || fb.height != h) {
+                fb?.recycle()
+                fb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                uiFlipBitmap = fb
+                uiFlipCanvas = Canvas(fb)
+                uiFlipMatrix.setScale(1f, -1f, w / 2f, h / 2f)
+            }
+            uiFlipCanvas!!.drawBitmap(bitmap, uiFlipMatrix, null)
+        } finally {
+            bitmapLock.unlock()
+        }
+        pendingUiBitmap = uiFlipBitmap
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     //  renderUiToBitmap — Render HUD text panel to bitmap
@@ -736,7 +757,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -821,7 +842,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 p.textAlign = Paint.Align.LEFT
 
                 drawLaserCursorOverlay()
-                pendingUiBitmap = bitmap
+                publishBitmap(bitmap)
                 return
             }
 
@@ -992,7 +1013,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.textAlign = Paint.Align.LEFT
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -1115,7 +1136,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 })
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -1227,7 +1248,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("\u25C0 BACK", uiW / 2f, snBtnY + 40f, backText)
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -1375,7 +1396,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("\u25C0 BACK", uiW / 2f, glbBtnY + 40f, backText)
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -1446,7 +1467,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("\u25C0 BACK", uiW / 2f, scBtnY + 40f, scBackText)
 
             drawLaserCursorOverlay()
-            pendingUiBitmap = bitmap
+            publishBitmap(bitmap)
             return
         }
 
@@ -1783,7 +1804,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         }
 
         drawLaserCursorOverlay()
-        pendingUiBitmap = bitmap
+        publishBitmap(bitmap)
     }
 
     // ═══════════════════════════════════════════════════════════════════

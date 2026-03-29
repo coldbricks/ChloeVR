@@ -456,11 +456,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 val sliderRowH = 32f
 
                                 if (by > 1205f) {
-                                    val fifth = (1024f - 100f) / 5f
-                                    if (bx < 30f + fifth) hoveredActionButton = 127 // BOOM
-                                    else if (bx < 40f + fifth * 2f) hoveredActionButton = 128 // VIBES
-                                    else if (bx < 50f + fifth * 3f) hoveredActionButton = 129 // SPLIT (dual motor toggle)
-                                    else if (bx < 60f + fifth * 4f) hoveredActionButton = 112 // OFF
+                                    // Match UiRenderer: fifthW = (1024-130)/5, buttons at 30,40+fw,50+fw*2,...
+                                    val fifth = (1024f - 130f) / 5f
+                                    if (bx < 30f + fifth + 5f) hoveredActionButton = 127 // BOOM
+                                    else if (bx < 40f + fifth * 2f + 5f) hoveredActionButton = 128 // VIBES
+                                    else if (bx < 50f + fifth * 3f + 5f) hoveredActionButton = 129 // SPLIT (dual motor toggle)
+                                    else if (bx < 60f + fifth * 4f + 5f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
                                 } else if (by in 108f..135f) {
                                     // Rolloff mode buttons
@@ -644,23 +645,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 }
                             } else {
                                 // Action buttons: 4 rows at bottom (UiRenderer: row1Y=1054, btnH=48, btnGap=8)
+                                // btn2W=478, btn3W=316; gap midpoints: row1=512, rows2-4=350/674
                                 if (by in 1054f..1102f) {
-                                    if (bx < 520f) hoveredActionButton = 104
+                                    if (bx < 512f) hoveredActionButton = 104
                                     else hoveredActionButton = 105
                                 }
                                 if (by in 1110f..1158f) {
-                                    if (bx < 360f) hoveredActionButton = 101
-                                    else if (bx < 690f) hoveredActionButton = 107
+                                    if (bx < 350f) hoveredActionButton = 101
+                                    else if (bx < 674f) hoveredActionButton = 107
                                     else hoveredActionButton = 108
                                 }
                                 if (by in 1166f..1214f) {
-                                    if (bx < 360f) hoveredActionButton = 109
-                                    else if (bx < 690f) hoveredActionButton = 100
+                                    if (bx < 350f) hoveredActionButton = 109
+                                    else if (bx < 674f) hoveredActionButton = 100
                                     else hoveredActionButton = 102
                                 }
                                 if (by > 1222f) {
-                                    if (bx < 360f) hoveredActionButton = 130
-                                    else if (bx < 690f) hoveredActionButton = 134
+                                    if (bx < 350f) hoveredActionButton = 130
+                                    else if (bx < 674f) hoveredActionButton = 134
                                     else hoveredActionButton = 135
                                 }
 
@@ -1003,6 +1005,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             when (state) {
                                 com.ashairfoil.prism.haptics.ConnectionState.Ready -> {
                                     activity.hapticConnected = true
+                                    activity.hapticEnabled = true
                                     Log.i(TAG, "Haptic device connected: ${activity.hapticManager?.connectedDeviceName}")
                                     activity.uiNeedsRefresh = true
                                 }
@@ -1015,14 +1018,29 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 else -> {}
                             }
                         }
+                        activity.hapticManager?.onScanStopped = {
+                            if (!activity.hapticConnected) {
+                                activity.hapticEnabled = false
+                                activity.showMessage("No Lovense device found")
+                                activity.uiNeedsRefresh = true
+                            }
+                        }
                     }
-                    Log.i(TAG, "Starting haptic BLE scan...")
-                    val scanStarted = activity.hapticManager?.startScan() ?: false
-                    if (scanStarted) {
-                        activity.hapticEnabled = true
-                    } else {
-                        Log.w(TAG, "BLE scan failed to start — permissions missing or BT off")
+                    val hm = activity.hapticManager
+                    if (hm != null && !hm.hasBlePermissions()) {
+                        Log.w(TAG, "BLE permissions missing: ${hm.getMissingPermissions()}")
+                        activity.showMessage("BLE permissions needed.\nGrant in Settings > Apps > ChloeVR")
                         activity.hapticEnabled = false
+                    } else {
+                        Log.i(TAG, "Starting haptic BLE scan...")
+                        val scanStarted = hm?.startScan() ?: false
+                        if (scanStarted) {
+                            activity.hapticEnabled = true
+                        } else {
+                            Log.w(TAG, "BLE scan failed to start — BT off or scanner unavailable")
+                            activity.showMessage("BLE scan failed — check Bluetooth is on")
+                            activity.hapticEnabled = false
+                        }
                     }
                 }
                 activity.uiNeedsRefresh = true
@@ -1243,7 +1261,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         val reactor = activity.audioReactor
                         if (reactor != null) {
                             reactor.enabled = true
-                            if (!reactor.isActive) reactor.start()
+                            // Use audio player session ID if available, else system audio
+                            val sid = activity.audioPlayer?.audioSessionId ?: 0
+                            if (!reactor.isActive) reactor.start(sid)
+                            else if (sid != 0) reactor.restart(sid)
                         }
                         Log.i(TAG, "BeatReactor ON")
                     } else {

@@ -767,41 +767,31 @@ class FilamentModelActivity : ComponentActivity() {
                             // We always submit the latest flipped frame to whichever swapchain image is acquired
                             // to avoid historical cursor trails from stale images in the rotating swapchain.
                             if (menuVisible) {
-                                val bmp = uiRenderer.pendingUiBitmap
-                                if (bmp != null) {
+                                // Consume pending flag (flip-copy already done on UI thread)
+                                if (uiRenderer.pendingUiBitmap != null) {
                                     uiRenderer.pendingUiBitmap = null
-                                    // Copy immediately to flip buffer before acquire (acquire can block for a frame).
-                                    var fb = uiRenderer.uiFlipBitmap
-                                    if (fb == null || fb.width != bmp.width || fb.height != bmp.height) {
-                                        fb?.recycle()
-                                        fb = android.graphics.Bitmap.createBitmap(
-                                            bmp.width,
-                                            bmp.height,
-                                            android.graphics.Bitmap.Config.ARGB_8888
-                                        )
-                                        uiRenderer.uiFlipBitmap = fb
-                                        uiRenderer.uiFlipCanvas = android.graphics.Canvas(fb)
-                                        uiRenderer.uiFlipMatrix.setScale(1f, -1f, bmp.width / 2f, bmp.height / 2f)
-                                    }
-                                    uiRenderer.uiFlipCanvas!!.drawBitmap(bmp, uiRenderer.uiFlipMatrix, null)
                                 }
-                                val fb = uiRenderer.uiFlipBitmap
-                                if (fb != null) {
-                                    val quadTex = nativeAcquireUiImage()
-                                    if (quadTex > 0) {
-                                        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
-                                        android.opengl.GLUtils.texSubImage2D(
-                                            android.opengl.GLES30.GL_TEXTURE_2D,
-                                            0,
-                                            0,
-                                            0,
-                                            fb
-                                        )
-                                        android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
-                                        nativeReleaseUiImage()
+                                // Upload flip buffer every frame — tryLock so we never stall the render thread
+                                val quadTex = nativeAcquireUiImage()
+                                if (quadTex > 0) {
+                                    if (uiRenderer.bitmapLock.tryLock()) {
+                                        try {
+                                            val fb = uiRenderer.uiFlipBitmap
+                                            if (fb != null) {
+                                                android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
+                                                android.opengl.GLUtils.texSubImage2D(
+                                                    android.opengl.GLES30.GL_TEXTURE_2D,
+                                                    0, 0, 0, fb
+                                                )
+                                                android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
+                                            }
+                                        } finally {
+                                            uiRenderer.bitmapLock.unlock()
+                                        }
                                     }
+                                    // Always release swapchain image even if we skipped the upload
+                                    nativeReleaseUiImage()
                                 }
-                                // Don't recycle — bitmap is preallocated and reused by UiRenderer.
                             }
 
                             // ── Yeet animation: flying deleted models ──
