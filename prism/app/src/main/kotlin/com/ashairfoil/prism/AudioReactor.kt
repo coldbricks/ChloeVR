@@ -90,7 +90,7 @@ class AudioReactor {
 
     // Anti-dropout
     @Volatile private var fftFrameStamp = 0
-    private var updateFrameCount = 0
+    @Volatile private var updateFrameCount = 0
 
     // BOOM detector: tracks per-bin variance to find biggest swings
     private val binMean = FloatArray(DISPLAY_BINS)
@@ -126,6 +126,8 @@ class AudioReactor {
     @Volatile private var specWriteToA = true
     // Pre-allocated beat color result
     private val beatColorBuf = FloatArray(3)
+    // Pre-allocated buffer for Chloe-Vibes FFT magnitudes (avoids per-callback alloc)
+    private var vibesMagBuf: FloatArray? = null
 
     // Per-band raw values (written by FFT thread, read by render thread)
     @Volatile private var rawBass = 0f
@@ -260,8 +262,13 @@ class AudioReactor {
 
         // Feed Chloe-Vibes engine with FFT magnitudes (if enabled)
         if (useVibesEngine) {
-            // Build magnitude array from raw FFT data for the engine
-            val mags = FloatArray(binCount)
+            // Reuse pre-allocated buffer (resize only if capture size changed)
+            var mags = vibesMagBuf
+            if (mags == null || mags.size != binCount) {
+                mags = FloatArray(binCount)
+                vibesMagBuf = mags
+            }
+            mags[0] = 0f
             for (i in 1 until binCount) {
                 val real = fft[2 * i].toFloat()
                 val imag = fft[2 * i + 1].toFloat()

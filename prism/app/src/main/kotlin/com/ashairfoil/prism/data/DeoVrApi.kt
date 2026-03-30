@@ -105,7 +105,11 @@ class DeoVrApi {
                 val url = URL(apiUrl)
                 if (url.protocol != "https" && url.protocol != "http") {
                     Log.e(TAG, "Rejected non-HTTP URL scheme: ${url.protocol}")
-                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0)
+                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0, error = "Invalid URL scheme: ${url.protocol}")
+                }
+                if (url.host in listOf("localhost", "127.0.0.1", "0.0.0.0", "[::1]")) {
+                    Log.w(TAG, "Rejected localhost URL")
+                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0, error = "Localhost URLs are not allowed")
                 }
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "GET"

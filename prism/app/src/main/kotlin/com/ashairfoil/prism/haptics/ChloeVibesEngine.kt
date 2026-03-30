@@ -75,6 +75,10 @@ class ChloeVibesEngine {
     @Volatile var bandEnergies: FloatArray = bandEnergiesRef
         private set
 
+    // Pre-allocated SpectralData to avoid per-frame allocation in extractBandEnergies
+    private val scratchBandEnergies = FloatArray(NUM_BANDS)
+    private val scratchSpectralData = SpectralData(bandEnergies = scratchBandEnergies)
+
     /** Start time for envelope timing. */
     private var startTimeMs = System.currentTimeMillis()
 
@@ -187,44 +191,42 @@ class ChloeVibesEngine {
         ditherError2 = 0f
     }
 
-    companion object {
-        /**
-         * Extract band energies from Visualizer FFT magnitude array.
-         * Maps arbitrary-length magnitude array to 8 perceptual bands.
-         */
-        private fun extractBandEnergies(magnitudes: FloatArray, binResolution: Float): SpectralData {
-            val bandEnergies = FloatArray(NUM_BANDS)
-            val numBins = magnitudes.size
+    /**
+     * Extract band energies from Visualizer FFT magnitude array.
+     * Maps arbitrary-length magnitude array to 8 perceptual bands.
+     * Populates the pre-allocated scratchSpectralData to avoid per-frame allocation.
+     */
+    private fun extractBandEnergies(magnitudes: FloatArray, binResolution: Float): SpectralData {
+        val bandEnergies = scratchBandEnergies
+        val numBins = magnitudes.size
 
-            for (i in 0 until NUM_BANDS) {
-                val startBin = (BAND_EDGES[i] / binResolution).roundToInt().coerceIn(0, numBins)
-                val endBin = (BAND_EDGES[i + 1] / binResolution).roundToInt().coerceIn(0, numBins)
-                if (endBin > startBin) {
-                    var energy = 0f
-                    for (b in startBin until endBin) {
-                        if (b < numBins) energy += magnitudes[b] * magnitudes[b]
-                    }
-                    bandEnergies[i] = kotlin.math.sqrt(energy / (endBin - startBin))
+        for (i in 0 until NUM_BANDS) {
+            val startBin = (BAND_EDGES[i] / binResolution).roundToInt().coerceIn(0, numBins)
+            val endBin = (BAND_EDGES[i + 1] / binResolution).roundToInt().coerceIn(0, numBins)
+            if (endBin > startBin) {
+                var energy = 0f
+                for (b in startBin until endBin) {
+                    if (b < numBins) energy += magnitudes[b] * magnitudes[b]
                 }
+                bandEnergies[i] = kotlin.math.sqrt(energy / (endBin - startBin))
+            } else {
+                bandEnergies[i] = 0f
             }
-
-            // Compute spectral centroid
-            var weightedSum = 0f
-            var totalMag = 0f
-            for (i in magnitudes.indices) {
-                val freq = i * binResolution
-                weightedSum += freq * magnitudes[i]
-                totalMag += magnitudes[i]
-            }
-            val centroid = if (totalMag > 1e-10f) weightedSum / totalMag else 0f
-
-            return SpectralData(
-                bandEnergies = bandEnergies,
-                rmsPower = 0f,
-                spectralCentroid = centroid,
-                spectralFlux = 0f,
-                dominantFrequency = 0f
-            )
         }
+
+        // Compute spectral centroid
+        var weightedSum = 0f
+        var totalMag = 0f
+        for (i in magnitudes.indices) {
+            val freq = i * binResolution
+            weightedSum += freq * magnitudes[i]
+            totalMag += magnitudes[i]
+        }
+
+        scratchSpectralData.rmsPower = 0f
+        scratchSpectralData.spectralCentroid = if (totalMag > 1e-10f) weightedSum / totalMag else 0f
+        scratchSpectralData.spectralFlux = 0f
+        scratchSpectralData.dominantFrequency = 0f
+        return scratchSpectralData
     }
 }

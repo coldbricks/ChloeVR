@@ -34,12 +34,9 @@ import androidx.xr.scenecore.InteractableComponent
 import androidx.xr.scenecore.SpatialCapability
 import androidx.xr.scenecore.SpatialEnvironment
 import androidx.xr.scenecore.AnchorEntity
-import androidx.xr.scenecore.AlphaMode
 import androidx.xr.scenecore.GltfModel
 import androidx.xr.scenecore.GltfModelEntity
 import androidx.xr.scenecore.KhronosPbrMaterial
-import androidx.xr.scenecore.PlaneOrientation
-import androidx.xr.scenecore.PlaneSemanticType
 import androidx.xr.scenecore.SurfaceEntity
 import androidx.xr.scenecore.scene
 import com.ashairfoil.prism.data.MediaLibrary
@@ -50,6 +47,7 @@ import com.ashairfoil.prism.effects.SpatialAudioEffect
 import com.ashairfoil.prism.effects.StereoAdjustmentState
 import com.ashairfoil.prism.playback.SubtitleRenderer
 import com.ashairfoil.prism.settings.SettingsManager
+import com.ashairfoil.prism.ui.ThemeManager
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -125,7 +123,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // Thumbstick seek increment (seconds)
     private var seekIncrementSec = 10
 
-    // Grab-to-reposition: grip+trigger, aim direction drives movement, wrist drives roll
+    // Grab-to-reposition: grip locks laser to screen, screen follows aim direction
     private var isGrabbing = false
     private var grabStartHandPos = floatArrayOf(0f, 0f, 0f)
     private var grabStartAimDir = floatArrayOf(0f, 0f, -1f)
@@ -136,6 +134,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var grabStartScreenX = 0f
     private var grabStartScreenY = 0f
     private var grabStartScreenZ = -8f
+    private var grabLockDistance = 4f  // distance from hand to screen at grab start (laser lock)
 
     // Trigger-only zoom: hold trigger (no grip), move hand left/right
     private var isTriggerZooming = false
@@ -193,7 +192,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     Vector3(pose.translation.x, -bottomWorldY, pose.translation.z),
                     pose.rotation
                 ))
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.w("ChloeVR", "groundToFloor failed: ${e.message}")
+            }
         }
 
         fun applyScale(newScale: Float) {
@@ -388,6 +389,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         chromaKeyState.tolerance = SettingsManager.chromaTolerance
         chromaKeyState.softness = SettingsManager.chromaSoftness
         chromaKeyState.enabled = SettingsManager.chromaEnabled
+
+        // Load screen curvature for initial projection type
+        screenCurvature = SettingsManager.getScreenCurvature(currentScreenType.name)
     }
 
     private fun saveColorGradingSettings() {
@@ -407,9 +411,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 is SessionCreateSuccess -> {
                     xrSession = result.session
                 }
-                else -> {}
+                else -> {
+                    android.util.Log.w("ChloeVR", "XR session creation returned non-success: $result")
+                    showMessage("XR not available — this app requires an XR headset.")
+                }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.e("ChloeVR", "XR session creation failed", e)
+            showMessage("XR initialization failed. Please restart the app.")
+        }
 
         // Create a root FrameLayout for subtitle overlay
         val rootFrame = FrameLayout(this)
@@ -444,61 +454,55 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(0xFF0F0F14.toInt())
+            setBackgroundColor(ThemeManager.BG_VOID)
         }
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 40, 48, 48)
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_48), ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_48), ThemeManager.dp(this@MainActivity, ThemeManager.SP_48))
         }
 
         layout.addView(TextView(this).apply {
             text = "ChloeVR"
-            textSize = 52f
-            setTextColor(0xFFEC4899.toInt())
-            setPadding(0, 0, 0, 4)
+            textSize = ThemeManager.TEXT_HERO
+            setTextColor(ThemeManager.PINK_SOFT)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
             gravity = Gravity.CENTER
             setTypeface(null, android.graphics.Typeface.BOLD)
         })
 
         layout.addView(TextView(this).apply {
             text = "3D Model Viewer & VR Media Player"
-            textSize = 16f
-            setTextColor(0xFF6B7280.toInt())
-            setPadding(0, 0, 0, 16)
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.TEXT_DIM)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
             gravity = Gravity.CENTER
         })
 
         filePickerCountLabel = TextView(this).apply {
-            textSize = 20f
-            setTextColor(0xFF10B981.toInt())
+            textSize = ThemeManager.TEXT_BODY
+            setTextColor(ThemeManager.TEXT_DIM)
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 12)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
         }
         layout.addView(filePickerCountLabel)
 
         filePickerStatusLabel = TextView(this).apply {
-            textSize = 24f
-            setTextColor(0xFFAAAAAA.toInt())
+            textSize = ThemeManager.TEXT_HEADING
+            setTextColor(ThemeManager.TEXT_MID)
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 16)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
         }
         layout.addView(filePickerStatusLabel)
 
-        layout.addView(TextView(this).apply {
-            text = "Search"
-            textSize = 24f
-            setTextColor(0xFFCCCCCC.toInt())
-            setPadding(0, 0, 0, 8)
-        })
         layout.addView(EditText(this).apply {
             setText(filePickerSearchQuery)
-            hint = "Type to filter files..."
+            hint = "Search files..."
             setSingleLine(true)
-            setBackgroundColor(0xFF1A1A26.toInt())
-            setTextColor(0xFFF3F4F6.toInt())
-            setHintTextColor(0xFF505868.toInt())
-            setPadding(24, 14, 24, 14)
+            background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+            setTextColor(ThemeManager.TEXT_BRIGHT)
+            setHintTextColor(ThemeManager.TEXT_DIM)
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, 14), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, 14))
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -512,8 +516,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             })
         })
 
-        layout.addView(makeSpacer(10))
-        layout.addView(makeSectionLabel("Projection Filter"))
+        layout.addView(makeSpacer(ThemeManager.SP_12))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Projection Filter", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 null to "All",
@@ -528,8 +532,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(6))
-        layout.addView(makeSectionLabel("Stereo Filter"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Stereo Filter", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 null to "All",
@@ -543,8 +547,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(6))
-        layout.addView(makeSectionLabel("File Type"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        layout.addView(ThemeManager.makeSectionHeader(this, "File Type", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 null to "All",
@@ -558,8 +562,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(6))
-        layout.addView(makeSectionLabel("Alpha Filter"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Alpha Filter", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(false to "Any", true to "Alpha Only"),
             selected = { it.first == filePickerAlphaOnly }
@@ -568,8 +572,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(6))
-        layout.addView(makeSectionLabel("Library Filter"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Library Filter", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 MediaLibrary.FilterBy.ALL to "All",
@@ -584,8 +588,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(6))
-        layout.addView(makeSectionLabel("Sort"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Sort", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 FilePickerSort.NAME to "Name",
@@ -600,7 +604,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             refreshFilePickerResults()
         })
 
-        layout.addView(makeSpacer(8))
+        layout.addView(makeSpacer(ThemeManager.SP_12))
         layout.addView(makeButtonRow(
             "Clear Filters" to {
                 filePickerSearchQuery = ""
@@ -614,9 +618,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             "Rescan" to { startFilePickerScan(force = true) }
         ))
 
+        layout.addView(ThemeManager.makeDivider(this))
+
         filePickerResultsContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(0, 8, 0, 0)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, 0)
         }
         layout.addView(filePickerResultsContainer)
 
@@ -750,9 +756,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             container.addView(TextView(this).apply {
                 text = dirName
-                textSize = 22f
-                setTextColor(0xFF4FC3F7.toInt())
-                setPadding(8, 28, 0, 14)
+                textSize = ThemeManager.TEXT_HEADING
+                setTextColor(ThemeManager.PINK_SOFT)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8))
                 layoutParams = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
@@ -776,13 +782,13 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
                 container.addView(LinearLayout(this).apply {
                     orientation = LinearLayout.VERTICAL
-                    setBackgroundColor(if (isFavorite) 0xFF1A2A1A.toInt() else 0xFF1E1E1E.toInt())
-                    setPadding(36, 36, 36, 36)
+                    background = ThemeManager.makeFileCardBg(this@MainActivity, isFavorite)
+                    setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                     val params = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     )
-                    params.setMargins(0, 0, 0, 8)
+                    params.setMargins(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                     layoutParams = params
                     isClickable = true
                     isFocusable = true
@@ -804,16 +810,26 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         if (isFavorite) {
                             addView(TextView(this@MainActivity).apply {
                                 text = "*"
-                                textSize = 28f
-                                setTextColor(0xFFFFD600.toInt())
-                                setPadding(0, 0, 10, 0)
+                                textSize = ThemeManager.TEXT_HEADING
+                                setTextColor(ThemeManager.STAR_FILLED)
+                                setPadding(0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0)
+                            })
+                        }
+
+                        if (hasResume) {
+                            // Small pink dot before filename
+                            addView(View(this@MainActivity).apply {
+                                background = ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL)
+                                layoutParams = LinearLayout.LayoutParams(ThemeManager.dp(this@MainActivity, 6), ThemeManager.dp(this@MainActivity, 6)).apply {
+                                    marginEnd = ThemeManager.dp(this@MainActivity, ThemeManager.SP_8)
+                                }
                             })
                         }
 
                         addView(TextView(this@MainActivity).apply {
                             text = file.nameWithoutExtension
-                            textSize = 26f
-                            setTextColor(0xFFE0E0E0.toInt())
+                            textSize = ThemeManager.TEXT_BODY
+                            setTextColor(ThemeManager.TEXT_BRIGHT)
                             maxLines = 2
                             ellipsize = android.text.TextUtils.TruncateAt.END
                             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -822,35 +838,31 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
                     addView(LinearLayout(this@MainActivity).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, 8, 0, 0)
+                        setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, 0)
+                        gravity = Gravity.CENTER_VERTICAL
 
-                        addView(makeTag(projLabel, 0xFF1565C0.toInt()))
-                        addView(
-                            makeTag(
-                                stereoLabel,
-                                if (stereoLabel == "2D") 0xFF555555.toInt() else 0xFF2E7D32.toInt()
-                            )
-                        )
+                        addView(ThemeManager.makeBadge(this@MainActivity, projLabel, ThemeManager.projectionColor(projLabel)))
+                        addView(ThemeManager.makeBadge(this@MainActivity, stereoLabel, ThemeManager.stereoColor(stereoLabel)))
                         if (hasResume) {
-                            addView(makeTag("RESUME", 0xFF6A1B9A.toInt()))
+                            addView(ThemeManager.makeBadge(this@MainActivity, "RESUME", ThemeManager.BADGE_RESUME))
                         }
                         if (FilePicker.isImageFile(file)) {
-                            addView(makeTag("IMG", 0xFF7B1FA2.toInt()))
+                            addView(ThemeManager.makeBadge(this@MainActivity, "IMG", ThemeManager.PURPLE_DEEP))
                         }
                         if (FilePicker.isModelFile(file)) {
-                            addView(makeTag("3D", 0xFF00BFA5.toInt()))
+                            addView(ThemeManager.makeBadge(this@MainActivity, "3D", ThemeManager.CYAN_ICE))
                         }
                         if (metadata.hasAlpha) {
-                            addView(makeTag("ALPHA", 0xFFD84315.toInt()))
+                            addView(ThemeManager.makeBadge(this@MainActivity, "ALPHA", ThemeManager.BADGE_ALPHA))
                         }
                         if (entry?.hasSubtitles == true) {
-                            addView(makeTag("SUB", 0xFF00838F.toInt()))
+                            addView(ThemeManager.makeBadge(this@MainActivity, "SUB", ThemeManager.BADGE_SUBTITLE))
                         }
                         addView(TextView(this@MainActivity).apply {
                             text = sizeLabel
-                            textSize = 12f
-                            setTextColor(0xFF888888.toInt())
-                            setPadding(12, 0, 0, 0)
+                            textSize = ThemeManager.TEXT_CAPTION
+                            setTextColor(ThemeManager.TEXT_DIM)
+                            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, 0, 0)
                             gravity = Gravity.CENTER_VERTICAL
                             layoutParams = LinearLayout.LayoutParams(
                                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -859,9 +871,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                         })
                         addView(TextView(this@MainActivity).apply {
                             text = file.extension.uppercase()
-                            textSize = 12f
-                            setTextColor(0xFF666666.toInt())
-                            setPadding(12, 0, 0, 0)
+                            textSize = ThemeManager.TEXT_CAPTION
+                            setTextColor(ThemeManager.TEXT_DIM)
+                            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, 0, 0)
                             gravity = Gravity.CENTER_VERTICAL
                         })
                     })
@@ -906,20 +918,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
     }
 
-    private fun makeTag(text: String, bgColor: Int): TextView {
-        return TextView(this).apply {
-            this.text = text
-            textSize = 18f
-            setTextColor(0xFFFFFFFF.toInt())
-            setBackgroundColor(bgColor)
-            setPadding(20, 8, 20, 8)
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            lp.setMargins(0, 0, 8, 0)
-            layoutParams = lp
-        }
+    private fun makeTag(text: String, color: Int): TextView {
+        return ThemeManager.makeBadge(this, text, color)
     }
 
     // ── Control Panel (shown during playback) ──
@@ -930,34 +930,36 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(ThemeManager.BG_PANEL)
         }
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 24, 32, 24)
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24))
         }
 
         // Title row
         layout.addView(TextView(this).apply {
             text = currentFile?.name ?: "ChloeVR"
-            textSize = 16f
-            setTextColor(0xFFCCCCCC.toInt())
-            setPadding(0, 0, 0, 16)
+            textSize = ThemeManager.TEXT_BODY
+            setTextColor(ThemeManager.TEXT_BRIGHT)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
             maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
         })
 
         // Seek bar
         seekLabel = TextView(this).apply {
             text = "0:00 / 0:00"
-            textSize = 14f
-            setTextColor(0xFFAAAAAA.toInt())
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.TEXT_DIM)
             gravity = Gravity.CENTER
         }
         layout.addView(seekLabel)
 
         seekBar = SeekBar(this).apply {
             max = 1000
-            setPadding(0, 8, 0, 16)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
@@ -988,10 +990,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         // A/B repeat
         abLabel = TextView(this).apply {
-            textSize = 13f
-            setTextColor(0xFF66BB6A.toInt())
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.GREEN)
             gravity = Gravity.CENTER
-            setPadding(0, 4, 0, 4)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
         }
         layout.addView(abLabel)
         updateAbLabel()
@@ -1008,10 +1010,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         // Speed control + seek increment
-        layout.addView(makeSpacer(12))
+        layout.addView(makeSpacer(ThemeManager.SP_12))
+        layout.addView(ThemeManager.makeDivider(this))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Playback", ThemeManager.GOLD_WARM))
         layout.addView(makeSpeedRow())
-        layout.addView(makeSpacer(8))
-        layout.addView(makeSectionLabel("Stick Seek"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
         layout.addView(makeToggleRow(
             listOf(10 to "10s", 20 to "20s", 30 to "30s"),
             selected = { it.first == seekIncrementSec }
@@ -1021,8 +1024,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         // ── Projection & Stereo Mode ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Projection"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
+        layout.addView(ThemeManager.makeDivider(this))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Screen", ThemeManager.PINK_SOFT))
         layout.addView(makeToggleRow(
             listOf(
                 ScreenType.FLAT to "Flat",
@@ -1035,8 +1039,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             applyScreenType(chosen.first)
         })
 
-        layout.addView(makeSpacer(8))
-        layout.addView(makeSectionLabel("Stereo Mode"))
+        layout.addView(makeSpacer(ThemeManager.SP_8))
         layout.addView(makeToggleRow(
             listOf(
                 StereoMode.MONO to "Mono",
@@ -1049,33 +1052,33 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         // ── Color Grading ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Color"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
+        layout.addView(ThemeManager.makeDivider(this))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Effects", ThemeManager.PURPLE_DEEP))
         layout.addView(makeColorGradingSection())
 
         // ── 6DOF Depth Simulation ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("6DOF Depth"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
         layout.addView(makeDepthSimulationSection())
 
         // ── Spatial Audio ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Spatial Audio"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
         layout.addView(makeSpatialAudioSection())
 
         // ── Subtitles ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Subtitles"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
         layout.addView(makeSubtitleSection())
 
         // ── Chroma Key ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Chroma Key"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
+        layout.addView(ThemeManager.makeDivider(this))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Chroma Key", ThemeManager.CYAN_ICE))
         layout.addView(makeChromaKeySection())
 
         // ── Screen Adjustments ──
-        layout.addView(makeSpacer(16))
-        layout.addView(makeSectionLabel("Screen Adjustments"))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
+        layout.addView(ThemeManager.makeDivider(this))
+        layout.addView(ThemeManager.makeSectionHeader(this, "Screen Adjustments", ThemeManager.PINK_SOFT))
 
         layout.addView(makeAdjustRow("Height", "\u25B2", "\u25BC") { delta ->
             screenHeight += delta * 0.5f
@@ -1103,7 +1106,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             restartCurrentVideo()
         })
 
-        layout.addView(makeSpacer(16))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
 
         // Reset + Back buttons
         layout.addView(makeButtonRow(
@@ -1135,26 +1138,36 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            rowParams.setMargins(0, 4, 0, 4)
+            rowParams.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
             layoutParams = rowParams
 
             for ((i, option) in options.withIndex()) {
                 val isSelected = selected(option)
                 val btn = Button(this@MainActivity).apply {
                     text = option.second
-                    textSize = 15f
-                    minHeight = 64
-                    setTextColor(if (isSelected) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt())
-                    setBackgroundColor(if (isSelected) 0xFF7C5CFC.toInt() else 0xFF1A1A26.toInt())
-                    setPadding(16, 12, 16, 12)
+                    textSize = ThemeManager.TEXT_LABEL
+                    isAllCaps = false
+                    minHeight = ThemeManager.dp(this@MainActivity, 40)
+                    setTextColor(if (isSelected) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                    background = if (isSelected) {
+                        ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL)
+                    } else {
+                        ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                    }
+                    setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_8))
                     val btnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    btnParams.setMargins(4, 0, 4, 0)
+                    btnParams.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0)
                     layoutParams = btnParams
                     setOnClickListener {
                         onSelect(option)
                         buttons.forEachIndexed { j, b ->
-                            b.setBackgroundColor(if (j == i) 0xFF7C5CFC.toInt() else 0xFF1A1A26.toInt())
-                            b.setTextColor(if (j == i) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt())
+                            val active = j == i
+                            b.background = if (active) {
+                                ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL)
+                            } else {
+                                ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                            }
+                            b.setTextColor(if (active) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
                         }
                     }
                 }
@@ -1173,8 +1186,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             .toInt()
         val speedLabel = TextView(this).apply {
             text = "${formatSpeed(playbackSpeed)}x"
-            textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            textSize = ThemeManager.TEXT_LABEL
+            setTextColor(ThemeManager.TEXT_BRIGHT)
             gravity = Gravity.END
         }
 
@@ -1184,7 +1197,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 2, 0, 2)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
             layoutParams = params
 
             addView(LinearLayout(this@MainActivity).apply {
@@ -1192,8 +1205,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(TextView(this@MainActivity).apply {
                     text = "Speed"
-                    textSize = 14f
-                    setTextColor(0xFFCCCCCC.toInt())
+                    textSize = ThemeManager.TEXT_LABEL
+                    setTextColor(ThemeManager.TEXT_MID)
                     val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     layoutParams = lp
                 })
@@ -1203,7 +1216,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             addView(SeekBar(this@MainActivity).apply {
                 max = speedMax
                 progress = speedProgress
-                setPadding(0, 2, 0, 2)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                         val snapped = (minPlaybackSpeed + progress * playbackSpeedStep)
@@ -1223,8 +1236,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             addView(TextView(this@MainActivity).apply {
                 text = "${formatSpeed(minPlaybackSpeed)}x - ${formatSpeed(maxPlaybackSpeed)}x"
-                textSize = 11f
-                setTextColor(0xFF888888.toInt())
+                textSize = ThemeManager.TEXT_MICRO
+                setTextColor(ThemeManager.TEXT_DIM)
                 gravity = Gravity.END
             })
         }
@@ -1232,15 +1245,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     // ── Shared UI Helpers ──
 
-    private fun makeSectionLabel(text: String): TextView {
-        return TextView(this).apply {
-            this.text = text.uppercase()
-            textSize = 14f
-            setTextColor(0xFFF59E0B.toInt())
-            letterSpacing = 0.15f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setPadding(0, 8, 0, 6)
-        }
+    private fun makeSectionLabel(text: String): View {
+        return ThemeManager.makeSectionHeader(this, text, ThemeManager.PINK_SOFT)
     }
 
     private fun makeButtonRow(vararg buttons: Pair<String, () -> Unit>): LinearLayout {
@@ -1251,17 +1257,20 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 4, 0, 4)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
             layoutParams = params
 
             for ((label, action) in buttons) {
                 addView(Button(this@MainActivity).apply {
                     text = label
-                    textSize = 16f
-                    minHeight = 80
-                    setPadding(24, 18, 24, 18)
+                    textSize = ThemeManager.TEXT_BODY
+                    isAllCaps = false
+                    setTextColor(ThemeManager.TEXT_MID)
+                    minHeight = ThemeManager.dp(this@MainActivity, 48)
+                    background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                    setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                     val btnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                    btnParams.setMargins(6, 0, 6, 0)
+                    btnParams.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
                     layoutParams = btnParams
                     setOnClickListener { action() }
                 })
@@ -1277,35 +1286,41 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 2, 0, 2)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
             layoutParams = params
 
             addView(TextView(this@MainActivity).apply {
                 text = label
-                textSize = 14f
-                setTextColor(0xFFCCCCCC.toInt())
+                textSize = ThemeManager.TEXT_LABEL
+                setTextColor(ThemeManager.TEXT_MID)
                 val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 layoutParams = lp
             })
 
             addView(Button(this@MainActivity).apply {
                 text = minusLabel
-                textSize = 16f
-                minWidth = 100
-                minHeight = 56
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                setTextColor(ThemeManager.TEXT_MID)
+                minWidth = ThemeManager.dp(this@MainActivity, 56)
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 0, 4, 0)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
                 layoutParams = lp
                 setOnClickListener { onAdjust(-1f) }
             })
 
             addView(Button(this@MainActivity).apply {
                 text = plusLabel
-                textSize = 16f
-                minWidth = 100
-                minHeight = 56
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                setTextColor(ThemeManager.TEXT_MID)
+                minWidth = ThemeManager.dp(this@MainActivity, 56)
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 0, 4, 0)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
                 layoutParams = lp
                 setOnClickListener { onAdjust(1f) }
             })
@@ -1329,27 +1344,29 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Enable/Disable toggle
             val toggleBtn = Button(this@MainActivity).apply {
                 text = if (chromaKeyState.enabled) "Chroma Key: ON" else "Chroma Key: OFF"
-                textSize = 16f
-                minHeight = 72
-                setBackgroundColor(if (chromaKeyState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(20, 16, 20, 16)
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = if (chromaKeyState.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                setTextColor(if (chromaKeyState.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 4, 4, 4)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 layoutParams = lp
             }
             toggleBtn.setOnClickListener {
                 chromaKeyState.enabled = !chromaKeyState.enabled
                 toggleBtn.text = if (chromaKeyState.enabled) "Chroma Key: ON" else "Chroma Key: OFF"
-                toggleBtn.setBackgroundColor(if (chromaKeyState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                toggleBtn.background = if (chromaKeyState.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                toggleBtn.setTextColor(if (chromaKeyState.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
                 restartCurrentVideo()
             }
             addView(toggleBtn)
 
             // Color preview bar
             val colorPreview = android.view.View(this@MainActivity).apply {
-                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 40)
-                lp.setMargins(8, 8, 8, 8)
+                val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, ThemeManager.dp(this@MainActivity, 40))
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), ThemeManager.dp(this@MainActivity, ThemeManager.SP_8))
                 layoutParams = lp
                 setBackgroundColor(
                     android.graphics.Color.rgb(
@@ -1437,18 +1454,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             })
 
             // Tolerance slider
-            addView(makeSpacer(8))
+            addView(makeSpacer(ThemeManager.SP_8))
             val tolLabel = TextView(this@MainActivity).apply {
                 text = "Tolerance: ${(chromaKeyState.tolerance * 100).toInt()}%"
-                textSize = 14f
-                setTextColor(0xFFCCCCCC.toInt())
+                textSize = ThemeManager.TEXT_LABEL
+                setTextColor(ThemeManager.TEXT_MID)
                 gravity = Gravity.CENTER
             }
             addView(tolLabel)
             addView(SeekBar(this@MainActivity).apply {
                 max = 100
                 progress = (chromaKeyState.tolerance * 100).toInt()
-                setPadding(0, 8, 0, 8)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8))
                 setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1463,15 +1480,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Softness slider
             val softLabel = TextView(this@MainActivity).apply {
                 text = "Softness: ${(chromaKeyState.softness * 100).toInt()}%"
-                textSize = 14f
-                setTextColor(0xFFCCCCCC.toInt())
+                textSize = ThemeManager.TEXT_LABEL
+                setTextColor(ThemeManager.TEXT_MID)
                 gravity = Gravity.CENTER
             }
             addView(softLabel)
             addView(SeekBar(this@MainActivity).apply {
                 max = 100
                 progress = (chromaKeyState.softness * 100).toInt()
-                setPadding(0, 8, 0, 8)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8))
                 setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1494,25 +1511,27 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Enable toggle
             val toggleBtn = Button(this@MainActivity).apply {
                 text = if (colorGradingState.enabled) "Color Grading: ON" else "Color Grading: OFF"
-                textSize = 16f
-                minHeight = 72
-                setBackgroundColor(if (colorGradingState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(20, 16, 20, 16)
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = if (colorGradingState.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                setTextColor(if (colorGradingState.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 4, 4, 4)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 layoutParams = lp
             }
             toggleBtn.setOnClickListener {
                 colorGradingState.enabled = !colorGradingState.enabled
                 toggleBtn.text = if (colorGradingState.enabled) "Color Grading: ON" else "Color Grading: OFF"
-                toggleBtn.setBackgroundColor(if (colorGradingState.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                toggleBtn.background = if (colorGradingState.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                toggleBtn.setTextColor(if (colorGradingState.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
                 saveColorGradingSettings()
             }
             addView(toggleBtn)
 
             // Preset buttons
-            addView(makeSpacer(8))
+            addView(makeSpacer(ThemeManager.SP_8))
             val presets = SettingsManager.getColorGradingPresets()
             val presetRow1 = presets.take(3)
             val presetRow2 = presets.drop(3).take(3)
@@ -1551,7 +1570,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             }
 
             // Brightness slider: -1 to 1, default 0
-            addView(makeSpacer(8))
+            addView(makeSpacer(ThemeManager.SP_8))
             addView(makeEffectSlider("Brightness", -100, 100, (colorGradingState.brightness * 100).toInt()) { value ->
                 colorGradingState.brightness = value / 100f
             })
@@ -1592,8 +1611,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val range = max - min
         val valueLabel = TextView(this).apply {
             text = "$label: $initial"
-            textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            textSize = ThemeManager.TEXT_LABEL
+            setTextColor(ThemeManager.TEXT_MID)
             gravity = Gravity.CENTER
         }
         return LinearLayout(this).apply {
@@ -1602,14 +1621,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 2, 0, 2)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
             layoutParams = params
 
             addView(valueLabel)
             addView(SeekBar(this@MainActivity).apply {
                 this.max = range
                 progress = (initial - min).coerceIn(0, range)
-                setPadding(0, 4, 0, 4)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1633,19 +1652,21 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Enable toggle
             val toggleBtn = Button(this@MainActivity).apply {
                 text = if (depthSimulation.enabled) "6DOF Depth: ON" else "6DOF Depth: OFF"
-                textSize = 16f
-                minHeight = 72
-                setBackgroundColor(if (depthSimulation.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(20, 16, 20, 16)
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = if (depthSimulation.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                setTextColor(if (depthSimulation.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 4, 4, 4)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 layoutParams = lp
             }
             toggleBtn.setOnClickListener {
                 depthSimulation.enabled = !depthSimulation.enabled
                 toggleBtn.text = if (depthSimulation.enabled) "6DOF Depth: ON" else "6DOF Depth: OFF"
-                toggleBtn.setBackgroundColor(if (depthSimulation.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                toggleBtn.background = if (depthSimulation.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                toggleBtn.setTextColor(if (depthSimulation.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
             }
             addView(toggleBtn)
 
@@ -1665,7 +1686,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             })
 
             // Recenter button
-            addView(makeSpacer(8))
+            addView(makeSpacer(ThemeManager.SP_8))
             addView(makeButtonRow(
                 "Recenter" to { depthSimulation.reset() }
             ))
@@ -1685,8 +1706,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val range = max - min
         val valueLabel = TextView(this).apply {
             text = "$label: $initial"
-            textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            textSize = ThemeManager.TEXT_LABEL
+            setTextColor(ThemeManager.TEXT_MID)
             gravity = Gravity.CENTER
         }
         return LinearLayout(this).apply {
@@ -1695,14 +1716,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 2, 0, 2)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
             layoutParams = params
 
             addView(valueLabel)
             addView(SeekBar(this@MainActivity).apply {
                 this.max = range
                 progress = (initial - min).coerceIn(0, range)
-                setPadding(0, 4, 0, 4)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1726,19 +1747,21 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Enable toggle
             val toggleBtn = Button(this@MainActivity).apply {
                 text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
-                textSize = 16f
-                minHeight = 72
-                setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(20, 16, 20, 16)
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                background = if (spatialAudio.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                setTextColor(if (spatialAudio.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 4, 4, 4)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 layoutParams = lp
             }
             toggleBtn.setOnClickListener {
                 spatialAudio.updateEnabled(!spatialAudio.enabled)
                 toggleBtn.text = if (spatialAudio.enabled) "Spatial Audio: ON" else "Spatial Audio: OFF"
-                toggleBtn.setBackgroundColor(if (spatialAudio.enabled) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                toggleBtn.background = if (spatialAudio.enabled) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                toggleBtn.setTextColor(if (spatialAudio.enabled) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
             }
             addView(toggleBtn)
 
@@ -1758,33 +1781,34 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             val renderer = subtitleRenderer
             val hasSubs = renderer?.hasSubtitles() == true
 
+            val isActive = hasSubs && renderer?.isVisible == true
             val toggleBtn = Button(this@MainActivity).apply {
                 text = when {
                     !hasSubs -> "Subtitles: No file found"
                     renderer?.isVisible == true -> "Subtitles: ON"
                     else -> "Subtitles: OFF"
                 }
-                textSize = 16f
-                minHeight = 72
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
                 isEnabled = hasSubs
-                setBackgroundColor(
-                    when {
-                        !hasSubs -> 0xFF555555.toInt()
-                        renderer?.isVisible == true -> 0xFF1565C0.toInt()
-                        else -> 0xFF333333.toInt()
-                    }
-                )
-                setTextColor(0xFFFFFFFF.toInt())
-                setPadding(20, 16, 20, 16)
+                background = when {
+                    !hasSubs -> ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL)
+                    isActive -> ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL)
+                    else -> ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                }
+                setTextColor(if (!hasSubs) ThemeManager.TEXT_DIM else if (isActive) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                lp.setMargins(4, 4, 4, 4)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 layoutParams = lp
             }
             if (hasSubs) {
                 toggleBtn.setOnClickListener {
                     renderer?.isVisible = !(renderer?.isVisible ?: false)
                     toggleBtn.text = if (renderer?.isVisible == true) "Subtitles: ON" else "Subtitles: OFF"
-                    toggleBtn.setBackgroundColor(if (renderer?.isVisible == true) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                    toggleBtn.background = if (renderer?.isVisible == true) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                    toggleBtn.setTextColor(if (renderer?.isVisible == true) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
                 }
             }
             addView(toggleBtn)
@@ -1965,7 +1989,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         chromaKeyState.keyR = android.graphics.Color.red(pixel) / 255f
         chromaKeyState.keyG = android.graphics.Color.green(pixel) / 255f
         chromaKeyState.keyB = android.graphics.Color.blue(pixel) / 255f
-        android.util.Log.d("ChloeVR", "Picked color: R=${chromaKeyState.keyR} G=${chromaKeyState.keyG} B=${chromaKeyState.keyB}")
+        android.util.Log.i("ChloeVR", "Chroma key picked: R=${chromaKeyState.keyR} G=${chromaKeyState.keyG} B=${chromaKeyState.keyB}")
     }
 
     // Get up direction (+Y) from a quaternion
@@ -2180,11 +2204,13 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (!visible) {
             // Clear stale content so it doesn't flash when panel is next shown
             setContentView(android.view.View(this))
-            window.decorView.setBackgroundColor(0xFF000000.toInt())
+            window.decorView.setBackgroundColor(ThemeManager.BG_VOID)
         }
         try {
             xrSession?.scene?.mainPanelEntity?.setEnabled(visible)
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            android.util.Log.w("ChloeVR", "setPanelVisible($visible) failed: ${e.message}")
+        }
     }
 
     private fun toggleMenu() {
@@ -2216,7 +2242,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private fun showScrubBar() {
         menuVisible = false
 
-        window.decorView.setBackgroundColor(0xFF000000.toInt())
+        window.decorView.setBackgroundColor(ThemeManager.BG_VOID)
 
         // Outer frame fills panel, content at bottom
         val frame = android.widget.FrameLayout(this).apply {
@@ -2224,33 +2250,34 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            setBackgroundColor(0xFF000000.toInt())
+            setBackgroundColor(ThemeManager.BG_VOID)
         }
 
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(0xDD222222.toInt())
-            setPadding(32, 12, 32, 12)
+            background = ThemeManager.roundedBg(ThemeManager.BG_GLASS, ThemeManager.R_12, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
             val lp = android.widget.FrameLayout.LayoutParams(
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
                 android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM
             )
+            lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
             layoutParams = lp
         }
 
         seekLabel = TextView(this).apply {
             text = "0:00 / 0:00"
-            textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.TEXT_DIM)
             gravity = Gravity.CENTER
         }
         bar.addView(seekLabel)
 
         seekBar = SeekBar(this).apply {
             max = 1000
-            minHeight = 64
-            setPadding(0, 16, 0, 16)
+            minHeight = ThemeManager.dp(this@MainActivity, 48)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (fromUser) {
@@ -2272,10 +2299,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         // A/B repeat label
         abLabel = TextView(this).apply {
-            textSize = 12f
-            setTextColor(0xFF66BB6A.toInt())
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.GREEN)
             gravity = Gravity.CENTER
-            setPadding(0, 2, 0, 2)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
         }
         bar.addView(abLabel)
         updateAbLabel()
@@ -2284,7 +2311,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(0, 4, 0, 0)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, 0)
         }
         val abButtonLabel = if (abRepeatBoomerang) "A/B Ping" else "A/B"
         for ((label, action) in listOf(
@@ -2295,42 +2322,38 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         )) {
             btnRow.addView(Button(this).apply {
                 text = label
-                textSize = 16f
-                minWidth = 120
-                minHeight = 72
-                setPadding(16, 16, 16, 16)
+                textSize = ThemeManager.TEXT_BODY
+                isAllCaps = false
+                minWidth = ThemeManager.dp(this@MainActivity, 56)
+                minHeight = ThemeManager.dp(this@MainActivity, 48)
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 if (label == abButtonLabel) {
-                    setBackgroundColor(
-                        when {
-                            abRepeatA == null -> 0xFF333333.toInt()
-                            abRepeatBoomerang -> 0xFF6A1B9A.toInt()
-                            else -> 0xFF2E7D32.toInt()
-                        }
-                    )
+                    val abColor = when {
+                        abRepeatA == null -> ThemeManager.TEXT_DIM
+                        abRepeatBoomerang -> ThemeManager.PURPLE_DEEP
+                        else -> ThemeManager.GREEN
+                    }
+                    background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, abColor, ThemeManager.dp(this@MainActivity, 1))
+                    setTextColor(abColor)
+                } else {
+                    background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                    setTextColor(ThemeManager.TEXT_MID)
                 }
                 val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                lp.setMargins(3, 0, 3, 0)
+                lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0)
                 layoutParams = lp
                 setOnClickListener { action() }
             })
         }
-        btnRow.addView(Button(this).apply {
-            text = "Menu"
-            textSize = 16f
-            minWidth = 120
-            minHeight = 72
-            setPadding(16, 16, 16, 16)
-            setBackgroundColor(0xFF1565C0.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
+        btnRow.addView(ThemeManager.makePrimaryButton(this, "Menu") {
+            scrubBarVisible = false
+            window.decorView.setBackgroundColor(ThemeManager.BG_VOID)
+            showControlPanel()
+            menuVisible = true
+        }.apply {
             val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            lp.setMargins(3, 0, 3, 0)
+            lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0)
             layoutParams = lp
-            setOnClickListener {
-                scrubBarVisible = false
-                window.decorView.setBackgroundColor(0xFF000000.toInt())
-                showControlPanel()
-                menuVisible = true
-            }
         })
         bar.addView(btnRow)
 
@@ -2372,26 +2395,28 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(ThemeManager.BG_VOID)
         }
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 24, 32, 24)
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, ThemeManager.SP_32), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24))
         }
 
         layout.addView(TextView(this).apply {
             text = "3D Model Viewer"
-            textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(0, 0, 0, 12)
+            textSize = ThemeManager.TEXT_TITLE
+            setTextColor(ThemeManager.TEXT_BRIGHT)
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
         })
 
         // Model count
         layout.addView(TextView(this).apply {
             text = "${placedModels.size} model${if (placedModels.size != 1) "s" else ""} in scene"
-            textSize = 14f
-            setTextColor(0xFF999999.toInt())
-            setPadding(0, 0, 0, 16)
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.TEXT_DIM)
+            setPadding(0, 0, 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_16))
         })
 
         // List placed models with select buttons
@@ -2400,54 +2425,58 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             layout.addView(LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setBackgroundColor(if (isSelected) 0xFF1565C0.toInt() else 0xFF1E1E1E.toInt())
-                setPadding(24, 16, 24, 16)
+                background = ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_8, if (isSelected) ThemeManager.PINK_HOT else ThemeManager.BORDER_SUBTLE, ThemeManager.dp(this@MainActivity, if (isSelected) 2 else 1))
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 val lp = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 )
-                lp.setMargins(0, 2, 0, 2)
+                lp.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
                 layoutParams = lp
+
+                // Selected accent bar
+                if (isSelected) {
+                    addView(View(this@MainActivity).apply {
+                        setBackgroundColor(ThemeManager.PINK_HOT)
+                        layoutParams = LinearLayout.LayoutParams(ThemeManager.dp(this@MainActivity, 3), LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                            marginEnd = ThemeManager.dp(this@MainActivity, ThemeManager.SP_8)
+                        }
+                    })
+                }
 
                 addView(TextView(this@MainActivity).apply {
                     text = "${model.file.name}  (${String.format("%.2f", model.scale)}x)"
-                    textSize = 14f
-                    setTextColor(0xFFE0E0E0.toInt())
+                    textSize = ThemeManager.TEXT_BODY
+                    setTextColor(ThemeManager.TEXT_BRIGHT)
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 })
 
-                addView(Button(this@MainActivity).apply {
-                    text = if (isSelected) "Selected" else "Select"
-                    textSize = 12f
-                    setOnClickListener {
-                        selectedModelIndex = i
-                        showModelPanel()
-                    }
+                addView(ThemeManager.makeTogglePill(this@MainActivity, if (isSelected) "Selected" else "Select", isSelected) {
+                    selectedModelIndex = i
+                    showModelPanel()
                 })
 
-                addView(Button(this@MainActivity).apply {
-                    text = "Dup"
-                    textSize = 12f
-                    minWidth = 60
-                    setBackgroundColor(0xFF1B5E20.toInt())
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setOnClickListener {
-                        duplicateModel(i)
-                    }
+                addView(ThemeManager.makeSecondaryButton(this@MainActivity, "Dup") {
+                    duplicateModel(i)
+                }.apply {
+                    textSize = ThemeManager.TEXT_CAPTION
+                    minimumWidth = ThemeManager.dp(this@MainActivity, 48)
+                    val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    blp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, 0, 0)
+                    layoutParams = blp
                 })
 
-                addView(Button(this@MainActivity).apply {
-                    text = "X"
-                    textSize = 12f
-                    minWidth = 60
-                    setBackgroundColor(0xFF8B0000.toInt())
-                    setTextColor(0xFFFFFFFF.toInt())
-                    setOnClickListener {
-                        removeModel(i)
-                        showModelPanel()
-                    }
+                addView(ThemeManager.makeDangerButton(this@MainActivity, "X") {
+                    removeModel(i)
+                    showModelPanel()
+                }.apply {
+                    textSize = ThemeManager.TEXT_CAPTION
+                    minimumWidth = ThemeManager.dp(this@MainActivity, 48)
+                    val blp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    blp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, 0, 0)
+                    layoutParams = blp
                 })
             })
         }
@@ -2457,15 +2486,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             val model = placedModels[selectedModelIndex]
 
             // Anchor status
-            layout.addView(makeSpacer(8))
+            layout.addView(makeSpacer(ThemeManager.SP_8))
             layout.addView(TextView(this).apply {
                 text = if (model.isAnchored) "Anchored to floor" else "Free-floating"
-                textSize = 12f
-                setTextColor(if (model.isAnchored) 0xFF4CAF50.toInt() else 0xFFFF9800.toInt())
+                textSize = ThemeManager.TEXT_CAPTION
+                setTextColor(if (model.isAnchored) ThemeManager.GREEN else ThemeManager.GOLD_WARM)
                 gravity = Gravity.CENTER
             })
 
-            layout.addView(makeSpacer(16))
+            layout.addView(makeSpacer(ThemeManager.SP_16))
             layout.addView(makeSectionLabel("Model Size"))
             layout.addView(makeModelScaleSlider(model))
             layout.addView(makeButtonRow(
@@ -2494,7 +2523,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Jetpack XR alpha SDK's setMaterialOverride crashes the native renderer.
             // This will be enabled when we move to UNMANAGED mode with direct OpenXR rendering.
 
-            layout.addView(makeSpacer(12))
+            layout.addView(makeSpacer(ThemeManager.SP_12))
             layout.addView(makeButtonRow(
                 "Reset Position" to {
                     placedModels.getOrNull(selectedModelIndex)?.let {
@@ -2512,23 +2541,25 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
 
         // Lock hands toggle — put controllers down and walk around
-        layout.addView(makeSpacer(16))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
         layout.addView(makeSectionLabel("Hands"))
         val lockBtn = Button(this).apply {
             text = if (modelHandsLocked) "Unlock Hands (controllers active)" else "Lock Hands (walk around mode)"
-            textSize = 16f
-            minHeight = 72
-            setBackgroundColor(if (modelHandsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
-            setPadding(20, 16, 20, 16)
+            textSize = ThemeManager.TEXT_BODY
+            isAllCaps = false
+            minHeight = ThemeManager.dp(this@MainActivity, 48)
+            background = if (modelHandsLocked) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+            setTextColor(if (modelHandsLocked) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
+            setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_16), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
             val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            lp.setMargins(4, 4, 4, 4)
+            lp.setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
             layoutParams = lp
         }
         lockBtn.setOnClickListener {
             modelHandsLocked = !modelHandsLocked
             lockBtn.text = if (modelHandsLocked) "Unlock Hands (controllers active)" else "Lock Hands (walk around mode)"
-            lockBtn.setBackgroundColor(if (modelHandsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+            lockBtn.background = if (modelHandsLocked) ThemeManager.roundedBg(ThemeManager.PINK_HOT, ThemeManager.R_FULL) else ThemeManager.roundedBg(ThemeManager.BG_SURFACE, ThemeManager.R_FULL, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+            lockBtn.setTextColor(if (modelHandsLocked) android.graphics.Color.WHITE else ThemeManager.TEXT_DIM)
             // Hide panel so user can walk around freely
             if (modelHandsLocked) {
                 menuVisible = false
@@ -2537,31 +2568,46 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
         layout.addView(lockBtn)
 
-        layout.addView(makeSpacer(16))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
 
-        // Action buttons
-        layout.addView(makeButtonRow(
-            "Add Model" to {
-                menuVisible = false
-                setPanelVisible(false)
-                showFilePicker()
-            },
-            "Clear All" to {
-                clearAllModels()
-                showFilePicker()
-            }
-        ))
+        // Action buttons — using ThemeManager factory buttons
+        val addBtn = ThemeManager.makePrimaryButton(this, "Add Model") {
+            menuVisible = false
+            setPanelVisible(false)
+            showFilePicker()
+        }
+        val clearBtn = ThemeManager.makeDangerButton(this, "Clear All") {
+            clearAllModels()
+            showFilePicker()
+        }
+        layout.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            addView(addBtn.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
+                }
+            })
+            addView(clearBtn.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
+                }
+            })
+        })
 
-        layout.addView(makeSpacer(8))
-        layout.addView(makeButtonRow(
-            "Back to Files" to {
-                clearAllModels()
-                showFilePicker()
+        layout.addView(makeSpacer(ThemeManager.SP_8))
+        val backBtn = ThemeManager.makeSecondaryButton(this, "Back to Files") {
+            clearAllModels()
+            showFilePicker()
+        }
+        layout.addView(backBtn.apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                setMargins(ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0)
             }
-        ))
+        })
 
         // Instructions
-        layout.addView(makeSpacer(16))
+        layout.addView(makeSpacer(ThemeManager.SP_16))
         layout.addView(TextView(this).apply {
             text = "Controls:\n" +
                     "  Grip = Move model (follows your hand)\n" +
@@ -2574,9 +2620,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     "  A = Play/stop animation\n" +
                     "  Menu = This panel\n" +
                     "\nAll controls affect the MODEL only, never the room/floor."
-            textSize = 12f
-            setTextColor(0xFF666666.toInt())
-            setPadding(0, 8, 0, 0)
+            textSize = ThemeManager.TEXT_CAPTION
+            setTextColor(ThemeManager.TEXT_DIM)
+            setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_8), 0, 0)
         })
 
         scrollView.addView(layout)
@@ -2633,8 +2679,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val scaleValue = (model.scale * 100).toInt()
         val valueLabel = TextView(this).apply {
             text = "Size: $scaleValue  (${String.format("%.2f", model.scale)}x)"
-            textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            textSize = ThemeManager.TEXT_LABEL
+            setTextColor(ThemeManager.TEXT_MID)
             gravity = Gravity.CENTER
         }
         val min = 10
@@ -2646,14 +2692,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
-            params.setMargins(0, 2, 0, 2)
+            params.setMargins(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_2))
             layoutParams = params
 
             addView(valueLabel)
             addView(SeekBar(this@MainActivity).apply {
                 this.max = range
                 progress = (scaleValue - min).coerceIn(0, range)
-                setPadding(0, 4, 0, 4)
+                setPadding(0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4), 0, ThemeManager.dp(this@MainActivity, ThemeManager.SP_4))
                 setOnTouchListener { v, _ -> v.parent?.requestDisallowInterceptTouchEvent(true); false }
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -2801,13 +2847,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun showImageOnSurface(file: File) {
-        android.util.Log.d("ChloeVR", "showImageOnSurface: ${file.name}")
         lifecycleScope.launch(Dispatchers.IO) {
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
-            android.util.Log.d("ChloeVR", "Image bounds: ${opts.outWidth}x${opts.outHeight}")
             if (opts.outWidth <= 0 || opts.outHeight <= 0) {
-                android.util.Log.e("ChloeVR", "Invalid image bounds")
+                android.util.Log.e("ChloeVR", "Invalid image bounds for ${file.name}")
                 return@launch
             }
 
@@ -2828,7 +2872,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 android.util.Log.e("ChloeVR", "Bitmap decode null: ${file.absolutePath}")
                 return@launch
             }
-            android.util.Log.d("ChloeVR", "Decoded: ${bitmap.width}x${bitmap.height} config=${bitmap.config}")
 
             withContext(Dispatchers.Main) {
                 val entity = surfaceEntity
@@ -2838,16 +2881,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     return@withContext
                 }
                 val surface = entity.getSurface()
-                android.util.Log.d("ChloeVR", "Surface valid=${surface.isValid}")
                 if (!surface.isValid) {
                     bitmap.recycle()
                     return@withContext
                 }
-                // Set surface buffer size to match image (default is 1x1)
                 OpenXRInput.nativeSetSurfaceSize(surface, bitmap.width, bitmap.height)
-                android.util.Log.d("ChloeVR", "Surface buffer resized to ${bitmap.width}x${bitmap.height}")
                 try {
                     renderBitmapGL(bitmap, surface)
+                    android.util.Log.i("ChloeVR", "Image displayed: ${file.name} ${bitmap.width}x${bitmap.height}")
                 } catch (e: Exception) {
                     android.util.Log.e("ChloeVR", "Image render failed", e)
                 } finally {
@@ -2858,21 +2899,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun renderBitmapGL(bitmap: android.graphics.Bitmap, surface: android.view.Surface) {
-        val TAG = "ChloeVR"
-
         // EGL setup
         val eglDisplay = android.opengl.EGL14.eglGetDisplay(android.opengl.EGL14.EGL_DEFAULT_DISPLAY)
         if (eglDisplay == android.opengl.EGL14.EGL_NO_DISPLAY) {
-            android.util.Log.e(TAG, "eglGetDisplay failed")
+            android.util.Log.e("ChloeVR", "eglGetDisplay failed")
             return
         }
         val major = IntArray(1)
         val minor = IntArray(1)
         if (!android.opengl.EGL14.eglInitialize(eglDisplay, major, 0, minor, 0)) {
-            android.util.Log.e(TAG, "eglInitialize failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
+            android.util.Log.e("ChloeVR", "eglInitialize failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
             return
         }
-        android.util.Log.d(TAG, "EGL initialized: ${major[0]}.${minor[0]}")
 
         val configAttribs = intArrayOf(
             android.opengl.EGL14.EGL_RED_SIZE, 8,
@@ -2887,26 +2925,24 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val numConfigs = IntArray(1)
         android.opengl.EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
         if (numConfigs[0] == 0 || configs[0] == null) {
-            android.util.Log.e(TAG, "eglChooseConfig: no configs found")
+            android.util.Log.e("ChloeVR", "eglChooseConfig: no configs found")
             android.opengl.EGL14.eglTerminate(eglDisplay)
             return
         }
         val eglConfig = configs[0]!!
-        android.util.Log.d(TAG, "EGL config chosen")
 
         val contextAttribs = intArrayOf(android.opengl.EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, android.opengl.EGL14.EGL_NONE)
         val eglContext = android.opengl.EGL14.eglCreateContext(eglDisplay, eglConfig, android.opengl.EGL14.EGL_NO_CONTEXT, contextAttribs, 0)
         if (eglContext == android.opengl.EGL14.EGL_NO_CONTEXT) {
-            android.util.Log.e(TAG, "eglCreateContext failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
+            android.util.Log.e("ChloeVR", "eglCreateContext failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
             android.opengl.EGL14.eglTerminate(eglDisplay)
             return
         }
-        android.util.Log.d(TAG, "EGL context created")
 
         val surfaceAttribs = intArrayOf(android.opengl.EGL14.EGL_NONE)
         val eglSurface = android.opengl.EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, surfaceAttribs, 0)
         if (eglSurface == android.opengl.EGL14.EGL_NO_SURFACE) {
-            android.util.Log.e(TAG, "eglCreateWindowSurface failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
+            android.util.Log.e("ChloeVR", "eglCreateWindowSurface failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
             android.opengl.EGL14.eglDestroyContext(eglDisplay, eglContext)
             android.opengl.EGL14.eglTerminate(eglDisplay)
             return
@@ -2917,10 +2953,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val sh = IntArray(1)
         android.opengl.EGL14.eglQuerySurface(eglDisplay, eglSurface, android.opengl.EGL14.EGL_WIDTH, sw, 0)
         android.opengl.EGL14.eglQuerySurface(eglDisplay, eglSurface, android.opengl.EGL14.EGL_HEIGHT, sh, 0)
-        android.util.Log.d(TAG, "EGL surface: ${sw[0]}x${sh[0]}")
 
         if (!android.opengl.EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
-            android.util.Log.e(TAG, "eglMakeCurrent failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
+            android.util.Log.e("ChloeVR", "eglMakeCurrent failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
             android.opengl.EGL14.eglDestroySurface(eglDisplay, eglSurface)
             android.opengl.EGL14.eglDestroyContext(eglDisplay, eglContext)
             android.opengl.EGL14.eglTerminate(eglDisplay)
@@ -2929,7 +2964,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         // Set viewport to actual surface size
         android.opengl.GLES20.glViewport(0, 0, sw[0], sh[0])
-        android.util.Log.d(TAG, "Viewport set to ${sw[0]}x${sh[0]}")
 
         // Upload bitmap as texture
         val texIds = IntArray(1)
@@ -2940,8 +2974,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         android.opengl.GLES20.glTexParameteri(android.opengl.GLES20.GL_TEXTURE_2D, android.opengl.GLES20.GL_TEXTURE_WRAP_S, android.opengl.GLES20.GL_CLAMP_TO_EDGE)
         android.opengl.GLES20.glTexParameteri(android.opengl.GLES20.GL_TEXTURE_2D, android.opengl.GLES20.GL_TEXTURE_WRAP_T, android.opengl.GLES20.GL_CLAMP_TO_EDGE)
         android.opengl.GLUtils.texImage2D(android.opengl.GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-        val glErr = android.opengl.GLES20.glGetError()
-        android.util.Log.d(TAG, "Texture uploaded, texId=${texIds[0]}, glError=0x${Integer.toHexString(glErr)}")
 
         // Compile shaders
         val vs = "attribute vec4 aPos; attribute vec2 aUV; varying vec2 vUV; void main() { gl_Position = aPos; vUV = aUV; }"
@@ -2969,7 +3001,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val vsStatus = IntArray(1)
         android.opengl.GLES20.glGetShaderiv(vShader, android.opengl.GLES20.GL_COMPILE_STATUS, vsStatus, 0)
         if (vsStatus[0] == 0) {
-            android.util.Log.e(TAG, "Vertex shader error: ${android.opengl.GLES20.glGetShaderInfoLog(vShader)}")
+            android.util.Log.e("ChloeVR", "Vertex shader error: ${android.opengl.GLES20.glGetShaderInfoLog(vShader)}")
         }
 
         val fShader = android.opengl.GLES20.glCreateShader(android.opengl.GLES20.GL_FRAGMENT_SHADER)
@@ -2978,7 +3010,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val fsStatus = IntArray(1)
         android.opengl.GLES20.glGetShaderiv(fShader, android.opengl.GLES20.GL_COMPILE_STATUS, fsStatus, 0)
         if (fsStatus[0] == 0) {
-            android.util.Log.e(TAG, "Fragment shader error: ${android.opengl.GLES20.glGetShaderInfoLog(fShader)}")
+            android.util.Log.e("ChloeVR", "Fragment shader error: ${android.opengl.GLES20.glGetShaderInfoLog(fShader)}")
         }
 
         val program = android.opengl.GLES20.glCreateProgram()
@@ -2988,10 +3020,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val linkStatus = IntArray(1)
         android.opengl.GLES20.glGetProgramiv(program, android.opengl.GLES20.GL_LINK_STATUS, linkStatus, 0)
         if (linkStatus[0] == 0) {
-            android.util.Log.e(TAG, "Program link error: ${android.opengl.GLES20.glGetProgramInfoLog(program)}")
+            android.util.Log.e("ChloeVR", "Program link error: ${android.opengl.GLES20.glGetProgramInfoLog(program)}")
         }
         android.opengl.GLES20.glUseProgram(program)
-        android.util.Log.d(TAG, "Shader program ready: vs=${vsStatus[0]} fs=${fsStatus[0]} link=${linkStatus[0]}")
 
         // Set chroma key uniforms
         android.opengl.GLES20.glUniform3f(
@@ -3024,7 +3055,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         val aPosLoc = android.opengl.GLES20.glGetAttribLocation(program, "aPos")
         val aUVLoc = android.opengl.GLES20.glGetAttribLocation(program, "aUV")
-        android.util.Log.d(TAG, "Attrib locations: aPos=$aPosLoc aUV=$aUVLoc")
         android.opengl.GLES20.glEnableVertexAttribArray(aPosLoc)
         android.opengl.GLES20.glVertexAttribPointer(aPosLoc, 2, android.opengl.GLES20.GL_FLOAT, false, 16, buf)
         buf.position(2)
@@ -3038,13 +3068,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         android.opengl.GLES20.glClear(android.opengl.GLES20.GL_COLOR_BUFFER_BIT)
         android.opengl.GLES20.glDrawArrays(android.opengl.GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-        val drawErr = android.opengl.GLES20.glGetError()
-        android.util.Log.d(TAG, "Draw complete, glError=0x${Integer.toHexString(drawErr)}")
-
         if (!android.opengl.EGL14.eglSwapBuffers(eglDisplay, eglSurface)) {
-            android.util.Log.e(TAG, "eglSwapBuffers failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
-        } else {
-            android.util.Log.d(TAG, "eglSwapBuffers OK - image should be visible")
+            android.util.Log.e("ChloeVR", "eglSwapBuffers failed: 0x${Integer.toHexString(android.opengl.EGL14.eglGetError())}")
         }
 
         // Cleanup
@@ -3056,7 +3081,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         android.opengl.EGL14.eglDestroySurface(eglDisplay, eglSurface)
         android.opengl.EGL14.eglDestroyContext(eglDisplay, eglContext)
         android.opengl.EGL14.eglTerminate(eglDisplay)
-        android.util.Log.d(TAG, "EGL cleanup done")
     }
 
     private fun restartCurrentVideo() {
@@ -3073,10 +3097,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val useDeoAlphaPacking = metadata.hasAlpha && supportsDeoAlpha(metadata.screenType)
         currentDeoAlphaActive = useDeoAlphaPacking
         setAlphaPassthroughEnabled(useDeoAlphaPacking || chromaKeyState.enabled)
+        val surface = surfaceEntity?.getSurface() ?: run {
+            android.util.Log.e("ChloeVR", "restartVideoWithCurrentEffects: surfaceEntity is null, cannot restart")
+            return
+        }
         videoPlayer?.release()
         videoPlayer = VideoPlayer(this).also {
             it.start(
-                file, surfaceEntity!!.getSurface(),
+                file, surface,
                 useDeoAlphaPacking = useDeoAlphaPacking,
                 chromaKeyState = chromaKeyState,
                 colorGradingState = colorGradingState,
@@ -3091,7 +3119,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun playFile(file: File) {
         val session = xrSession ?: run {
-            showMessage("XR session not available")
+            showMessage("Cannot play — XR session is not available. Try restarting the app.")
             return
         }
 
@@ -3175,9 +3203,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 else -> 0
             }
 
+            val surface = surfaceEntity?.getSurface() ?: run {
+                android.util.Log.e("ChloeVR", "playFile: surfaceEntity is null, cannot play")
+                showMessage("Cannot start playback — display surface unavailable. Try restarting.")
+                return
+            }
             videoPlayer = VideoPlayer(this).also {
+                it.onError = { msg -> runOnUiThread { showMessage(msg) } }
                 it.start(
-                    file, surfaceEntity!!.getSurface(),
+                    file, surface,
                     useDeoAlphaPacking = useDeoAlphaPacking,
                     chromaKeyState = chromaKeyState,
                     colorGradingState = colorGradingState,
@@ -3242,8 +3276,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
-                    // Model mode: just consume the event so Android doesn't minimize.
-                    // The actual B button logic is handled by onControllerState via OpenXR.
+                    // Model mode: consume the event so Android doesn't minimize.
+                    // B button is handled in onControllerState for both model and video modes.
                     if (modelMode) return true
                     if (isPlaying) {
                         if (menuVisible) {
@@ -3417,17 +3451,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             val infoView = TextView(this).apply {
                 text = infoText
-                textSize = 14f
-                setTextColor(0xFFCCCCCC.toInt())
-                setBackgroundColor(0xAA000000.toInt())
-                setPadding(24, 12, 24, 12)
+                textSize = ThemeManager.TEXT_CAPTION
+                setTextColor(ThemeManager.TEXT_MID)
+                background = ThemeManager.roundedBg(ThemeManager.BG_GLASS, ThemeManager.R_8, ThemeManager.BORDER_SOFT, ThemeManager.dp(this@MainActivity, 1))
+                setPadding(ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12), ThemeManager.dp(this@MainActivity, ThemeManager.SP_24), ThemeManager.dp(this@MainActivity, ThemeManager.SP_12))
                 gravity = Gravity.CENTER
                 val lp = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     FrameLayout.LayoutParams.WRAP_CONTENT,
                     Gravity.TOP or Gravity.CENTER_HORIZONTAL
                 )
-                lp.topMargin = 32
+                lp.topMargin = ThemeManager.dp(this@MainActivity, ThemeManager.SP_32)
                 layoutParams = lp
             }
             frame.addView(infoView)
@@ -3833,32 +3867,40 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                              else null
 
         if (grabbing && grabHandPos != null) {
-            // Screen follows hand 1:1 in 3D — like grabbing a TV and placing it anywhere
+            // Laser-lock grab: screen locks to laser direction, follows aim like ShapesXR
             isTriggerZooming = false
 
-            val rollRot = if (grabAimValid && grabAimRot != null) grabAimRot!!
+            val aimRotSnap = grabAimRot
+            val rollRot = if (grabAimValid && aimRotSnap != null) aimRotSnap
                           else (if (rightGrab) input.rightHandRot else input.leftHandRot)
 
             if (!isGrabbing) {
                 isGrabbing = true
                 grabStartAimRot = rollRot.copyOf()
                 grabStartScreenRoll = screenRoll
+                grabStartScreenYaw = screenYaw
+                grabStartScreenPitch = screenPitch
                 grabStartScreenX = screenX
                 grabStartScreenY = screenY
                 grabStartScreenZ = screenZ
                 grabStartHandPos = grabHandPos.copyOf()
+                // Compute distance from hand to screen for laser lock
+                val dx0 = screenX - grabHandPos[0]
+                val dy0 = screenY - grabHandPos[1]
+                val dz0 = screenZ - grabHandPos[2]
+                grabLockDistance = kotlin.math.sqrt(dx0*dx0 + dy0*dy0 + dz0*dz0).coerceAtLeast(0.5f)
             } else {
-                // Hand delta drives screen position 1:1
-                val dX = grabHandPos[0] - grabStartHandPos[0]
-                val dY = grabHandPos[1] - grabStartHandPos[1]
-                val dZ = grabHandPos[2] - grabStartHandPos[2]
-
                 if (currentScreenType == ScreenType.FLAT) {
-                    screenX = grabStartScreenX + dX
-                    screenY = grabStartScreenY + dY
-                    screenZ = grabStartScreenZ + dZ
+                    // FLAT screens (images + flat video): laser-lock placement
+                    // Screen position = hand + aim direction * lock distance
+                    val aimFwd = quatForward(rollRot)
+                    screenX = grabHandPos[0] + aimFwd[0] * grabLockDistance
+                    screenY = grabHandPos[1] + aimFwd[1] * grabLockDistance
+                    screenZ = grabHandPos[2] + aimFwd[2] * grabLockDistance
                 } else {
                     // Immersive: map hand delta to yaw/pitch
+                    val dX = grabHandPos[0] - grabStartHandPos[0]
+                    val dY = grabHandPos[1] - grabStartHandPos[1]
                     val smooth = 0.5f
                     val targetYaw = grabStartScreenYaw - dX * 120f
                     val targetPitch = grabStartScreenPitch + dY * 120f
@@ -3866,22 +3908,25 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                     screenPitch += (targetPitch - screenPitch) * smooth
                 }
 
-                // Thumbstick fwd/back while grabbing = push/pull
+                // Thumbstick fwd/back while grabbing = push/pull distance
                 val grabThumbY = if (rightGrab) input.rightThumbY
                                  else if (leftGrab) input.leftThumbY else 0f
                 if (kotlin.math.abs(grabThumbY) > 0.15f) {
-                    // Push along the direction from head to screen
-                    val toScreenX = screenX; val toScreenY = screenY; val toScreenZ = screenZ
-                    val dist = kotlin.math.sqrt(toScreenX*toScreenX + toScreenY*toScreenY + toScreenZ*toScreenZ).coerceAtLeast(0.1f)
-                    val nx = toScreenX / dist; val ny = toScreenY / dist; val nz = toScreenZ / dist
-                    val push = grabThumbY * 0.15f
-                    screenX += nx * push
-                    screenY += ny * push
-                    screenZ += nz * push
-                    // Update grab start so it doesn't snap back
-                    grabStartScreenX = screenX - dX
-                    grabStartScreenY = screenY - dY
-                    grabStartScreenZ = screenZ - dZ
+                    if (currentScreenType == ScreenType.FLAT) {
+                        // Adjust lock distance (push/pull along laser)
+                        grabLockDistance = (grabLockDistance + grabThumbY * 0.15f).coerceIn(0.5f, 30f)
+                    } else {
+                        val dX = grabHandPos[0] - grabStartHandPos[0]
+                        val dY = grabHandPos[1] - grabStartHandPos[1]
+                        val dZ = grabHandPos[2] - grabStartHandPos[2]
+                        val toScreenX = screenX; val toScreenY = screenY; val toScreenZ = screenZ
+                        val dist = kotlin.math.sqrt(toScreenX*toScreenX + toScreenY*toScreenY + toScreenZ*toScreenZ).coerceAtLeast(0.1f)
+                        val nx = toScreenX / dist; val ny = toScreenY / dist; val nz = toScreenZ / dist
+                        val push = grabThumbY * 0.15f
+                        screenX += nx * push
+                        screenY += ny * push
+                        screenZ += nz * push
+                    }
                 }
 
                 // Thumbstick L/R while grabbing = scale
@@ -4000,6 +4045,17 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
         lastYState = input.yButton
 
+        // B button → toggle scrub bar / hide menu (video playback mode)
+        if (input.bButton && !lastBState) {
+            runOnUiThread {
+                if (menuVisible) {
+                    menuVisible = false
+                    setPanelVisible(false)
+                } else {
+                    toggleScrubBar()
+                }
+            }
+        }
         lastBState = input.bButton
     }
 
@@ -4019,6 +4075,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         resumeSaveJob = null
         spatialAudio.release()
         clearAllModels()
+        crosshairEntity?.dispose()
+        crosshairEntity = null
         openXRInput?.stop()
         openXRInput = null
         stopPlayback()
@@ -4030,8 +4088,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private fun showMessage(text: String) {
         setContentView(TextView(this).apply {
             this.text = text
-            textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
+            textSize = ThemeManager.TEXT_BODY
+            setTextColor(ThemeManager.TEXT_BRIGHT)
+            setBackgroundColor(ThemeManager.BG_VOID)
             gravity = Gravity.CENTER
         })
     }

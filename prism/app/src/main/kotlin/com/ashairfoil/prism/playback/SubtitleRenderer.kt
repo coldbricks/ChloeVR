@@ -11,7 +11,8 @@ import android.widget.FrameLayout
 import android.widget.TextView
 import java.io.BufferedReader
 import java.io.File
-import java.io.FileReader
+import java.io.FileInputStream
+import java.io.InputStreamReader
 import java.util.regex.Pattern
 
 /**
@@ -102,7 +103,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
             }
         }
 
-        Log.d(TAG, "No subtitle files found for ${videoFile.name}")
+        Log.i(TAG, "No subtitle files found for ${videoFile.name}")
         return false
     }
 
@@ -142,7 +143,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
     private fun parseSrt(file: File): List<SubtitleCue> {
         val result = mutableListOf<SubtitleCue>()
         try {
-            BufferedReader(FileReader(file)).use { reader ->
+            BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8)).use { reader ->
                 var line: String?
                 var state = 0 // 0=index, 1=timing, 2=text
                 var startMs = 0L
@@ -181,7 +182,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
                                 if (textLines.isNotEmpty()) {
                                     val text = textLines.joinToString("\n")
                                         .replace(Regex("<[^>]+>"), "") // Strip HTML tags
-                                        .replace("{\\an\\d}", "")     // Strip ASS alignment
+                                        .replace(Regex("\\{[^}]*\\}"), "") // Strip ASS override tags
                                         .trim()
                                     if (text.isNotEmpty()) {
                                         result.add(SubtitleCue(startMs, endMs, text))
@@ -223,7 +224,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
     private fun parseAss(file: File): List<SubtitleCue> {
         val result = mutableListOf<SubtitleCue>()
         try {
-            BufferedReader(FileReader(file)).use { reader ->
+            BufferedReader(InputStreamReader(FileInputStream(file), Charsets.UTF_8)).use { reader ->
                 var line: String?
                 var inEvents = false
                 var formatFields: List<String> = emptyList()

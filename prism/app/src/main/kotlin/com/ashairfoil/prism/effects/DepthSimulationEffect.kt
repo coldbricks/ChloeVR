@@ -74,6 +74,7 @@ class DepthSimulation {
      * Compute the depth-adjusted position offset based on current head position.
      * Returns the SurfaceEntity translation adjustment in XR space.
      */
+    @Synchronized
     fun compute(headX: Float, headY: Float, headZ: Float): DepthAdjustment {
         if (!enabled || !isCalibrated) {
             return DepthAdjustment(0f, 0f, 1f)

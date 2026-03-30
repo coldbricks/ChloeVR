@@ -70,6 +70,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private val scratchGizmoPos = FloatArray(3)
     private val scratchGizmoRot = FloatArray(4)
 
+    // Pre-allocated scratch buffers for grab path (avoids per-frame floatArrayOf)
+    private val scratchGrabHandPos = FloatArray(3)
+    private val scratchGrabAimRot = FloatArray(4)
+    private val scratchGrabFwd = FloatArray(3)
+    private val scratchWorldOff = FloatArray(3)
+    private val scratchInvAim = FloatArray(4)
+    // Pre-allocated corner buffers for beat drag (avoids per-trigger-frame alloc)
+    private val beatCornerBuf = Array(8) { FloatArray(2) }
+    private var beatCornerCount = 0
+
     // Panel drag
     var draggingPanel = false
     private var panelGrabDist = 1.0f
@@ -509,23 +519,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                             if (beatDragCorner < 0) {
                                                 // Box A corners: 0-3, body: 4
                                                 // Box B corners: 5-8, body: 9
-                                                val corners = mutableListOf(
-                                                    floatArrayOf(reactor.boxLeft, dispBoxTop),   // 0
-                                                    floatArrayOf(reactor.boxRight, dispBoxTop),  // 1
-                                                    floatArrayOf(reactor.boxLeft, dispBoxBot),   // 2
-                                                    floatArrayOf(reactor.boxRight, dispBoxBot)   // 3
-                                                )
+                                                // Use pre-allocated corner buffers
+                                                beatCornerBuf[0][0] = reactor.boxLeft;  beatCornerBuf[0][1] = dispBoxTop   // 0
+                                                beatCornerBuf[1][0] = reactor.boxRight; beatCornerBuf[1][1] = dispBoxTop   // 1
+                                                beatCornerBuf[2][0] = reactor.boxLeft;  beatCornerBuf[2][1] = dispBoxBot   // 2
+                                                beatCornerBuf[3][0] = reactor.boxRight; beatCornerBuf[3][1] = dispBoxBot   // 3
+                                                beatCornerCount = 4
                                                 if (hasSplit) {
-                                                    corners.add(floatArrayOf(reactor.box2Left, disp2Top))   // 4+1=5
-                                                    corners.add(floatArrayOf(reactor.box2Right, disp2Top))  // 6
-                                                    corners.add(floatArrayOf(reactor.box2Left, disp2Bot))   // 7
-                                                    corners.add(floatArrayOf(reactor.box2Right, disp2Bot))  // 8
+                                                    beatCornerBuf[4][0] = reactor.box2Left;  beatCornerBuf[4][1] = disp2Top  // 5
+                                                    beatCornerBuf[5][0] = reactor.box2Right; beatCornerBuf[5][1] = disp2Top  // 6
+                                                    beatCornerBuf[6][0] = reactor.box2Left;  beatCornerBuf[6][1] = disp2Bot  // 7
+                                                    beatCornerBuf[7][0] = reactor.box2Right; beatCornerBuf[7][1] = disp2Bot  // 8
+                                                    beatCornerCount = 8
                                                 }
                                                 var minDist = Float.MAX_VALUE
                                                 var nearestCorner = -1
-                                                for (ci in corners.indices) {
-                                                    val d = (normX - corners[ci][0]) * (normX - corners[ci][0]) +
-                                                            (screenY - corners[ci][1]) * (screenY - corners[ci][1])
+                                                for (ci in 0 until beatCornerCount) {
+                                                    val d = (normX - beatCornerBuf[ci][0]) * (normX - beatCornerBuf[ci][0]) +
+                                                            (screenY - beatCornerBuf[ci][1]) * (screenY - beatCornerBuf[ci][1])
                                                     if (d < minDist) { minDist = d; nearestCorner = ci }
                                                 }
                                                 beatDragCorner = if (minDist < 0.015f) {
@@ -831,8 +842,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
             val rightGripForGizmo = rightSqueeze > 0.5f
             if (gizmoDragging) {
                 if (rightGripForGizmo && selModel != null) {
-                    val worldAxis = renderer.getGizmoWorldAxis(gizmoDragAxis,
-                        floatArrayOf(selModel.rotX, selModel.rotY, selModel.rotZ, selModel.rotW))
+                    scratchGizmoRot[0] = selModel.rotX; scratchGizmoRot[1] = selModel.rotY; scratchGizmoRot[2] = selModel.rotZ; scratchGizmoRot[3] = selModel.rotW
+                    val worldAxis = renderer.getGizmoWorldAxis(gizmoDragAxis, scratchGizmoRot)
                     val dx = rightHandPosX - gizmoDragStartHandPos[0]
                     val dy = rightHandPosY - gizmoDragStartHandPos[1]
                     val dz = rightHandPosZ - gizmoDragStartHandPos[2]
@@ -881,6 +892,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     val sid = activity.audioPlayer?.audioSessionId ?: 0
                                     if (reactor != null && sid != 0) reactor.restart(sid)
                                     activity.uiNeedsRefresh = true
+                                }
+                                // Surface audio errors to user
+                                activity.audioPlayer?.onError = { msg ->
+                                    activity.runOnUiThread { activity.sceneManager.showMessage(msg) }
                                 }
                             }
                             activity.audioPlayer?.playFromPlaylist(files, fileIndex)
@@ -1198,6 +1213,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val dz = model.posZ - activity.camPosZ
                     val dist = kotlin.math.sqrt(dx * dx + dz * dz).coerceAtLeast(0.1f)
                     val speed = 8f
+                    synchronized(activity.sceneManager.yeetingModelsLock) {
                     yeetingModels.add(SceneManager.YeetingModel(
                         gpuModelId = model.gpuModelId,
                         posX = model.posX, posY = model.posY, posZ = model.posZ,
@@ -1206,6 +1222,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         velZ = (dz / dist) * speed + (Math.random().toFloat() - 0.5f) * 2f,
                         scale = model.scale
                     ))
+                    }
                     models.removeAt(selectedModelIndex)
                     selectedModelIndex = if (models.isNotEmpty()) 0 else -1
                     activity.uiNeedsRefresh = true
@@ -1770,14 +1787,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
         if (selectedModelIndex !in models.indices) return
         val selected = models[selectedModelIndex]
 
-        val grabHandPos = when {
-            rightGripHeld -> floatArrayOf(rightHandPosX, rightHandPosY, rightHandPosZ)
-            leftGripHeld -> floatArrayOf(leftHandPosX, leftHandPosY, leftHandPosZ)
+        // Use pre-allocated scratch buffers instead of per-frame floatArrayOf
+        val grabHandPos: FloatArray? = when {
+            rightGripHeld -> { scratchGrabHandPos[0] = rightHandPosX; scratchGrabHandPos[1] = rightHandPosY; scratchGrabHandPos[2] = rightHandPosZ; scratchGrabHandPos }
+            leftGripHeld -> { scratchGrabHandPos[0] = leftHandPosX; scratchGrabHandPos[1] = leftHandPosY; scratchGrabHandPos[2] = leftHandPosZ; scratchGrabHandPos }
             else -> null
         }
-        val grabAimRot = when {
-            rightGripHeld && rightAimValid -> floatArrayOf(rightAimRotX, rightAimRotY, rightAimRotZ, rightAimRotW)
-            leftGripHeld && leftAimValid -> floatArrayOf(leftAimRotX, leftAimRotY, leftAimRotZ, leftAimRotW)
+        val grabAimRot: FloatArray? = when {
+            rightGripHeld && rightAimValid -> { scratchGrabAimRot[0] = rightAimRotX; scratchGrabAimRot[1] = rightAimRotY; scratchGrabAimRot[2] = rightAimRotZ; scratchGrabAimRot[3] = rightAimRotW; scratchGrabAimRot }
+            leftGripHeld && leftAimValid -> { scratchGrabAimRot[0] = leftAimRotX; scratchGrabAimRot[1] = leftAimRotY; scratchGrabAimRot[2] = leftAimRotZ; scratchGrabAimRot[3] = leftAimRotW; scratchGrabAimRot }
             else -> null
         }
         val grabThumbX = when {
@@ -1794,7 +1812,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
         if (isGrabbing && grabHandPos != null && grabAimRot != null) {
             if (!grabbing) {
                 grabbing = true
-                val fwdInit = activity.glesRenderer?.quatForward(grabAimRot) ?: floatArrayOf(0f, 0f, -1f)
+                val fwdInit = activity.glesRenderer?.quatForward(grabAimRot)
+                if (fwdInit == null) { scratchGrabFwd[0] = 0f; scratchGrabFwd[1] = 0f; scratchGrabFwd[2] = -1f }
+                val fi = fwdInit ?: scratchGrabFwd
                 if (hitDistance > 0f) {
                     grabDistance = hitDistance
                 } else {
@@ -1804,17 +1824,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     grabDistance = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz)
                 }
                 if (grabDistance < 0.1f) grabDistance = 0.5f
-                val hitX = grabHandPos[0] + fwdInit[0] * grabDistance
-                val hitY = grabHandPos[1] + fwdInit[1] * grabDistance
-                val hitZ = grabHandPos[2] + fwdInit[2] * grabDistance
-                val worldOff = floatArrayOf(selected.posX - hitX, selected.posY - hitY, selected.posZ - hitZ)
-                val invAim = floatArrayOf(-grabAimRot[0], -grabAimRot[1], -grabAimRot[2], grabAimRot[3])
-                grabOffset = activity.glesRenderer?.rotateVecByQuat(worldOff, invAim) ?: worldOff
-                grabStartAimRot = grabAimRot.copyOf()
-                grabStartModelRot = floatArrayOf(selected.rotX, selected.rotY, selected.rotZ, selected.rotW)
+                val hitX = grabHandPos[0] + fi[0] * grabDistance
+                val hitY = grabHandPos[1] + fi[1] * grabDistance
+                val hitZ = grabHandPos[2] + fi[2] * grabDistance
+                scratchWorldOff[0] = selected.posX - hitX; scratchWorldOff[1] = selected.posY - hitY; scratchWorldOff[2] = selected.posZ - hitZ
+                scratchInvAim[0] = -grabAimRot[0]; scratchInvAim[1] = -grabAimRot[1]; scratchInvAim[2] = -grabAimRot[2]; scratchInvAim[3] = grabAimRot[3]
+                grabOffset = activity.glesRenderer?.rotateVecByQuat(scratchWorldOff, scratchInvAim) ?: scratchWorldOff.copyOf()
+                System.arraycopy(grabAimRot, 0, grabStartAimRot, 0, 4)
+                grabStartModelRot[0] = selected.rotX; grabStartModelRot[1] = selected.rotY; grabStartModelRot[2] = selected.rotZ; grabStartModelRot[3] = selected.rotW
             }
 
-            val fwd = activity.glesRenderer?.quatForward(grabAimRot) ?: floatArrayOf(0f, 0f, -1f)
+            val fwdResult = activity.glesRenderer?.quatForward(grabAimRot)
+            if (fwdResult == null) { scratchGrabFwd[0] = 0f; scratchGrabFwd[1] = 0f; scratchGrabFwd[2] = -1f }
+            val fwd = fwdResult ?: scratchGrabFwd
 
             if (kotlin.math.abs(grabThumbY) > STICK_DEADZONE) {
                 grabDistance += grabThumbY * 0.05f

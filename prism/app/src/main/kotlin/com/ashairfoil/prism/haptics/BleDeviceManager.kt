@@ -121,7 +121,7 @@ class BleDeviceManager(private val context: Context) {
     private var autoConnect = true
 
     // Known-device allowlist: only auto-connect to previously approved devices
-    private val knownDeviceAddresses = mutableSetOf<String>()
+    private val knownDeviceAddresses = java.util.concurrent.CopyOnWriteArraySet<String>()
 
     // Known Lovense service/characteristic UUID sets.
     // Older devices use Nordic UART; newer firmware uses Lovense-specific UUIDs.
@@ -185,7 +185,9 @@ class BleDeviceManager(private val context: Context) {
                 (name != null && (name.startsWith("LVS-") || name.contains("Lovense", ignoreCase = true)))
 
             val displayName = name ?: "Unknown-${device.address.takeLast(5)}"
-            android.util.Log.d(TAG, "Scan: $displayName rssi=${result.rssi} lovense=$isLovense uuids=$serviceUuids")
+            if (isLovense) {
+                android.util.Log.i(TAG, "Found Lovense device: $displayName rssi=${result.rssi}")
+            }
 
             val info = BleDeviceInfo(
                 name = displayName,
@@ -399,7 +401,7 @@ class BleDeviceManager(private val context: Context) {
             val now = System.currentTimeMillis()
             // Auto-clear writeInFlight if the BLE callback hasn't arrived
             // within 200ms.
-            if (writeInFlight && (now - lastWriteMs) > 200) {
+            if (writeInFlight && (now - lastWriteMs) > WRITE_TIMEOUT_MS) {
                 writeInFlight = false
             }
             if (writeInFlight || (now - lastWriteMs) < minWriteIntervalMs) {
@@ -546,5 +548,7 @@ class BleDeviceManager(private val context: Context) {
         /** CCCD descriptor UUID for enabling notifications. */
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val SCAN_TIMEOUT_MS = 15_000L
+        /** Auto-clear writeInFlight if BLE callback hasn't arrived within this window. */
+        private const val WRITE_TIMEOUT_MS = 200L
     }
 }

@@ -41,6 +41,9 @@ class AudioPlayer(private val context: Context) {
     /** Called when track changes (auto-advance or manual). Use to restart AudioReactor. */
     var onTrackChanged: ((File) -> Unit)? = null
 
+    /** Called when playback fails. Use to surface errors to the user. */
+    var onError: ((String) -> Unit)? = null
+
     // A/B loop (volatile: read from render thread, written from UI thread)
     @Volatile var loopA: Long = -1; private set
     @Volatile var loopB: Long = -1; private set
@@ -70,6 +73,11 @@ class AudioPlayer(private val context: Context) {
     }
 
     fun play(file: File) {
+        if (!file.exists()) {
+            Log.e(TAG, "File not found: ${file.absolutePath}")
+            onError?.invoke("Audio file not found: ${file.name}")
+            return
+        }
         // Remove listener BEFORE release to prevent stale STATE_ENDED cascade
         // (releasing ExoPlayer fires STATE_ENDED, which would queue playNext())
         playerListener?.let { player?.removeListener(it) }
@@ -97,6 +105,19 @@ class AudioPlayer(private val context: Context) {
                 }
                 // Clear seek guard when player reaches READY after a seek
                 if (state == Player.STATE_READY) loopSeekPending = false
+            }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                Log.e(TAG, "Playback error: ${error.message}", error)
+                val userMsg = when (error.errorCode) {
+                    androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                        "Audio file not found: ${file.name}"
+                    androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                    androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED ->
+                        "Cannot play — unsupported audio format"
+                    else ->
+                        "Audio error: ${error.message ?: "unknown"}"
+                }
+                onError?.invoke(userMsg)
             }
         }
         playerListener = listener

@@ -228,7 +228,7 @@ class FunscriptParser {
                 source = source,
             )
 
-            Log.d(TAG, "Parsed funscript: ${actions.size} actions, " +
+            Log.i(TAG, "Parsed funscript: ${actions.size} actions, " +
                     "duration=${funscript.durationMs}ms, source=$source")
             return funscript
         } catch (e: Exception) {

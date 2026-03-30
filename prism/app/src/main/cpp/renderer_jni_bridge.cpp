@@ -73,6 +73,9 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeWaitFrame(
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
 
+    jsize len = env->GetArrayLength(outFrameData);
+    if (len < 69) return JNI_FALSE;
+
     // Always call waitFrame — it pumps XR events even when session is paused.
     // Without this, STOPPING→IDLE→READY transitions are never received
     // and the app becomes invisible after minimize/restore.
@@ -106,6 +109,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollInput(
         JNIEnv* env, jobject thiz, jfloatArray outState) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outState);
+    if (len < ControllerState::SIZE) return JNI_FALSE;
     ControllerState state;
     if (!g_renderer->pollInput(state)) return JNI_FALSE;
     env->SetFloatArrayRegion(outState, 0, ControllerState::SIZE, state.data());
@@ -206,6 +211,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outData);
+    if (len < 41) return JNI_FALSE;
     XrRenderer::LightEstimate est;
     if (!g_renderer->pollLightEstimate(est)) return JNI_FALSE;
 
@@ -231,6 +238,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollHandTracking(
         JNIEnv* env, jobject thiz, jint hand, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outData);
+    if (len < XrRenderer::HandJointData::SIZE) return JNI_FALSE;
     XrRenderer::HandJointData hjd;
     if (!g_renderer->pollHandTracking(hand, hjd)) return JNI_FALSE;
 
@@ -261,6 +270,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollEyeTracking(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outData);
+    if (len < XrRenderer::EyeTrackingData::SIZE) return JNI_FALSE;
     XrRenderer::EyeTrackingData etd;
     if (!g_renderer->pollEyeTracking(etd)) return JNI_FALSE;
 
@@ -291,6 +302,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollFaceTracking(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outData);
+    if (len < XrRenderer::FaceTrackingData::SIZE) return JNI_FALSE;
     XrRenderer::FaceTrackingData ftd;
     if (!g_renderer->pollFaceTracking(ftd)) return JNI_FALSE;
 
@@ -311,7 +324,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
-    XrRenderer::PlaneData pd;
+    jsize len = env->GetArrayLength(outData);
+    if (len < XrRenderer::PlaneData::SIZE) return JNI_FALSE;
+    static thread_local XrRenderer::PlaneData pd;
+    memset(&pd, 0, sizeof(pd));
     if (!g_renderer->pollPlanes(pd)) return JNI_FALSE;
 
     // Pre-allocated scratch buffer — avoids per-frame heap allocation (~19KB)
@@ -352,6 +368,8 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPerfMetrics(
         JNIEnv* env, jobject thiz, jfloatArray outData) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_renderer) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outData);
+    if (len < XrRenderer::PerfMetrics::SIZE) return JNI_FALSE;
     XrRenderer::PerfMetrics pm;
     if (!g_renderer->pollPerfMetrics(pm)) return JNI_FALSE;
 

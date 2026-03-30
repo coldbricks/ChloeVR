@@ -38,6 +38,9 @@ class VideoPlayer(private val context: Context) {
      * and stereo adjustment must come last because it shifts UV coordinates per-eye within the
      * packed SBS/TB layout.
      */
+    /** Error callback — set by the hosting activity to surface playback errors to the user. */
+    var onError: ((String) -> Unit)? = null
+
     fun start(
         file: File,
         surface: Surface,
@@ -48,6 +51,12 @@ class VideoPlayer(private val context: Context) {
         stereoAdjustmentState: StereoAdjustmentState? = null
     ) {
         release()
+
+        if (!file.exists()) {
+            android.util.Log.e("ChloeVR-Video", "File not found: ${file.absolutePath}")
+            onError?.invoke("File not found: ${file.name}")
+            return
+        }
 
         // Pre-size the surface buffer so MediaCodec has a valid target.
         // SurfaceEntity defaults to tiny/zero buffer; without this, video frames are dropped.
@@ -113,6 +122,21 @@ class VideoPlayer(private val context: Context) {
                 }
                 override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                     android.util.Log.e("ChloeVR-Video", "Player error: ${error.message}", error)
+                    val userMsg = when (error.errorCode) {
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+                            "File not found: ${file.name}"
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+                            "Network error — check your connection"
+                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                        androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED ->
+                            "Cannot play this video — unsupported format"
+                        androidx.media3.common.PlaybackException.ERROR_CODE_IO_NO_PERMISSION ->
+                            "No permission to read this file"
+                        else ->
+                            "Playback error: ${error.message ?: "unknown"}"
+                    }
+                    onError?.invoke(userMsg)
                 }
                 override fun onRenderedFirstFrame() {
                     android.util.Log.i("ChloeVR-Video", "=== FIRST FRAME RENDERED ===")

@@ -187,7 +187,7 @@ class FilamentModelActivity : ComponentActivity() {
     internal var roomEditToggleLatch = false
     internal var selectedPlaneIndex = -1
     // Per-plane Y offset keyed by quantized centroid "x,z" (10cm grid)
-    internal val planeAdjustments = mutableMapOf<String, Float>()
+    internal val planeAdjustments = java.util.concurrent.ConcurrentHashMap<String, Float>()
 
     /** Quantize plane position to 10cm grid for stable matching across detection updates */
     internal fun planeKey(posX: Float, posZ: Float): String {
@@ -287,14 +287,14 @@ class FilamentModelActivity : ComponentActivity() {
                     availableGlbFiles = cached
                     Log.i(TAG, "Loaded ${cached.size} GLB files from cache")
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) { Log.w(TAG, "GLB cache read failed: ${e.message}") }
         }
         loadCachedAudioFiles()
         // Rescan in background and update cache
         Thread {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
             availableGlbFiles = glbFiles
-            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (_: Exception) {}
+            try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (e: Exception) { Log.w(TAG, "GLB cache write failed: ${e.message}") }
             Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated)")
         }.start()
 
@@ -796,6 +796,7 @@ class FilamentModelActivity : ComponentActivity() {
 
                             // ── Yeet animation: flying deleted models ──
                             val yeetDt = 1f / 72f
+                            synchronized(sceneManager.yeetingModelsLock) {
                             val yeetIter = yeetingModels.iterator()
                             while (yeetIter.hasNext()) {
                                 val ym = yeetIter.next()
@@ -834,6 +835,7 @@ class FilamentModelActivity : ComponentActivity() {
                                     yeetIter.remove()
                                 }
                             }
+                            } // synchronized(yeetingModelsLock)
 
                             // Shadow map (once, before both eyes)
                             gr.renderShadowMap()
@@ -852,12 +854,13 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             val ih = inputHandler  // local ref for render state
-                            val washActive = beatReactorEnabled && reactor != null && beatWashAlpha > 0.005f
+                            val reactorSnap = reactor
+                            val washActive = beatReactorEnabled && reactorSnap != null && beatWashAlpha > 0.005f
                             var washR = 0f; var washG = 0f; var washB = 0f; var washMode = 0
-                            if (washActive) {
-                                val wc = reactor!!.getBeatColor()
+                            if (washActive && reactorSnap != null) {
+                                val wc = reactorSnap.getBeatColor()
                                 washR = wc[0]; washG = wc[1]; washB = wc[2]
-                                washMode = reactor.blendMode.ordinal
+                                washMode = reactorSnap.blendMode.ordinal
                             }
 
                             // Sync room edit highlight
@@ -1018,7 +1021,7 @@ class FilamentModelActivity : ComponentActivity() {
                 availableAudioFiles = scanned
                 try {
                     getAudioCacheFile().writeText(scanned.joinToString("\n") { it.absolutePath })
-                } catch (_: Exception) {}
+                } catch (e: Exception) { Log.w(TAG, "Audio cache write failed: ${e.message}") }
                 Log.i(TAG, "Scanned ${scanned.size} audio files")
             } catch (e: Exception) {
                 Log.w(TAG, "Audio scan failed: ${e.message}")
@@ -1100,6 +1103,9 @@ class FilamentModelActivity : ComponentActivity() {
         Log.i(TAG, "onDestroy")
         running = false
 
+        // Stop A/B loop handler to prevent Runnable leak
+        stopLoopHandler()
+
         // Auto-save current scene for next launch
         if (models.isNotEmpty()) {
             try {
@@ -1124,6 +1130,7 @@ class FilamentModelActivity : ComponentActivity() {
         if (hmD != null && hmD.isDualMotor) hmD.setDualIntensity(0, 0)
         else hmD?.setIntensity(0)
         hapticManager?.disconnect()
+        hapticManager = null
         audioPlayer?.release(); audioPlayer = null
         audioReactor?.stop()
         sensorManager?.unregisterListener(lightListener)

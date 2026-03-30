@@ -71,13 +71,13 @@ data class SpectralData(
     /** Energy in each of the 8 frequency bands (0.0 - ~1.0). */
     val bandEnergies: FloatArray = FloatArray(NUM_BANDS),
     /** Overall RMS power of the audio signal. */
-    val rmsPower: Float = 0f,
+    var rmsPower: Float = 0f,
     /** Spectral centroid in Hz (higher = brighter sound). */
-    val spectralCentroid: Float = 0f,
+    var spectralCentroid: Float = 0f,
     /** Spectral flux -- how much the spectrum changed since last frame. */
-    val spectralFlux: Float = 0f,
+    var spectralFlux: Float = 0f,
     /** Frequency of the loudest bin. */
-    val dominantFrequency: Float = 0f
+    var dominantFrequency: Float = 0f
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

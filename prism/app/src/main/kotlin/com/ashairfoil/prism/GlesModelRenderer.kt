@@ -645,8 +645,12 @@ class GlesModelRenderer {
 
     fun loadGlb(glbBytes: ByteArray): Int {
         try {
-            if (glbBytes.size < 20) return -1
+            if (glbBytes.size < 20) { Log.e(TAG, "Invalid GLB: too small (${glbBytes.size} bytes)"); return -1 }
             val jsonLength = readU32(glbBytes, 12)
+            if (jsonLength < 0 || jsonLength > glbBytes.size - 20) {
+                Log.e(TAG, "Invalid GLB: jsonLength=$jsonLength exceeds bounds")
+                return -1
+            }
             val jsonStr = String(glbBytes, 20, jsonLength.coerceAtMost(glbBytes.size - 20), Charsets.UTF_8)
             val json = org.json.JSONObject(jsonStr)
             val binChunkStart = 12 + 8 + jsonLength + 8
@@ -663,66 +667,78 @@ class GlesModelRenderer {
                 return Triple(a.getInt("bufferView"), a.getInt("count"), a.getString("type"))
             }
 
-            val prim = json.getJSONArray("meshes").getJSONObject(0).getJSONArray("primitives").getJSONObject(0)
-            val attrs = prim.getJSONObject("attributes")
-
-            val (posBv, posCnt, _) = acc(attrs.getInt("POSITION"))
-            val (posOff, _) = bv(posBv)
-            val positions = extractFloats(glbBytes, posOff, posCnt * 3)
-
+            val positions: FloatBuffer
             var texCoords: FloatBuffer? = null
-            if (attrs.has("TEXCOORD_0")) {
-                val (tcBv, tcCnt, _) = acc(attrs.getInt("TEXCOORD_0"))
-                val (tcOff, _) = bv(tcBv)
-                texCoords = extractFloats(glbBytes, tcOff, tcCnt * 2)
-            }
             var normals: FloatBuffer
-            if (attrs.has("NORMAL")) {
-                val nAccIdx = attrs.getInt("NORMAL")
-                val nAcc = accessors.getJSONObject(nAccIdx)
-                val nCompType = nAcc.getInt("componentType")
-                val (nBv, nCnt, _) = acc(nAccIdx)
-                val (nOff, _) = bv(nBv)
-                val nBvObj = bufferViews.getJSONObject(nBv)
-                val nStride = nBvObj.optInt("byteStride", 0)
-                normals = when (nCompType) {
-                    5120 -> { // SIGNED BYTE (KHR_mesh_quantization)
-                        val stride = if (nStride > 0) nStride else 3
-                        extractBytesAsFloats(glbBytes, nOff, nCnt, 3, stride)
-                    }
-                    5122 -> { // SHORT
-                        val stride = if (nStride > 0) nStride else 6
-                        extractShortsAsFloats(glbBytes, nOff, nCnt, 3, stride)
-                    }
-                    else -> extractFloats(glbBytes, nOff, nCnt * 3) // 5126 FLOAT
-                }
-            } else {
-                normals = FloatBuffer.allocate(posCnt * 3)
-            }
-
-            // Tangents (vec4: xyz + w handedness) for normal mapping
             var tangents: FloatBuffer? = null
-            if (attrs.has("TANGENT")) {
-                val tAccIdx = attrs.getInt("TANGENT")
-                val tAcc = accessors.getJSONObject(tAccIdx)
-                val tCompType = tAcc.getInt("componentType")
-                val (tBv, tCnt, _) = acc(tAccIdx)
-                val (tOff, _) = bv(tBv)
-                val tBvObj = bufferViews.getJSONObject(tBv)
-                val tStride = tBvObj.optInt("byteStride", 0)
-                tangents = when (tCompType) {
-                    5120 -> { val stride = if (tStride > 0) tStride else 4; extractBytesAsFloats(glbBytes, tOff, tCnt, 4, stride) }
-                    5122 -> { val stride = if (tStride > 0) tStride else 8; extractShortsAsFloats(glbBytes, tOff, tCnt, 4, stride) }
-                    else -> extractFloats(glbBytes, tOff, tCnt * 4)
-                }
-                Log.i(TAG, "Parsed TANGENT attribute ($tCnt vec4s)")
-            }
+            val indices: IntBuffer
+            val posCnt: Int
+            val idxCnt: Int
+            val attrs: org.json.JSONObject
+            try {
+                val prim = json.getJSONArray("meshes").getJSONObject(0).getJSONArray("primitives").getJSONObject(0)
+                attrs = prim.getJSONObject("attributes")
 
-            val idxAccIdx = prim.getInt("indices")
-            val (idxBv, idxCnt, _) = acc(idxAccIdx)
-            val idxCompType = accessors.getJSONObject(idxAccIdx).getInt("componentType")
-            val (idxOff, _) = bv(idxBv)
-            val indices = extractIndices(glbBytes, idxOff, idxCnt, idxCompType)
+                val (posBv, posCnt_, _) = acc(attrs.getInt("POSITION"))
+                posCnt = posCnt_
+                val (posOff, _) = bv(posBv)
+                positions = extractFloats(glbBytes, posOff, posCnt * 3)
+
+                if (attrs.has("TEXCOORD_0")) {
+                    val (tcBv, tcCnt, _) = acc(attrs.getInt("TEXCOORD_0"))
+                    val (tcOff, _) = bv(tcBv)
+                    texCoords = extractFloats(glbBytes, tcOff, tcCnt * 2)
+                }
+                if (attrs.has("NORMAL")) {
+                    val nAccIdx = attrs.getInt("NORMAL")
+                    val nAcc = accessors.getJSONObject(nAccIdx)
+                    val nCompType = nAcc.getInt("componentType")
+                    val (nBv, nCnt, _) = acc(nAccIdx)
+                    val (nOff, _) = bv(nBv)
+                    val nBvObj = bufferViews.getJSONObject(nBv)
+                    val nStride = nBvObj.optInt("byteStride", 0)
+                    normals = when (nCompType) {
+                        5120 -> { // SIGNED BYTE (KHR_mesh_quantization)
+                            val stride = if (nStride > 0) nStride else 3
+                            extractBytesAsFloats(glbBytes, nOff, nCnt, 3, stride)
+                        }
+                        5122 -> { // SHORT
+                            val stride = if (nStride > 0) nStride else 6
+                            extractShortsAsFloats(glbBytes, nOff, nCnt, 3, stride)
+                        }
+                        else -> extractFloats(glbBytes, nOff, nCnt * 3) // 5126 FLOAT
+                    }
+                } else {
+                    normals = FloatBuffer.allocate(posCnt * 3)
+                }
+
+                // Tangents (vec4: xyz + w handedness) for normal mapping
+                if (attrs.has("TANGENT")) {
+                    val tAccIdx = attrs.getInt("TANGENT")
+                    val tAcc = accessors.getJSONObject(tAccIdx)
+                    val tCompType = tAcc.getInt("componentType")
+                    val (tBv, tCnt, _) = acc(tAccIdx)
+                    val (tOff, _) = bv(tBv)
+                    val tBvObj = bufferViews.getJSONObject(tBv)
+                    val tStride = tBvObj.optInt("byteStride", 0)
+                    tangents = when (tCompType) {
+                        5120 -> { val stride = if (tStride > 0) tStride else 4; extractBytesAsFloats(glbBytes, tOff, tCnt, 4, stride) }
+                        5122 -> { val stride = if (tStride > 0) tStride else 8; extractShortsAsFloats(glbBytes, tOff, tCnt, 4, stride) }
+                        else -> extractFloats(glbBytes, tOff, tCnt * 4)
+                    }
+                    Log.i(TAG, "Parsed TANGENT attribute ($tCnt vec4s)")
+                }
+
+                val idxAccIdx = prim.getInt("indices")
+                val (idxBv, idxCnt_, _) = acc(idxAccIdx)
+                idxCnt = idxCnt_
+                val idxCompType = accessors.getJSONObject(idxAccIdx).getInt("componentType")
+                val (idxOff, _) = bv(idxBv)
+                indices = extractIndices(glbBytes, idxOff, idxCnt, idxCompType)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to parse GLB: ${e.message}")
+                return -1
+            }
 
             if (!attrs.has("NORMAL")) normals = computeNormals(positions, indices, posCnt, idxCnt)
 

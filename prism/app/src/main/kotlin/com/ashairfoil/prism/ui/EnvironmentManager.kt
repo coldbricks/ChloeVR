@@ -105,7 +105,7 @@ class EnvironmentManager {
             )
         }
 
-        Log.d(TAG, "Environment set to ${env.displayName}")
+        Log.i(TAG, "Environment set to ${env.displayName}")
         return state
     }
 

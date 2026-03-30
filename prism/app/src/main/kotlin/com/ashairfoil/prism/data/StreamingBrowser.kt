@@ -63,9 +63,10 @@ class StreamingBrowser(private val context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     } catch (e: Exception) {
-        Log.e(TAG, "EncryptedSharedPreferences failed, auth tokens stored unencrypted", e)
+        Log.w(TAG, "EncryptedSharedPreferences unavailable, auth tokens will NOT be persisted", e)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
+    private val encryptionAvailable = prefs is EncryptedSharedPreferences
     private var endpoints: MutableList<StreamingEndpoint> = mutableListOf()
     private var cachedScenes: List<StreamingScene> = emptyList()
     private var lastFetchTime: Long = 0
@@ -79,11 +80,16 @@ class StreamingBrowser(private val context: Context) {
     // -----------------------------------------------------------------------
 
     fun addEndpoint(name: String, apiUrl: String, authToken: String? = null): StreamingEndpoint {
+        // SECURITY: auth tokens not stored without encryption
+        val safeToken = if (!encryptionAvailable && authToken != null) {
+            Log.w(TAG, "Stripping auth token for '$name' — encryption unavailable")
+            null
+        } else authToken
         val ep = StreamingEndpoint(
             id = "ep_${System.currentTimeMillis()}",
             name = name,
             apiUrl = apiUrl,
-            authToken = authToken
+            authToken = safeToken
         )
         endpoints.add(ep)
         saveEndpoints()
@@ -191,11 +197,17 @@ class StreamingBrowser(private val context: Context) {
                 val arr = JSONArray(jsonStr)
                 endpoints = (0 until arr.length()).mapNotNull { i ->
                     val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+                    // SECURITY: strip auth tokens if encryption is unavailable
+                    val rawToken = if (obj.has("authToken")) obj.getString("authToken") else null
+                    val safeToken = if (!encryptionAvailable && rawToken != null) {
+                        Log.w(TAG, "Stripping persisted auth token for '${obj.optString("name")}' — encryption unavailable")
+                        null
+                    } else rawToken
                     StreamingEndpoint(
                         id = obj.optString("id", "ep_${System.currentTimeMillis()}"),
                         name = obj.optString("name", "Unknown"),
                         apiUrl = obj.optString("apiUrl", ""),
-                        authToken = if (obj.has("authToken")) obj.getString("authToken") else null,
+                        authToken = safeToken,
                         isEnabled = obj.optBoolean("isEnabled", true)
                     )
                 }.toMutableList()
@@ -210,11 +222,17 @@ class StreamingBrowser(private val context: Context) {
         endpoints = legacy.split("\n").filter { it.isNotBlank() }.mapNotNull { line ->
             val parts = line.split("\t")
             if (parts.size >= 3) {
+                // SECURITY: strip auth tokens if encryption is unavailable
+                val rawToken = parts.getOrNull(3)?.ifBlank { null }
+                val safeToken = if (!encryptionAvailable && rawToken != null) {
+                    Log.w(TAG, "Stripping persisted auth token for '${parts[1]}' — encryption unavailable")
+                    null
+                } else rawToken
                 StreamingEndpoint(
                     id = parts[0],
                     name = parts[1],
                     apiUrl = parts[2],
-                    authToken = parts.getOrNull(3)?.ifBlank { null },
+                    authToken = safeToken,
                     isEnabled = parts.getOrNull(4)?.toBooleanStrictOrNull() ?: true
                 )
             } else null

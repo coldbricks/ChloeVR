@@ -33,7 +33,8 @@ object ProUpgrade {
     private const val KEY_PRO_PURCHASED = "pro_purchased"
     private const val PRODUCT_ID = "chloe_pro_unlock"
 
-    // Set to true during development to bypass billing
+    // Set to true during development to bypass billing.
+    // val (not var) — prevents runtime modification of billing bypass.
     val DEBUG_PRO_UNLOCKED = BuildConfig.DEBUG
 
     private var cachedIsPro: Boolean? = null
@@ -43,7 +44,10 @@ object ProUpgrade {
      * Fast: reads from cache/SharedPreferences. No network call.
      */
     fun isPro(context: Context): Boolean {
-        if (DEBUG_PRO_UNLOCKED) return true
+        if (DEBUG_PRO_UNLOCKED) {
+            Log.w(TAG, "isPro(): returning true via DEBUG_PRO_UNLOCKED bypass — not valid for production")
+            return true
+        }
 
         cachedIsPro?.let { return it }
 
@@ -70,21 +74,14 @@ object ProUpgrade {
 
     /**
      * Launch the Google Play purchase flow.
-     * STUB: Replace with actual BillingClient implementation.
+     *
+     * POST-LAUNCH: Replace with BillingClient implementation.
+     * In debug builds, DEBUG_PRO_UNLOCKED bypasses this entirely.
+     * In release builds, this is a no-op until billing is wired.
      */
     fun launchPurchaseFlow(activity: Activity) {
         Log.i(TAG, "Launch purchase flow for $PRODUCT_ID")
 
-        // TODO: Implement with Google Play Billing Library
-        // 1. Create BillingClient
-        // 2. Connect to billing service
-        // 3. Query product details for PRODUCT_ID
-        // 4. Launch billing flow with BillingFlowParams
-        // 5. Handle purchase result in onPurchasesUpdated
-        // 6. Acknowledge purchase
-        // 7. Update local cache
-
-        // For now, just mark as purchased (dev mode)
         if (DEBUG_PRO_UNLOCKED) {
             markPurchased(activity)
         }
@@ -92,21 +89,16 @@ object ProUpgrade {
 
     /**
      * Verify purchase state with Google Play.
-     * Should be called on app startup to sync state.
-     * STUB: Replace with actual BillingClient.queryPurchasesAsync()
+     * Called on app startup to sync cached state.
+     *
+     * POST-LAUNCH: Replace body with BillingClient.queryPurchasesAsync() to
+     * verify purchases server-side. Current implementation reads SharedPreferences only.
      */
-    // TODO: Replace with BillingClient.queryPurchasesAsync() for Play Store release
     fun verifyPurchaseState(context: Context) {
         if (DEBUG_PRO_UNLOCKED) {
             cachedIsPro = true
             return
         }
-
-        // TODO: Implement with BillingClient
-        // 1. Connect to billing service
-        // 2. queryPurchasesAsync(BillingClient.ProductType.INAPP)
-        // 3. Check if PRODUCT_ID is in the purchased list
-        // 4. Update local cache
 
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         cachedIsPro = prefs.getBoolean(KEY_PRO_PURCHASED, false)

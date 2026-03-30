@@ -70,7 +70,10 @@ class PlaylistManager {
     fun goTo(file: File): File? {
         val idx = files.indexOf(file)
         if (idx < 0) return null
-        if (currentIndex >= 0) history.add(currentIndex)
+        if (currentIndex >= 0) {
+            history.add(currentIndex)
+            if (history.size > 500) history.removeAt(0)
+        }
         currentIndex = idx
         return files[currentIndex]
     }
@@ -84,7 +87,10 @@ class PlaylistManager {
 
         if (repeatMode == RepeatMode.ONE) return currentFile
 
-        if (currentIndex >= 0) history.add(currentIndex)
+        if (currentIndex >= 0) {
+            history.add(currentIndex)
+            if (history.size > 500) history.removeAt(0)
+        }
 
         if (shuffleEnabled) {
             val shufflePos = shuffledIndices.indexOf(currentIndex)

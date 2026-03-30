@@ -51,6 +51,7 @@ class OpenXRInput(private val activity: Activity) {
     private val stateBuffer = FloatArray(STATE_SIZE)
     private val handler = Handler(Looper.getMainLooper())
     private var initialized = false
+    private var isPolling = false
     private var listener: ControllerListener? = null
 
     interface ControllerListener {
@@ -60,9 +61,12 @@ class OpenXRInput(private val activity: Activity) {
     fun setListener(l: ControllerListener) { listener = l }
 
     fun start(): Boolean {
-        if (initialized) return true
-        initialized = nativeInit(activity)
+        if (isPolling) return true
+        if (!initialized) {
+            initialized = nativeInit(activity)
+        }
         if (initialized) {
+            isPolling = true
             Log.i(TAG, "OpenXR input started")
             handler.post(pollRunnable)
         } else {
@@ -72,6 +76,7 @@ class OpenXRInput(private val activity: Activity) {
     }
 
     fun stop() {
+        isPolling = false
         handler.removeCallbacks(pollRunnable)
         if (initialized) {
             nativeShutdown()

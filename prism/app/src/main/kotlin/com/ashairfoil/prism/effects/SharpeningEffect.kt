@@ -16,7 +16,6 @@ import androidx.media3.effect.BaseGlShaderProgram
 class SharpeningState {
     @Volatile var sharpness: Float = 0f      // 0 to 2.0
     @Volatile var clarity: Float = 0f        // -1 to 1
-    @Volatile var detail: Float = 0f         // 0 to 1
     @Volatile var radius: Float = 1.0f       // 0.5 to 3.0
 }
 

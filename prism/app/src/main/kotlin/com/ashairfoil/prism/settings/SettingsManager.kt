@@ -105,6 +105,7 @@ object SettingsManager {
     private const val DEFAULT_SCREEN_SCALE = 1.0f
 
     // ── State ───────────────────────────────────────────────────────────
+    private val resumeLock = Any()
     private lateinit var prefs: SharedPreferences
 
     fun init(context: Context) {
@@ -139,26 +140,35 @@ object SettingsManager {
 
     fun getResumePosition(filePath: String): Long {
         ensureInit()
-        val raw = prefs.getString(KEY_RESUME_POSITIONS, "") ?: ""
-        return parseResumeMap(raw)[filePath] ?: 0L
+        synchronized(resumeLock) {
+            val raw = prefs.getString(KEY_RESUME_POSITIONS, "") ?: ""
+            return parseResumeMap(raw)[filePath] ?: 0L
+        }
     }
 
     fun setResumePosition(filePath: String, positionMs: Long) {
         ensureInit()
-        val raw = prefs.getString(KEY_RESUME_POSITIONS, "") ?: ""
-        val map = parseResumeMap(raw).toMutableMap()
-        if (positionMs <= 0) {
-            map.remove(filePath)
-        } else {
-            map[filePath] = positionMs
+        synchronized(resumeLock) {
+            val raw = prefs.getString(KEY_RESUME_POSITIONS, "") ?: ""
+            val map = LinkedHashMap(parseResumeMap(raw))
+            if (positionMs <= 0) {
+                map.remove(filePath)
+            } else {
+                // Remove and re-insert to move to end (most recently accessed)
+                map.remove(filePath)
+                map[filePath] = positionMs
+            }
+            // Keep only the most recent 200 entries by insertion order (oldest first, newest last)
+            val trimmed = if (map.size > 200) {
+                val entries = map.entries.toList()
+                LinkedHashMap<String, Long>(200).also { m ->
+                    entries.subList(entries.size - 200, entries.size).forEach { m[it.key] = it.value }
+                }
+            } else {
+                map
+            }
+            prefs.edit().putString(KEY_RESUME_POSITIONS, serializeResumeMap(trimmed)).apply()
         }
-        // Keep only the most recent 200 entries to avoid unbounded growth
-        val trimmed = if (map.size > 200) {
-            map.entries.sortedByDescending { it.value }.take(200).associate { it.key to it.value }
-        } else {
-            map
-        }
-        prefs.edit().putString(KEY_RESUME_POSITIONS, serializeResumeMap(trimmed)).apply()
     }
 
     fun clearResumePosition(filePath: String) {

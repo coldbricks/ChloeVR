@@ -77,7 +77,8 @@ object LightingPresets {
 
     private fun serializeList(list: List<LightingPreset>): String =
         list.joinToString(";;") { p ->
-            "${p.name}|${p.lightIntensity}|${p.fillLightIntensity}|${p.ambientIntensity}" +
+            val safeName = p.name.replace('|', '-')
+            "$safeName|${p.lightIntensity}|${p.fillLightIntensity}|${p.ambientIntensity}" +
                 "|${p.lightAngleDeg}|${p.lightElevDeg}|${p.shadowDarkness}" +
                 "|${p.shadowSoftness}|${p.shadowSpread}|${p.autoAmbient}"
         }

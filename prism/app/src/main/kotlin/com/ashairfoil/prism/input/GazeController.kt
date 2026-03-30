@@ -112,16 +112,14 @@ class GazeController(private val context: Context) {
             return
         }
 
-        // TODO: Call native layer to enable eye tracking
-        // OpenXRInput.nativeEnableEyeTracking()
+        // Native eye tracking (XR_ANDROID_eye_tracking) not yet wired — see architecture gaps.
         isTracking = true
         Log.i(TAG, "Eye tracking started")
     }
 
     fun stopTracking() {
         isTracking = false
-        // TODO: Call native layer to disable
-        // OpenXRInput.nativeDisableEyeTracking()
+        // Native eye tracking (XR_ANDROID_eye_tracking) not yet wired — see architecture gaps.
         Log.i(TAG, "Eye tracking stopped")
     }
 

@@ -8,6 +8,7 @@ import android.util.AttributeSet
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import com.ashairfoil.prism.ui.ThemeManager
 import kotlin.math.min
 
 /**
@@ -35,12 +36,12 @@ class BufferingIndicator @JvmOverloads constructor(
         style = Paint.Style.STROKE
         strokeWidth = 4f * context.resources.displayMetrics.density
         strokeCap = Paint.Cap.ROUND
-        color = Color.WHITE
+        color = ThemeManager.PINK_HOT
     }
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = Color.argb(120, 0, 0, 0)
+        color = Color.argb(120, 5, 5, 8) // BG_VOID-based translucent
     }
 
     private var sweepAngle = 90f

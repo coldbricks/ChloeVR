@@ -77,7 +77,7 @@ class ScreenController {
     fun setProjection(proj: String) {
         projection = proj
         state.reset(proj)
-        Log.d(TAG, "Projection set to $proj, state reset to defaults")
+        Log.i(TAG, "Projection set to $proj, state reset to defaults")
     }
 
     /**
@@ -149,7 +149,7 @@ class ScreenController {
      */
     fun recenter() {
         state.reset(projection)
-        Log.d(TAG, "Screen recentered for projection $projection")
+        Log.i(TAG, "Screen recentered for projection $projection")
     }
 
     /**
@@ -159,13 +159,15 @@ class ScreenController {
     fun getPitchRadians(): Float = Math.toRadians(state.pitch.toDouble()).toFloat()
     fun getRollRadians(): Float = Math.toRadians(state.roll.toDouble()).toFloat()
 
+    private fun floatEq(a: Float, b: Float) = kotlin.math.abs(a - b) < 0.0001f
+
     /**
      * Check if position is at default (for "modified" indicator).
      */
     fun isModified(): Boolean {
         val def = DEFAULTS[projection] ?: DEFAULTS["flat"]!!
-        return state.x != def.x || state.y != def.y || state.z != def.z ||
-               state.yaw != 0f || state.pitch != 0f || state.roll != 0f ||
-               state.scale != def.scale || state.zoom != 1.0f
+        return !floatEq(state.x, def.x) || !floatEq(state.y, def.y) || !floatEq(state.z, def.z) ||
+               !floatEq(state.yaw, 0f) || !floatEq(state.pitch, 0f) || !floatEq(state.roll, 0f) ||
+               !floatEq(state.scale, def.scale) || !floatEq(state.zoom, 1.0f)
     }
 }

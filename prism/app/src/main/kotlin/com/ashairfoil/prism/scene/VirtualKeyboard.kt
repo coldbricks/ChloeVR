@@ -1,6 +1,7 @@
 package com.ashairfoil.prism.scene
 
 import android.graphics.*
+import com.ashairfoil.prism.ui.ThemeManager
 
 /**
  * On-screen QWERTY keyboard for the VR save-name editor.
@@ -57,25 +58,25 @@ class VirtualKeyboard {
 
             // Background
             keyBgPaint.color = when {
-                isShiftKey && isShifted -> 0xFF8B5CF6.toInt()
-                isHovered -> 0xFF2A2A38.toInt()
-                isSpecial -> 0xFF202030.toInt()
-                else -> 0xFF1A1A24.toInt()
+                isShiftKey && isShifted -> ThemeManager.PURPLE_DEEP
+                isHovered -> ThemeManager.BG_ELEVATED
+                isSpecial -> ThemeManager.BG_PANEL
+                else -> ThemeManager.BG_SURFACE
             }
             canvas.drawRoundRect(k.x, k.y, k.x + k.w, k.y + k.h, 8f, 8f, keyBgPaint)
 
             // Border
             keyBorderPaint.strokeWidth = if (isHovered) 2f else 0.8f
             keyBorderPaint.color = when {
-                isHovered -> 0xFF8B5CF6.toInt()
-                isSpecial -> 0xFF3A3A4A.toInt()
-                else -> 0xFF2A2A34.toInt()
+                isHovered -> ThemeManager.PURPLE_DEEP
+                isSpecial -> ThemeManager.BORDER_SOFT
+                else -> ThemeManager.BORDER_SUBTLE
             }
             canvas.drawRoundRect(k.x, k.y, k.x + k.w, k.y + k.h, 8f, 8f, keyBorderPaint)
 
             // Glow on hover
             if (isHovered) {
-                glowPaint.color = 0xFF8B5CF6.toInt()
+                glowPaint.color = ThemeManager.PURPLE_DEEP
                 glowPaint.strokeWidth = 3f
                 canvas.drawRoundRect(k.x, k.y, k.x + k.w, k.y + k.h, 8f, 8f, glowPaint)
             }
@@ -83,10 +84,10 @@ class VirtualKeyboard {
             // Text
             keyTextPaint.textSize = if (isSpecial) 22f else 28f
             keyTextPaint.color = when {
-                isHovered -> 0xFFFFFFFF.toInt()
-                isShiftKey && isShifted -> 0xFFFFFFFF.toInt()
-                isSpecial -> 0xFF9090A0.toInt()
-                else -> 0xFFE8E8EC.toInt()
+                isHovered -> ThemeManager.TEXT_ON_ACCENT
+                isShiftKey && isShifted -> ThemeManager.TEXT_ON_ACCENT
+                isSpecial -> ThemeManager.TEXT_MID
+                else -> ThemeManager.TEXT_BRIGHT
             }
             keyTextPaint.isFakeBoldText = isHovered || (isShiftKey && isShifted)
 

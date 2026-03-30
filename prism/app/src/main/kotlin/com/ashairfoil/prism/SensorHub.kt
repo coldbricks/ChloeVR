@@ -22,8 +22,9 @@ class SensorHub(context: Context) : SensorEventListener {
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val activeSensors = mutableMapOf<Int, Sensor>()
-    private val sensorThread = HandlerThread("SensorHub").apply { start() }
-    private val sensorHandler = Handler(sensorThread.looper)
+    private var sensorThread: HandlerThread? = HandlerThread("SensorHub").apply { start() }
+    private var sensorHandler: Handler? = sensorThread?.looper?.let { Handler(it) }
+    @Volatile private var isRunning = false
 
     // ── Sensor data (all @Volatile for cross-thread reads) ──
 
@@ -145,6 +146,13 @@ class SensorHub(context: Context) : SensorEventListener {
      * Register ALL available sensors. Call from onCreate.
      */
     fun start() {
+        if (isRunning) return
+        isRunning = true
+        if (sensorThread == null) {
+            val thread = HandlerThread("SensorHub").apply { start() }
+            sensorThread = thread
+            sensorHandler = Handler(thread.looper)
+        }
         val allSensors = sensorManager.getSensorList(Sensor.TYPE_ALL)
         val types = mutableListOf<Int>()
         val names = mutableListOf<String>()
@@ -202,7 +210,7 @@ class SensorHub(context: Context) : SensorEventListener {
                         SensorManager.SENSOR_DELAY_GAME
                     else -> SensorManager.SENSOR_DELAY_UI
                 }
-                sensorManager.registerListener(this, sensor, rate, sensorHandler)
+                sensorManager.registerListener(this, sensor, rate, sensorHandler ?: return)
                 activeSensors[type] = sensor
                 Log.i(TAG, "  ✓ Registered: ${sensorTypeName[type] ?: "Type$type"}")
             }
@@ -225,13 +233,17 @@ class SensorHub(context: Context) : SensorEventListener {
      * Unregister all sensors. Call from onDestroy.
      */
     fun stop() {
+        if (!isRunning) return
+        isRunning = false
         sensorManager.unregisterListener(this)
         val sigMotion = activeSensors[Sensor.TYPE_SIGNIFICANT_MOTION]
         if (sigMotion != null) {
             sensorManager.cancelTriggerSensor(sigMotionTrigger, sigMotion)
         }
         activeSensors.clear()
-        sensorThread.quitSafely()
+        sensorThread?.quitSafely()
+        sensorThread = null
+        sensorHandler = null
         Log.i(TAG, "All sensors unregistered")
     }
 
@@ -309,7 +321,7 @@ class SensorHub(context: Context) : SensorEventListener {
     }
 
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
-        Log.d(TAG, "Accuracy changed: ${sensor.name} → $accuracy")
+        // Accuracy changes are frequent and low-value; suppress in production
     }
 
     /**

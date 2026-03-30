@@ -56,6 +56,7 @@ class SceneManager(
     val models: MutableList<PlacedModel> = java.util.concurrent.CopyOnWriteArrayList()
     var selectedModelIndex = -1
     val yeetingModels = mutableListOf<YeetingModel>()
+    val yeetingModelsLock = Object()
 
     /** Callback for posting work to the UI thread (set by the activity). */
     var runOnUiThread: (Runnable) -> Unit = {}
@@ -185,12 +186,17 @@ class SceneManager(
             1 -> 4096; 2 -> 2048; 3 -> 1024; else -> 0 // 0 = auto
         }
         // Reload each model preserving transforms
+        var failedCount = 0
         for ((file, snap, _) in snapshots) {
-            if (!file.exists()) continue
+            if (!file.exists()) {
+                Log.w(TAG, "Reload skip — file missing: ${file.name}")
+                failedCount++
+                continue
+            }
             try {
                 val bytes = file.readBytes()
                 val gpuId = renderer.loadGlb(bytes)
-                if (gpuId < 0) continue
+                if (gpuId < 0) { failedCount++; continue }
                 val placed = snap.copy(gpuModelId = gpuId)
                 models.add(placed)
                 updateModelTransform(placed)
@@ -202,10 +208,14 @@ class SceneManager(
                 gpuModel.saturation = placed.saturation
             } catch (e: Exception) {
                 Log.e(TAG, "Reload failed: ${file.name}", e)
+                failedCount++
             }
         }
         if (models.isNotEmpty()) selectedModelIndex = 0
         Log.i(TAG, "Reloaded ${models.size} models (texQuality=$textureQuality)")
+        if (failedCount > 0) {
+            runOnUiThread(Runnable { showMessage("$failedCount model(s) failed to reload") })
+        }
     }
 
     // ── Scene Save/Load ──
@@ -325,23 +335,26 @@ class SceneManager(
             }
 
             // Load models
+            var skippedModels = 0
             val modelsArr = json.optJSONArray("models")
             if (modelsArr != null) {
                 for (i in 0 until modelsArr.length()) {
                     val obj = modelsArr.getJSONObject(i)
                     val file = File(obj.getString("path"))
                     val canonical = file.canonicalPath
-                    if (!canonical.startsWith("/storage/") && !canonical.startsWith(context.filesDir.path)) {
+                    if (!canonical.startsWith("/storage/") && !canonical.startsWith(context.filesDir.canonicalPath) && !canonical.startsWith(context.cacheDir.canonicalPath)) {
                         Log.w(TAG, "Rejected scene path outside storage: $canonical")
+                        skippedModels++
                         continue
                     }
                     if (!file.exists()) {
                         Log.w(TAG, "Scene model not found: ${file.absolutePath}")
+                        skippedModels++
                         continue
                     }
                     val bytes = file.readBytes()
                     val gpuId = renderer.loadGlb(bytes)
-                    if (gpuId < 0) continue
+                    if (gpuId < 0) { skippedModels++; continue }
 
                     val gpuModel = renderer.getModel(gpuId) ?: continue
                     val placed = PlacedModel(
@@ -372,8 +385,13 @@ class SceneManager(
             }
 
             if (models.isNotEmpty()) selectedModelIndex = 0
-            Log.i(TAG, "Scene loaded: ${sceneFile.name} (${models.size} models)")
-            runOnUiThread(Runnable { showMessage("Scene loaded: ${sceneFile.nameWithoutExtension}") })
+            Log.i(TAG, "Scene loaded: ${sceneFile.name} (${models.size} models, $skippedModels skipped)")
+            val loadMsg = if (skippedModels > 0) {
+                "Scene loaded: ${sceneFile.nameWithoutExtension} ($skippedModels model(s) missing)"
+            } else {
+                "Scene loaded: ${sceneFile.nameWithoutExtension}"
+            }
+            runOnUiThread(Runnable { showMessage(loadMsg) })
 
             return SceneLoadResult(restoredAutoAmbient, restoredGridVisible)
         } catch (e: Exception) {

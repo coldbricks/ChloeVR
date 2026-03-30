@@ -178,7 +178,7 @@ class VideoInfoOverlay(private val parent: ViewGroup) {
 
         container = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(190, 10, 10, 14))
+            setBackgroundColor(ThemeManager.BG_GLASS)
             setPadding((12 * dp).toInt(), (8 * dp).toInt(), (12 * dp).toInt(), (8 * dp).toInt())
             alpha = 0f
         }

@@ -11,6 +11,7 @@ import android.widget.TextView
 import com.ashairfoil.prism.AudioPlayer
 import com.ashairfoil.prism.AudioReactor
 import com.ashairfoil.prism.FilamentModelActivity
+import com.ashairfoil.prism.ui.ThemeManager
 
 /**
  * Renders the VR menu panel UI to a bitmap for compositor overlay.
@@ -55,11 +56,17 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val pDim = Paint().apply { isAntiAlias = true }
 
     // Pre-allocated shaders / paints / filters for menu frame rendering.
-    private val bgGradientColors = intArrayOf(0xE8100818.toInt(), 0xE80A0A14.toInt(), 0xE8120818.toInt())
+    private val bgGradientColors = intArrayOf(ThemeManager.BG_VOID, ThemeManager.BG_PANEL, ThemeManager.BG_VOID)
     private val bgGradientStops = floatArrayOf(0f, 0.5f, 1f)
     private val backgroundPaint = Paint().apply {
         shader = LinearGradient(0f, 0f, 0f, 1280f, bgGradientColors, bgGradientStops, Shader.TileMode.CLAMP)
     }
+    // Radial vignette overlay: darken corners by ~15%
+    private val vignettePaint = Paint().apply {
+        shader = RadialGradient(512f, 640f, 720f, 0x00000000, 0x26000000, Shader.TileMode.CLAMP)
+    }
+    // Scanline overlay paint (3% white, drawn every 4px)
+    private val scanlinePaint = Paint().apply { color = 0x08FFFFFF; strokeWidth = 1f }
 
     private val blurOuter3 = BlurMaskFilter(3f, BlurMaskFilter.Blur.OUTER)
     private val blurOuter6 = BlurMaskFilter(6f, BlurMaskFilter.Blur.OUTER)
@@ -74,33 +81,33 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val neonBorderGlowPaint = Paint().apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f
-        color = 0xFFEC4899.toInt()
+        color = ThemeManager.PINK_SOFT
         maskFilter = blurOuter6
         isAntiAlias = true
     }
     private val neonBorderPaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 2f
-        color = 0xAAEC4899.toInt()
+        strokeWidth = 1.5f
+        color = ThemeManager.BORDER_PINK
         isAntiAlias = true
     }
     private val titleBgPaint = Paint().apply { isAntiAlias = true }
     private val titleGlowPaint = Paint().apply {
         style = Paint.Style.STROKE
         strokeWidth = 3f
-        color = 0xFFEC4899.toInt()
+        color = ThemeManager.PINK_SOFT
         maskFilter = blurOuter8
         isAntiAlias = true
     }
     private val titleTextPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 48f
+        textSize = ThemeManager.PX_HERO
         isFakeBoldText = true
         maskFilter = blurSolid2
     }
     private val titleHintPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 24f
+        textSize = ThemeManager.PX_CAPTION
     }
 
     private val cursorCirclePaint = Paint().apply {
@@ -114,39 +121,45 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val cursorDotPaint = Paint().apply {
         isAntiAlias = true
         style = Paint.Style.FILL
-        color = 0xFFEC4899.toInt()
+        color = ThemeManager.PINK_HOT
+    }
+    private val cursorGlowPaint = Paint().apply {
+        isAntiAlias = true
+        style = Paint.Style.STROKE
+        color = ThemeManager.PINK_GLOW
+        maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.OUTER)
     }
 
     private val paramNormalPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 28f
-        color = 0xFFB0B8C4.toInt()
+        textSize = ThemeManager.PX_BODY
+        color = ThemeManager.TEXT_MID
     }
     private val paramHighlightPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 30f
-        color = 0xFF30D8D0.toInt()
+        textSize = ThemeManager.PX_BODY + 2f
+        color = ThemeManager.CYAN_ICE
         isFakeBoldText = true
     }
     private val paramDisabledPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 28f
-        color = 0xFF2A2A32.toInt()
+        textSize = ThemeManager.PX_BODY
+        color = ThemeManager.BORDER
     }
     private val paramValuePaint = Paint().apply {
         isAntiAlias = true
-        textSize = 22f
-        color = 0xFFD0D0D0.toInt()
+        textSize = ThemeManager.PX_BODY
+        color = ThemeManager.TEXT_BRIGHT
     }
     private val paramValueHighlightPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 22f
-        color = 0xFFFFFFFF.toInt()
+        textSize = ThemeManager.PX_BODY
+        color = Color.WHITE
         isFakeBoldText = true
     }
     private val sectionLabelPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 18f
+        textSize = ThemeManager.PX_LABEL
         letterSpacing = 0.15f
         isFakeBoldText = true
     }
@@ -169,7 +182,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     }
     private val actionButtonTextPaint = Paint().apply {
         isAntiAlias = true
-        textSize = 24f
+        textSize = ThemeManager.PX_BODY
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
@@ -177,11 +190,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val sensorHudTextPaint = Paint().apply {
         isAntiAlias = true
         textSize = 20f
-        color = 0xFF10B981.toInt()
+        color = ThemeManager.GREEN
         typeface = Typeface.MONOSPACE
     }
     private val sensorHudBgPaint = Paint().apply { color = 0xC0080810.toInt() }
     private val hsvScratch = floatArrayOf(0f, 1f, 1f)
+
+    // Pre-allocated date formatter to avoid per-frame SimpleDateFormat creation
+    private val sceneDateFormat = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
 
     // All other UI state lives on the activity or inputHandler.
     // Convenience accessors to avoid verbose chains in rendering code:
@@ -200,7 +216,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 uiFlipCanvas = Canvas(fb)
                 uiFlipMatrix.setScale(1f, -1f, w / 2f, h / 2f)
             }
-            uiFlipCanvas!!.drawBitmap(bitmap, uiFlipMatrix, null)
+            (uiFlipCanvas ?: Canvas(fb).also { uiFlipCanvas = it }).drawBitmap(bitmap, uiFlipMatrix, null)
         } finally {
             bitmapLock.unlock()
         }
@@ -214,13 +230,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     fun renderUiToBitmap() {
         val uiW = 1024
         val uiH = 1280
-        if (renderBitmap == null || renderBitmap!!.width != uiW || renderBitmap!!.height != uiH) {
-            renderBitmap?.recycle()
-            renderBitmap = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
-            renderCanvas = Canvas(renderBitmap!!)
+        var rb = renderBitmap
+        if (rb == null || rb.width != uiW || rb.height != uiH) {
+            rb?.recycle()
+            rb = Bitmap.createBitmap(uiW, uiH, Bitmap.Config.ARGB_8888)
+            renderBitmap = rb
+            renderCanvas = Canvas(rb)
         }
-        val bitmap = renderBitmap!!
-        val canvas = renderCanvas!!
+        val bitmap = rb
+        val canvas = renderCanvas ?: Canvas(rb).also { renderCanvas = it }
         canvas.drawPaint(clearPaint)  // erase previous frame
 
         // ── Convenience accessors: activity state ──
@@ -280,20 +298,36 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val glbPickerScrollOffset = activity.glbPickerScrollOffset
         val drawLaserCursorOverlay = {
             if (beatCursorX > 0f && beatCursorY > 0f) {
-                cursorCirclePaint.strokeWidth = 2f
-                cursorCirclePaint.color = 0xFFFFFFFF.toInt()
+                // Soft glow ring
+                cursorGlowPaint.strokeWidth = 3f
+                canvas.drawCircle(beatCursorX, beatCursorY, 14f, cursorGlowPaint)
+                // Outer circle
+                cursorCirclePaint.strokeWidth = 1.5f
+                cursorCirclePaint.color = ThemeManager.TEXT_BRIGHT
                 canvas.drawCircle(beatCursorX, beatCursorY, 12f, cursorCirclePaint)
+                // Crosshairs
                 cursorCrossPaint.strokeWidth = 1f
-                cursorCrossPaint.color = 0x90FFFFFF.toInt()
+                cursorCrossPaint.color = (ThemeManager.TEXT_MID and 0x00FFFFFF) or 0x80000000.toInt()
                 canvas.drawLine(beatCursorX - 20f, beatCursorY, beatCursorX + 20f, beatCursorY, cursorCrossPaint)
                 canvas.drawLine(beatCursorX, beatCursorY - 20f, beatCursorX, beatCursorY + 20f, cursorCrossPaint)
+                // Center dot
                 canvas.drawCircle(beatCursorX, beatCursorY, 3f, cursorDotPaint)
             }
         }
 
-        // ═══ ChloeVibes Neon Theme ═══
-        // Background: dark with subtle purple gradient
+        // ═══ Velvet Dark Theme ═══
+        // Background: BG_VOID → BG_PANEL → BG_VOID gradient
         canvas.drawRect(0f, 0f, uiW.toFloat(), uiH.toFloat(), backgroundPaint)
+        // Radial vignette overlay (darken corners ~15%)
+        canvas.drawRect(0f, 0f, uiW.toFloat(), uiH.toFloat(), vignettePaint)
+        // Subtle scanline overlay (horizontal lines every 4px at 3% white)
+        run {
+            var sy = 0f
+            while (sy < uiH) {
+                canvas.drawLine(0f, sy, uiW.toFloat(), sy, scanlinePaint)
+                sy += 4f
+            }
+        }
 
         // Neon border glow
         canvas.drawRoundRect(8f, 8f, uiW - 8f, uiH - 8f, 20f, 20f, neonBorderGlowPaint)
@@ -301,21 +335,21 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ── Title bar (drag zone) — illuminates on hover ──
         val titleHovered = hoveredActionButton == 200
-        titleBgPaint.color = if (titleHovered) 0x80EC4899.toInt() else 0x40EC4899.toInt()
+        titleBgPaint.color = if (titleHovered) 0x4DFF2D7B.toInt() else 0x26FF2D7B.toInt()
         canvas.drawRoundRect(10f, 10f, uiW - 10f, 80f, 18f, 18f, titleBgPaint)
         if (titleHovered) {
             canvas.drawRoundRect(10f, 10f, uiW - 10f, 80f, 18f, 18f, titleGlowPaint)
         }
 
-        titleTextPaint.color = if (titleHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+        titleTextPaint.color = if (titleHovered) Color.WHITE else ThemeManager.PINK_SOFT
         canvas.drawText("ChloeVR", 50f, 62f, titleTextPaint)
-        titleHintPaint.color = if (titleHovered) 0xFFEC4899.toInt() else 0x60FFFFFF.toInt()
+        titleHintPaint.color = if (titleHovered) ThemeManager.PINK_SOFT else ThemeManager.TEXT_DIM
         canvas.drawText(if (draggingPanel) "dragging..." else "grip to drag", uiW - 280f, 56f, titleHintPaint)
 
         // ═══ BeatReactor Settings ═══
         if (beatSettingsMode) {
             val reactor = audioReactor
-            val p = Paint().apply { isAntiAlias = true }
+            val p = tmpPaint
 
             // Auto-refresh spectrum every 3 frames while settings panel is open
             if (reactor != null && reactor.isActive && sensorPollFrame % 3 == 0) {
@@ -323,13 +357,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
 
             // Header
-            p.textSize = 34f; p.color = 0xFFEC4899.toInt(); p.isFakeBoldText = true
+            p.textSize = ThemeManager.PX_TITLE; p.color = ThemeManager.PINK_HOT; p.isFakeBoldText = true
             canvas.drawText("BEATREACTOR", 50f, 105f, p)
 
             // FILL display top right
             val fillPct = reactor?.boxFillPct ?: 0f
-            p.textSize = 38f; p.color = 0xFFFFFFFF.toInt()
-            canvas.drawText("FILL: %.0f%%".format(fillPct * 100), 550f, 105f, p)
+            p.textSize = ThemeManager.PX_TITLE; p.color = ThemeManager.TEXT_BRIGHT
+            canvas.drawText("FILL: ${(fillPct * 100).toInt()}%", 550f, 105f, p)
             p.isFakeBoldText = false
 
             // Roll-off mode buttons
@@ -343,13 +377,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isHover = hoveredActionButton == modeHoverIds[mi]
                 val mw = 120f
                 p.color = when {
-                    isActive -> 0xFFEC4899.toInt()
-                    isHover -> 0x60EC4899.toInt()
-                    else -> 0x20EC4899.toInt()
+                    isActive -> ThemeManager.PINK_HOT
+                    isHover -> ThemeManager.BORDER_GLOW
+                    else -> (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x20000000
                 }
                 canvas.drawRoundRect(mx, 108f, mx + mw, 133f, 6f, 6f, p)
                 p.textSize = 20f; p.isFakeBoldText = isActive
-                p.color = if (isActive || isHover) 0xFFFFFFFF.toInt() else 0xFF9CA3AF.toInt()
+                p.color = if (isActive || isHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
                 p.textAlign = Paint.Align.CENTER
                 canvas.drawText(label, mx + mw / 2f, 126f, p)
                 p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
@@ -368,12 +402,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isHover = hoveredActionButton == colorHoverIds[ci]
                 val cw = 85f
                 p.color = when {
-                    isActive -> 0xFF10B981.toInt()
-                    isHover -> 0x6010B981.toInt()
-                    else -> 0x2010B981.toInt()
+                    isActive -> ThemeManager.GREEN
+                    isHover -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x60000000
+                    else -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x20000000
                 }
                 canvas.drawRoundRect(cx, 130f, cx + cw, 148f, 4f, 4f, p)
-                p.color = if (isActive || isHover) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.color = if (isActive || isHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_DIM
                 p.isFakeBoldText = isActive
                 p.textAlign = Paint.Align.CENTER
                 canvas.drawText(clabel, cx + cw / 2f, 145f, p)
@@ -391,9 +425,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isAct = curScope == smode
                 val isHov = hoveredActionButton == scopeIds[si]
                 val sw = 85f
-                p.color = if (isAct) 0xFF8B5CF6.toInt() else if (isHov) 0x608B5CF6.toInt() else 0x208B5CF6.toInt()
+                p.color = if (isAct) ThemeManager.PURPLE_DEEP else if (isHov) (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x60000000 else (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x20000000
                 canvas.drawRoundRect(cx, 130f, cx + sw, 148f, 4f, 4f, p)
-                p.color = if (isAct || isHov) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.color = if (isAct || isHov) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_DIM
                 p.isFakeBoldText = isAct; p.textSize = 16f
                 p.textAlign = Paint.Align.CENTER
                 canvas.drawText(slabel, cx + sw / 2f, 145f, p)
@@ -411,9 +445,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isAct = curBlend == bmode
                 val isHov = hoveredActionButton == blendIds[bi2]
                 val bw = 68f
-                p.color = if (isAct) 0xFFFF9500.toInt() else if (isHov) 0x60FF9500.toInt() else 0x20FF9500.toInt()
+                p.color = if (isAct) ThemeManager.ORANGE else if (isHov) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x60000000 else (ThemeManager.ORANGE and 0x00FFFFFF) or 0x20000000
                 canvas.drawRoundRect(cx, 130f, cx + bw, 148f, 4f, 4f, p)
-                p.color = if (isAct || isHov) 0xFFFFFFFF.toInt() else 0xFF6B7280.toInt()
+                p.color = if (isAct || isHov) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_DIM
                 p.isFakeBoldText = isAct; p.textSize = 14f
                 p.textAlign = Paint.Align.CENTER
                 canvas.drawText(blabel, cx + bw / 2f, 145f, p)
@@ -426,7 +460,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val specBot = specTop + specH
 
             // Background
-            p.color = 0xFF080812.toInt()
+            p.color = ThemeManager.BG_VOID
             canvas.drawRoundRect(specLeft, specTop, specRight, specBot, 8f, 8f, p)
 
             // Grid lines with amplitude labels
@@ -544,7 +578,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                 // ── Output meter (right side) ──
                 val meterX = specRight + 12f; val meterW = 28f
-                p.color = 0xFF0A0A14.toInt()
+                p.color = ThemeManager.BG_PANEL
                 canvas.drawRoundRect(meterX, specTop, meterX + meterW, specBot, 4f, 4f, p)
                 p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
                 for (pct2 in arrayOf(0.25f, 0.5f, 0.75f)) {
@@ -554,10 +588,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val meterFillH = reactor.boxFillPct * specH
                 if (meterFillH > 0f) {
                     val meterFillTop = specBot - meterFillH
-                    p.color = 0xFFFF4090.toInt()
+                    p.color = ThemeManager.PINK_HOT
                     canvas.drawRoundRect(meterX + 2f, meterFillTop, meterX + meterW - 2f, specBot, 3f, 3f, p)
                     if (meterFillH > 4f) {
-                        p.color = 0xFFFFFFFF.toInt()
+                        p.color = ThemeManager.TEXT_BRIGHT
                         canvas.drawRect(meterX + 2f, meterFillTop, meterX + meterW - 2f, meterFillTop + 3f, p)
                     }
                 }
@@ -566,9 +600,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 canvas.drawRoundRect(meterX, specTop, meterX + meterW, specBot, 4f, 4f, p)
                 p.style = Paint.Style.FILL
 
-                p.color = 0xFFFFFFFF.toInt(); p.textSize = 22f; p.isFakeBoldText = true
+                p.color = ThemeManager.TEXT_BRIGHT; p.textSize = ThemeManager.PX_BODY; p.isFakeBoldText = true
                 p.textAlign = Paint.Align.CENTER
-                canvas.drawText("%.0f%%".format(reactor.boxFillPct * 100), meterX + meterW / 2f, specTop - 8f, p)
+                canvas.drawText("${(reactor.boxFillPct * 100).toInt()}%", meterX + meterW / 2f, specTop - 8f, p)
                 p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
 
                 // ── Box B (cyan, only when dual motor split active) ──
@@ -605,7 +639,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                     // Box B output meter (far right)
                     val m2X = meterX + meterW + 6f
-                    p.color = 0xFF0A0A14.toInt()
+                    p.color = ThemeManager.BG_PANEL
                     canvas.drawRoundRect(m2X, specTop, m2X + meterW, specBot, 4f, 4f, p)
                     p.color = 0x20FFFFFF.toInt(); p.strokeWidth = 1f
                     for (pct2 in arrayOf(0.25f, 0.5f, 0.75f)) {
@@ -615,10 +649,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val m2FillH = reactor.box2FillPct * specH
                     if (m2FillH > 0f) {
                         val m2FillTop = specBot - m2FillH
-                        p.color = 0xFF00CCDD.toInt()
+                        p.color = ThemeManager.CYAN_ICE
                         canvas.drawRoundRect(m2X + 2f, m2FillTop, m2X + meterW - 2f, specBot, 3f, 3f, p)
                         if (m2FillH > 4f) {
-                            p.color = 0xFFFFFFFF.toInt()
+                            p.color = ThemeManager.TEXT_BRIGHT
                             canvas.drawRect(m2X + 2f, m2FillTop, m2X + meterW - 2f, m2FillTop + 3f, p)
                         }
                     }
@@ -629,17 +663,17 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                     p.color = 0xFF00FFFF.toInt(); p.textSize = 18f; p.isFakeBoldText = true
                     p.textAlign = Paint.Align.CENTER
-                    canvas.drawText("%.0f%%".format(reactor.box2FillPct * 100), m2X + meterW / 2f, specTop - 8f, p)
+                    canvas.drawText("${(reactor.box2FillPct * 100).toInt()}%", m2X + meterW / 2f, specTop - 8f, p)
                     p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
                 }
             }
 
             // Frequency labels (mapped to visible range)
-            p.color = 0xFF6B7280.toInt(); p.textSize = 16f
+            p.color = ThemeManager.TEXT_DIM; p.textSize = ThemeManager.PX_CAPTION
             p.textAlign = Paint.Align.LEFT
             fun binToHz(norm: Float): String {
                 val hz = 20f * Math.pow(1000.0, norm.toDouble()).toFloat()
-                return if (hz >= 1000f) "%.1fk".format(hz / 1000f) else "%.0f".format(hz)
+                return if (hz >= 1000f) "${(hz / 100f).toInt() / 10f}k" else "${hz.toInt()}"
             }
             canvas.drawText(binToHz(visLeft), specLeft, specBot + 16f, p)
             canvas.drawText(binToHz(visLeft + (visRight - visLeft) * 0.33f), specLeft + specW * 0.33f, specBot + 16f, p)
@@ -652,8 +686,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             // ── SLIDERS (below spectrum) ──
             val sliderAreaTop = specBot + 20f
             val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 24f
-            val labelP = Paint().apply { isAntiAlias = true; textSize = 22f; color = 0xFFD1D5DB.toInt() }
-            val valP = Paint().apply { isAntiAlias = true; textSize = 20f; color = 0xFF9CA3AF.toInt() }
+            val labelP = tmpPaint2.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false }
+            val valP = pText.apply { textSize = 20f; color = ThemeManager.TEXT_MID; isFakeBoldText = false; textAlign = Paint.Align.LEFT }
             var sy = sliderAreaTop
 
             for ((i, slider) in beatSliders.withIndex()) {
@@ -663,16 +697,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                 canvas.drawText(slider.name, 40f, sy + 13f, labelP)
                 val valStr = when (slider.unit) {
-                    "x" -> "%.1fx".format(value)
-                    "Hz" -> "%.0f Hz".format(value)
-                    "ms" -> "%.0f ms".format(value)
-                    else -> "%.0f%%".format(value)
+                    "x" -> "${(value * 10).toInt() / 10f}x"
+                    "Hz" -> "${value.toInt()} Hz"
+                    "ms" -> "${value.toInt()} ms"
+                    else -> "${value.toInt()}%"
                 }
                 val vw = valP.measureText(valStr)
                 canvas.drawText(valStr, trackLeft - vw - 6f, sy + 13f, valP)
 
                 // Track background
-                p.color = 0xFF1E1E28.toInt()
+                p.color = ThemeManager.BG_PANEL
                 canvas.drawRoundRect(trackLeft, sy, trackRight, sy + trackH, 4f, 4f, p)
 
                 if (slider.name == "COLOR") {
@@ -687,7 +721,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     }
                 } else {
                     val fillEnd2 = trackLeft + norm * (trackRight - trackLeft)
-                    p.color = if (isHovered) 0xFFFF6BB5.toInt() else 0xFFEC4899.toInt()
+                    p.color = if (isHovered) ThemeManager.PINK_HOT else ThemeManager.PINK_SOFT
                     canvas.drawRoundRect(trackLeft, sy, fillEnd2, sy + trackH, 4f, 4f, p)
                 }
 
@@ -698,12 +732,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val rgb = Color.HSVToColor(hsvScratch)
                     p.color = rgb
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
-                    p.color = 0xFFFFFFFF.toInt()
+                    p.color = ThemeManager.TEXT_BRIGHT
                     p.style = Paint.Style.STROKE; p.strokeWidth = 2f
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                     p.style = Paint.Style.FILL
                 } else {
-                    p.color = 0xFFFFFFFF.toInt()
+                    p.color = Color.WHITE
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                 }
 
@@ -717,42 +751,42 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
             // BOOM button
             val boomReady = reactor?.boomReady ?: false
-            p.color = if (hoveredActionButton == 127) 0x80FF9500.toInt()
-                else if (boomReady) 0x40FF9500.toInt() else 0x15FF9500.toInt()
+            p.color = if (hoveredActionButton == 127) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x80000000.toInt()
+                else if (boomReady) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.ORANGE and 0x00FFFFFF) or 0x15000000
             canvas.drawRoundRect(30f, btnY, 30f + fifthW, btnY + btnH, 10f, 10f, p)
-            p.color = if (boomReady) 0xFFFF9500.toInt() else 0xFF555555.toInt()
+            p.color = if (boomReady) ThemeManager.ORANGE else ThemeManager.TEXT_DIM
             canvas.drawText("BOOM", 30f + fifthW / 2f, btnY + 33f, p)
 
             // VIBES button
-            val vibesColor = if (hapticConnected) 0xFF8B5CF6.toInt() else 0xFFEC4899.toInt()
+            val vibesColor = if (hapticConnected) ThemeManager.PURPLE_DEEP else ThemeManager.PINK_SOFT
             val vibesLabel = if (hapticConnected) "VIBES:ON"
                 else if (hapticEnabled) "Scan..."
                 else "VIBES"
-            p.color = if (hoveredActionButton == 128) 0x80EC4899.toInt()
-                else if (hapticConnected) 0x408B5CF6.toInt() else 0x20EC4899.toInt()
+            p.color = if (hoveredActionButton == 128) (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x80000000.toInt()
+                else if (hapticConnected) (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x40000000 else (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x20000000
             canvas.drawRoundRect(40f + fifthW, btnY, 40f + fifthW * 2f, btnY + btnH, 10f, 10f, p)
-            p.color = if (hoveredActionButton == 128) 0xFFFFFFFF.toInt() else vibesColor
+            p.color = if (hoveredActionButton == 128) ThemeManager.TEXT_BRIGHT else vibesColor
             canvas.drawText(vibesLabel, 40f + fifthW * 1.5f, btnY + 33f, p)
 
             // SPLIT button (dual motor toggle)
             val splitActive = activity.hapticDualMotorSplit
-            val splitColor = if (splitActive) 0xFF22D3EE.toInt() else 0xFF666666.toInt()
-            p.color = if (hoveredActionButton == 129) 0x8022D3EE.toInt()
-                else if (splitActive) 0x4022D3EE.toInt() else 0x15666666.toInt()
+            val splitColor = if (splitActive) ThemeManager.CYAN_ICE else ThemeManager.TEXT_DIM
+            p.color = if (hoveredActionButton == 129) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt()
+                else if (splitActive) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x15000000
             canvas.drawRoundRect(50f + fifthW * 2f, btnY, 50f + fifthW * 3f, btnY + btnH, 10f, 10f, p)
-            p.color = if (hoveredActionButton == 129) 0xFFFFFFFF.toInt() else splitColor
+            p.color = if (hoveredActionButton == 129) ThemeManager.TEXT_BRIGHT else splitColor
             canvas.drawText(if (splitActive) "SPLIT" else "UNIFIED", 50f + fifthW * 2.5f, btnY + 33f, p)
 
             // OFF button
-            p.color = if (hoveredActionButton == 112) 0x80F04858.toInt() else 0x20F04858.toInt()
+            p.color = if (hoveredActionButton == 112) (ThemeManager.RED and 0x00FFFFFF) or 0x80000000.toInt() else (ThemeManager.RED and 0x00FFFFFF) or 0x20000000
             canvas.drawRoundRect(60f + fifthW * 3f, btnY, 60f + fifthW * 4f, btnY + btnH, 10f, 10f, p)
-            p.color = if (hoveredActionButton == 112) 0xFFFFFFFF.toInt() else 0xFFF04858.toInt()
+            p.color = if (hoveredActionButton == 112) ThemeManager.TEXT_BRIGHT else ThemeManager.RED
             canvas.drawText("OFF", 60f + fifthW * 3.5f, btnY + 33f, p)
 
             // BACK button
-            p.color = if (hoveredActionButton == 111) 0x80EC4899.toInt() else 0x20EC4899.toInt()
+            p.color = if (hoveredActionButton == 111) (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x80000000.toInt() else (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x20000000
             canvas.drawRoundRect(70f + fifthW * 4f, btnY, uiW - 30f, btnY + btnH, 10f, 10f, p)
-            p.color = if (hoveredActionButton == 111) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+            p.color = if (hoveredActionButton == 111) ThemeManager.TEXT_BRIGHT else ThemeManager.PINK_SOFT
             canvas.drawText("BACK", 70f + fifthW * 4f + (uiW - 100f - fifthW * 4f) / 2f, btnY + 33f, p)
             p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
 
@@ -764,24 +798,24 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         // ═══ Audio Player ═══
         if (audioPlayerMode) {
             val ap = audioPlayer
-            val p = Paint().apply { isAntiAlias = true }
+            val p = tmpPaint
 
             // Audio file picker sub-mode
             if (audioPickerMode) {
-                p.textSize = 42f; p.color = 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+                p.textSize = ThemeManager.PX_TITLE; p.color = ThemeManager.PURPLE_DEEP; p.isFakeBoldText = true
                 canvas.drawText("Select Audio File", 60f, 112f, p)
-                canvas.drawLine(60f, 120f, uiW - 60f, 120f,
-                    Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f })
+                tmpPaint2.apply { color = ThemeManager.PURPLE_GLOW; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE }
+                canvas.drawLine(60f, 120f, uiW - 60f, 120f, tmpPaint2)
 
                 val files = availableAudioFiles
                 if (files.isEmpty()) {
-                    p.textSize = 32f
-                    p.color = if (audioScanInProgress) 0xFF8B5CF6.toInt() else 0xFF6B7280.toInt()
+                    p.textSize = ThemeManager.PX_TITLE
+                    p.color = if (audioScanInProgress) ThemeManager.PURPLE_DEEP else ThemeManager.TEXT_DIM
                     p.isFakeBoldText = false
                     canvas.drawText(if (audioScanInProgress) "Scanning audio files..." else "No audio files found", 60f, 200f, p)
                     if (audioScanInProgress) {
-                        p.textSize = 22f
-                        p.color = 0xFF9CA3AF.toInt()
+                        p.textSize = ThemeManager.PX_BODY
+                        p.color = ThemeManager.TEXT_MID
                         canvas.drawText("Browsing will populate automatically.", 60f, 238f, p)
                     }
                 } else {
@@ -794,30 +828,30 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                         val isHov = idx == hoveredAudioFileIndex
 
                         if (isHov) {
-                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
-                                Paint().apply { color = 0x208B5CF6.toInt(); isAntiAlias = true })
+                            tmpPaint2.apply { color = ThemeManager.BG_ELEVATED; style = Paint.Style.FILL }
+                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, tmpPaint2)
                         }
-                        if (vi % 2 == 0) {
-                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
-                                Paint().apply { color = 0x08FFFFFF.toInt(); isAntiAlias = true })
+                        if (vi % 2 == 0 && !isHov) {
+                            tmpPaint2.apply { color = ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+                            canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, tmpPaint2)
                         }
                         val name = file.nameWithoutExtension
                         val display = if (name.length > 28) name.take(26) + ".." else name
                         p.textSize = if (isHov) 36f else 34f
-                        p.color = if (isHov) 0xFF8B5CF6.toInt() else 0xFFE8EAF0.toInt()
+                        p.color = if (isHov) ThemeManager.PURPLE_DEEP else ThemeManager.TEXT_BRIGHT
                         p.isFakeBoldText = isHov
                         canvas.drawText(display, 50f, ry + 32f, p)
 
-                        p.textSize = 18f; p.color = 0xFF505868.toInt(); p.isFakeBoldText = false
+                        p.textSize = ThemeManager.PX_LABEL; p.color = ThemeManager.TEXT_DIM; p.isFakeBoldText = false
                         val ext = file.extension.uppercase()
                         val sizeMB = file.length() / 1048576f
-                        val info = "$ext  %.1f MB".format(sizeMB)
+                        val info = "$ext  ${(sizeMB * 10).toInt() / 10f} MB"
                         canvas.drawText(info, 50f, ry + 52f, p)
                     }
                     if (files.size > maxVis) {
                         val pg = audioPickerScrollOffset / maxVis + 1
                         val total = (files.size + maxVis - 1) / maxVis
-                        p.textSize = 20f; p.color = 0xFF505868.toInt()
+                        p.textSize = 20f; p.color = ThemeManager.TEXT_DIM
                         p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = false
                         canvas.drawText("Page $pg of $total  (${files.size} files)",
                             uiW / 2f, startY + maxVis * rowH + 16f, p)
@@ -826,7 +860,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 }
                 if (audioScanInProgress) {
                     p.textSize = 20f
-                    p.color = 0xFF8B5CF6.toInt()
+                    p.color = ThemeManager.PURPLE_DEEP
                     p.textAlign = Paint.Align.RIGHT
                     canvas.drawText("SCANNING...", uiW - 40f, 112f, p)
                     p.textAlign = Paint.Align.LEFT
@@ -834,10 +868,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 // BACK button
                 val apBtnY = uiH - 80f
                 val isBack = hoveredAudioButton == 50
-                canvas.drawRoundRect(30f, apBtnY, uiW - 30f, apBtnY + 60f, 12f, 12f,
-                    Paint().apply { color = if (isBack) 0x608B5CF6.toInt() else 0x188B5CF6.toInt() })
-                p.textSize = 32f; p.textAlign = Paint.Align.CENTER
-                p.color = if (isBack) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+                tmpPaint2.apply { color = if (isBack) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+                canvas.drawRoundRect(30f, apBtnY, uiW - 30f, apBtnY + 60f, 12f, 12f, tmpPaint2)
+                p.textSize = ThemeManager.PX_TITLE; p.textAlign = Paint.Align.CENTER
+                p.color = if (isBack) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; p.isFakeBoldText = true
                 canvas.drawText("\u25C0 BACK", uiW / 2f, apBtnY + 40f, p)
                 p.textAlign = Paint.Align.LEFT
 
@@ -847,53 +881,54 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
 
             // ── Audio Player Main Panel ──
-            p.textSize = 38f; p.color = 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+            p.textSize = ThemeManager.PX_TITLE; p.color = ThemeManager.PURPLE_DEEP; p.isFakeBoldText = true
             canvas.drawText("AUDIO PLAYER", 60f, 108f, p)
-            canvas.drawLine(60f, 116f, uiW - 60f, 116f,
-                Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f })
+            tmpPaint2.apply { color = ThemeManager.PURPLE_GLOW; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE }
+            canvas.drawLine(60f, 116f, uiW - 60f, 116f, tmpPaint2)
 
             // Now playing
             val fileName = ap?.currentFile?.nameWithoutExtension ?: "No track loaded"
             val displayName = if (fileName.length > 36) fileName.take(34) + ".." else fileName
-            p.textSize = 30f; p.color = 0xFFD0D0E0.toInt(); p.isFakeBoldText = false
+            p.textSize = 30f; p.color = ThemeManager.TEXT_BRIGHT; p.isFakeBoldText = false
             canvas.drawText(displayName, 60f, 160f, p)
 
             // Time + progress bar
             val posMs = ap?.currentPositionMs ?: 0
             val durMs = ap?.durationMs ?: 0
             fun fmtTime(ms: Long): String {
-                val s = ms / 1000; val m = s / 60
-                return "%d:%02d".format(m, s % 60)
+                val s = ms / 1000; val m = s / 60; val r = s % 60
+                return "$m:${if (r < 10) "0$r" else "$r"}"
             }
-            p.textSize = 24f; p.color = 0xFF9CA3AF.toInt()
+            p.textSize = ThemeManager.PX_BODY; p.color = ThemeManager.TEXT_MID
             canvas.drawText("${fmtTime(posMs)} / ${fmtTime(durMs)}", 60f, 195f, p)
 
             // Progress bar
             val barLeft = 60f; val barRight = uiW - 60f; val barY = 210f; val barH = 10f
-            canvas.drawRoundRect(barLeft, barY, barRight, barY + barH, 5f, 5f,
-                Paint().apply { color = 0xFF0E0E1C.toInt() })
+            tmpPaint2.apply { color = ThemeManager.BG_PANEL; style = Paint.Style.FILL; shader = null }
+            canvas.drawRoundRect(barLeft, barY, barRight, barY + barH, 5f, 5f, tmpPaint2)
             if (durMs > 0) {
                 val prog = (posMs.toFloat() / durMs).coerceIn(0f, 1f)
                 val fillR = barLeft + (barRight - barLeft) * prog
-                canvas.drawRoundRect(barLeft, barY, fillR, barY + barH, 5f, 5f,
-                    Paint().apply {
-                        shader = LinearGradient(barLeft, 0f, fillR, 0f,
-                            0xFF2A1048.toInt(), 0xFF8B5CF6.toInt(), Shader.TileMode.CLAMP)
-                    })
+                tmpPaint2.apply {
+                    shader = LinearGradient(barLeft, 0f, fillR, 0f,
+                        ThemeManager.PINK_HOT, ThemeManager.PINK_SOFT, Shader.TileMode.CLAMP)
+                }
+                canvas.drawRoundRect(barLeft, barY, fillR, barY + barH, 5f, 5f, tmpPaint2)
+                tmpPaint2.shader = null
                 // A/B markers
                 if (ap != null && ap.hasLoop()) {
                     val aX = barLeft + (barRight - barLeft) * (ap.loopA.toFloat() / durMs)
                     val bX = barLeft + (barRight - barLeft) * (ap.loopB.toFloat() / durMs)
-                    canvas.drawRect(aX - 1f, barY - 4f, aX + 1f, barY + barH + 4f,
-                        Paint().apply { color = 0xFF10B981.toInt() })
-                    canvas.drawRect(bX - 1f, barY - 4f, bX + 1f, barY + barH + 4f,
-                        Paint().apply { color = 0xFFF04858.toInt() })
-                    canvas.drawRect(aX, barY, bX, barY + 2f,
-                        Paint().apply { color = 0x3010B981.toInt() })
+                    tmpPaint2.color = ThemeManager.GREEN
+                    canvas.drawRect(aX - 1f, barY - 4f, aX + 1f, barY + barH + 4f, tmpPaint2)
+                    tmpPaint2.color = ThemeManager.RED
+                    canvas.drawRect(bX - 1f, barY - 4f, bX + 1f, barY + barH + 4f, tmpPaint2)
+                    tmpPaint2.color = (ThemeManager.GREEN and 0x00FFFFFF) or 0x30000000
+                    canvas.drawRect(aX, barY, bX, barY + 2f, tmpPaint2)
                 }
                 // Thumb
-                canvas.drawCircle(fillR, barY + barH / 2f, 7f,
-                    Paint().apply { color = 0xFFFFFFFF.toInt(); isAntiAlias = true })
+                tmpPaint2.color = Color.WHITE
+                canvas.drawCircle(fillR, barY + barH / 2f, 7f, tmpPaint2)
             }
 
             // Transport buttons
@@ -905,94 +940,96 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val bx = 60f + i * (btnW + txGap)
                 val isHov = hoveredAudioButton == btn.second
                 val col = when (i) {
-                    1 -> 0xFF8B5CF6.toInt()
-                    3 -> 0xFFF04858.toInt()
-                    else -> 0xFF3B82F6.toInt()
+                    1 -> ThemeManager.PURPLE_DEEP
+                    3 -> ThemeManager.RED
+                    else -> ThemeManager.BLUE
                 }
-                canvas.drawRoundRect(bx, txY, bx + btnW, txY + txBtnH, 10f, 10f,
-                    Paint().apply {
-                        color = if (isHov) (col and 0x00FFFFFF) or 0x60000000
-                        else (col and 0x00FFFFFF) or 0x18000000
-                    })
-                canvas.drawRoundRect(bx, txY, bx + btnW, txY + txBtnH, 10f, 10f,
-                    Paint().apply {
-                        style = Paint.Style.STROKE; strokeWidth = if (isHov) 2f else 1f
-                        color = if (isHov) col else (col and 0x00FFFFFF) or 0x50000000; isAntiAlias = true
-                    })
-                p.textSize = 22f; p.textAlign = Paint.Align.CENTER
-                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = true
+                tmpPaint2.apply {
+                    style = Paint.Style.FILL; shader = null; maskFilter = null
+                    color = if (isHov) (col and 0x00FFFFFF) or 0x60000000
+                    else (col and 0x00FFFFFF) or 0x18000000
+                }
+                canvas.drawRoundRect(bx, txY, bx + btnW, txY + txBtnH, 10f, 10f, tmpPaint2)
+                tmpPaint2.apply {
+                    style = Paint.Style.STROKE; strokeWidth = if (isHov) 2f else 1f
+                    color = if (isHov) col else (col and 0x00FFFFFF) or 0x50000000
+                }
+                canvas.drawRoundRect(bx, txY, bx + btnW, txY + txBtnH, 10f, 10f, tmpPaint2)
+                p.textSize = ThemeManager.PX_BODY; p.textAlign = Paint.Align.CENTER
+                p.color = if (isHov) ThemeManager.TEXT_BRIGHT else col; p.isFakeBoldText = true
                 canvas.drawText(btn.first, bx + btnW / 2f, txY + 37f, p)
             }
 
             // Speed
             val spY = 325f
             p.textAlign = Paint.Align.LEFT
-            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
+            p.textSize = ThemeManager.PX_BODY; p.color = ThemeManager.TEXT_DIM; p.isFakeBoldText = false
             canvas.drawText("SPEED", 60f, spY, p)
             val spLabel = AudioPlayer.SPEED_LABELS.getOrElse(ap?.speedIndex ?: 2) { "1.0x" }
-            p.color = 0xFF30D8D0.toInt(); p.isFakeBoldText = true
+            p.color = ThemeManager.CYAN_ICE; p.isFakeBoldText = true
             canvas.drawText(spLabel, 160f, spY, p)
             val isSpDown = hoveredAudioButton == 10; val isSpUp = hoveredAudioButton == 11
             p.textSize = 28f; p.textAlign = Paint.Align.CENTER
-            canvas.drawRoundRect(260f, spY - 22f, 320f, spY + 6f, 8f, 8f,
-                Paint().apply { color = if (isSpDown) 0x403B82F6.toInt() else 0x103B82F6.toInt() })
-            p.color = if (isSpDown) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt()
+            tmpPaint2.apply { color = if (isSpDown) (ThemeManager.BLUE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.BLUE and 0x00FFFFFF) or 0x10000000; style = Paint.Style.FILL; shader = null; maskFilter = null }
+            canvas.drawRoundRect(260f, spY - 22f, 320f, spY + 6f, 8f, 8f, tmpPaint2)
+            p.color = if (isSpDown) ThemeManager.TEXT_BRIGHT else ThemeManager.BLUE
             canvas.drawText("-", 290f, spY, p)
-            canvas.drawRoundRect(330f, spY - 22f, 390f, spY + 6f, 8f, 8f,
-                Paint().apply { color = if (isSpUp) 0x403B82F6.toInt() else 0x103B82F6.toInt() })
-            p.color = if (isSpUp) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt()
+            tmpPaint2.color = if (isSpUp) (ThemeManager.BLUE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.BLUE and 0x00FFFFFF) or 0x10000000
+            canvas.drawRoundRect(330f, spY - 22f, 390f, spY + 6f, 8f, 8f, tmpPaint2)
+            p.color = if (isSpUp) ThemeManager.TEXT_BRIGHT else ThemeManager.BLUE
             canvas.drawText("+", 360f, spY, p)
 
             // A/B Loop
             val abY = 375f
             p.textAlign = Paint.Align.LEFT
-            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false
+            p.textSize = ThemeManager.PX_BODY; p.color = ThemeManager.TEXT_DIM; p.isFakeBoldText = false
             canvas.drawText("A/B LOOP", 60f, abY, p)
             val abBtns = arrayOf("Set A" to 20, "Set B" to 21, "Clear" to 22)
             for ((i, ab) in abBtns.withIndex()) {
                 val bx = 220f + i * 100f
                 val isHov = hoveredAudioButton == ab.second
-                val col = when (i) { 0 -> 0xFF10B981.toInt(); 1 -> 0xFFF04858.toInt(); else -> 0xFF6B7280.toInt() }
-                canvas.drawRoundRect(bx, abY - 20f, bx + 90f, abY + 8f, 8f, 8f,
-                    Paint().apply { color = if (isHov) (col and 0x00FFFFFF) or 0x40000000 else 0x10404050.toInt() })
+                val col = when (i) { 0 -> ThemeManager.GREEN; 1 -> ThemeManager.RED; else -> ThemeManager.TEXT_DIM }
+                tmpPaint2.apply { color = if (isHov) (col and 0x00FFFFFF) or 0x40000000 else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+                canvas.drawRoundRect(bx, abY - 20f, bx + 90f, abY + 8f, 8f, 8f, tmpPaint2)
                 p.textSize = 20f; p.textAlign = Paint.Align.CENTER
-                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = isHov
+                p.color = if (isHov) ThemeManager.TEXT_BRIGHT else col; p.isFakeBoldText = isHov
                 canvas.drawText(ab.first, bx + 45f, abY, p)
             }
             if (ap != null && ap.hasLoop()) {
-                p.textSize = 18f; p.color = 0xFF505868.toInt(); p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+                p.textSize = ThemeManager.PX_LABEL; p.color = ThemeManager.TEXT_DIM; p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
                 canvas.drawText("A=${fmtTime(ap.loopA)}  B=${fmtTime(ap.loopB)}", 540f, abY, p)
             }
 
             // Repeat
             val rpY = 425f
-            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false; p.textAlign = Paint.Align.LEFT
+            p.textSize = ThemeManager.PX_BODY; p.color = ThemeManager.TEXT_DIM; p.isFakeBoldText = false; p.textAlign = Paint.Align.LEFT
             canvas.drawText("REPEAT", 60f, rpY, p)
             val rpLabel = ap?.repeatMode?.label ?: "OFF"
             val isRpHov = hoveredAudioButton == 30
-            canvas.drawRoundRect(180f, rpY - 20f, 280f, rpY + 8f, 8f, 8f,
-                Paint().apply { color = if (isRpHov) 0x40EC4899.toInt() else 0x10EC4899.toInt() })
-            p.textSize = 22f; p.textAlign = Paint.Align.CENTER
-            p.color = if (rpLabel != "OFF") 0xFFEC4899.toInt() else 0xFF505868.toInt(); p.isFakeBoldText = rpLabel != "OFF"
+            tmpPaint2.apply { color = if (isRpHov) (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x40000000 else (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x10000000; style = Paint.Style.FILL }
+            canvas.drawRoundRect(180f, rpY - 20f, 280f, rpY + 8f, 8f, 8f, tmpPaint2)
+            p.textSize = ThemeManager.PX_BODY; p.textAlign = Paint.Align.CENTER
+            p.color = if (rpLabel != "OFF") ThemeManager.PINK_SOFT else ThemeManager.TEXT_DIM; p.isFakeBoldText = rpLabel != "OFF"
             canvas.drawText(rpLabel, 230f, rpY, p)
 
             // EQ
             val eqY = 475f
-            p.textSize = 24f; p.color = 0xFF6B7280.toInt(); p.isFakeBoldText = false; p.textAlign = Paint.Align.LEFT
+            p.textSize = ThemeManager.PX_BODY; p.color = ThemeManager.TEXT_DIM; p.isFakeBoldText = false; p.textAlign = Paint.Align.LEFT
             canvas.drawText("EQ", 60f, eqY, p)
             val eqPresets = AudioPlayer.EqPreset.entries
             for ((i, eq) in eqPresets.withIndex()) {
                 val bx = 130f + i * 120f
                 val isHov = hoveredAudioButton == 40 + i
                 val isCurrent = ap?.eqPreset == eq
-                val col = if (isCurrent) 0xFFFF9500.toInt() else 0xFF505868.toInt()
-                canvas.drawRoundRect(bx, eqY - 20f, bx + 110f, eqY + 8f, 8f, 8f,
-                    Paint().apply {
-                        color = if (isHov) (col and 0x00FFFFFF) or 0x40000000
-                        else if (isCurrent) 0x20FF9500.toInt() else 0x10404050.toInt()
-                    })
-                p.textSize = 18f; p.textAlign = Paint.Align.CENTER
-                p.color = if (isHov) 0xFFFFFFFF.toInt() else col; p.isFakeBoldText = isCurrent
+                val col = if (isCurrent) ThemeManager.ORANGE else ThemeManager.TEXT_DIM
+                tmpPaint2.apply {
+                    style = Paint.Style.FILL
+                    color = if (isHov) (col and 0x00FFFFFF) or 0x40000000
+                    else if (isCurrent) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x20000000 else ThemeManager.BG_SURFACE
+                }
+                canvas.drawRoundRect(bx, eqY - 20f, bx + 110f, eqY + 8f, 8f, 8f, tmpPaint2)
+                p.textSize = ThemeManager.PX_LABEL; p.textAlign = Paint.Align.CENTER
+                p.color = if (isHov) ThemeManager.TEXT_BRIGHT else col; p.isFakeBoldText = isCurrent
                 canvas.drawText(eq.label, bx + 55f, eqY, p)
             }
 
@@ -1000,15 +1037,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val bbY = uiH - 80f
             val halfW = (uiW - 70f) / 2f
             val isBrowse = hoveredAudioButton == 51; val isBack = hoveredAudioButton == 52
-            canvas.drawRoundRect(30f, bbY, 30f + halfW, bbY + 60f, 12f, 12f,
-                Paint().apply { color = if (isBrowse) 0x608B5CF6.toInt() else 0x188B5CF6.toInt() })
+            tmpPaint2.apply { color = if (isBrowse) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+            canvas.drawRoundRect(30f, bbY, 30f + halfW, bbY + 60f, 12f, 12f, tmpPaint2)
             p.textSize = 28f; p.textAlign = Paint.Align.CENTER
-            p.color = if (isBrowse) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); p.isFakeBoldText = true
+            p.color = if (isBrowse) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; p.isFakeBoldText = true
             canvas.drawText("BROWSE", 30f + halfW / 2f, bbY + 40f, p)
 
-            canvas.drawRoundRect(40f + halfW, bbY, uiW - 30f, bbY + 60f, 12f, 12f,
-                Paint().apply { color = if (isBack) 0x60EC4899.toInt() else 0x18EC4899.toInt() })
-            p.color = if (isBack) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
+            tmpPaint2.color = if (isBack) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE
+            canvas.drawRoundRect(40f + halfW, bbY, uiW - 30f, bbY + 60f, 12f, 12f, tmpPaint2)
+            p.color = if (isBack) ThemeManager.TEXT_BRIGHT else ThemeManager.PINK_SOFT
             canvas.drawText("BACK", 40f + halfW + (uiW - 70f - halfW) / 2f, bbY + 40f, p)
             p.textAlign = Paint.Align.LEFT
 
@@ -1019,30 +1056,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ═══ Lighting Presets Sub-Menu ═══
         if (lightingPresetMode) {
-            val headerPaint = Paint().apply {
-                isAntiAlias = true; textSize = 36f; color = 0xFFF59E0B.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("Lighting Presets", 50f, 115f, headerPaint)
+            tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.GOLD_WARM; isFakeBoldText = true; textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT }
+            canvas.drawText("Lighting Presets", 50f, 115f, tmpPaint)
 
             val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
             val maxVisible = 12
             val rowH = 65f
             val startY = 140f
-            val normalPaint = Paint().apply {
-                isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt()
-            }
-            val hoverPaint = Paint().apply {
-                isAntiAlias = true; textSize = 32f; color = 0xFFF59E0B.toInt(); isFakeBoldText = true
-            }
-            val summaryPaint = Paint().apply {
-                isAntiAlias = true; textSize = 20f; color = 0xFF6B7280.toInt()
-                typeface = android.graphics.Typeface.MONOSPACE
-            }
-            val builtInBadge = Paint().apply {
-                isAntiAlias = true; textSize = 14f; color = 0xFF505868.toInt()
-            }
-            val hoverBg = Paint().apply { color = 0x20F59E0B.toInt() }
-            val activeDot = Paint().apply { color = 0xFF10B981.toInt(); isAntiAlias = true }
 
             for (vi in 0 until minOf(maxVisible, presets.size)) {
                 val preset = presets[vi]
@@ -1051,53 +1071,55 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isActive = preset.name == activeLightingPresetName
 
                 if (isHovered) {
-                    canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                    tmpPaint2.apply { color = ThemeManager.BG_ELEVATED; style = Paint.Style.FILL; maskFilter = null; shader = null }
+                    canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, tmpPaint2)
                 }
 
                 // Active preset indicator dot
                 if (isActive) {
-                    canvas.drawCircle(38f, ry + 24f, 5f, activeDot)
-                    canvas.drawCircle(38f, ry + 24f, 8f, Paint().apply {
-                        color = 0x4010B981.toInt(); isAntiAlias = true
-                        maskFilter = blurNormal3
-                    })
+                    tmpPaint2.apply { color = ThemeManager.GREEN; style = Paint.Style.FILL; maskFilter = null }
+                    canvas.drawCircle(38f, ry + 24f, 5f, tmpPaint2)
+                    tmpPaint2.apply { color = (ThemeManager.GREEN and 0x00FFFFFF) or 0x40000000; maskFilter = blurNormal3 }
+                    canvas.drawCircle(38f, ry + 24f, 8f, tmpPaint2)
+                    tmpPaint2.maskFilter = null
                 }
 
                 val nameX = if (isActive) 56f else 50f
-                canvas.drawText(preset.name, nameX, ry + 28f, if (isHovered) hoverPaint else normalPaint)
+                if (isHovered) {
+                    tmpPaint.apply { textSize = 32f; color = ThemeManager.GOLD_WARM; isFakeBoldText = true; typeface = Typeface.DEFAULT }
+                } else {
+                    tmpPaint.apply { textSize = 30f; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false; typeface = Typeface.DEFAULT }
+                }
+                canvas.drawText(preset.name, nameX, ry + 28f, tmpPaint)
 
                 if (preset.isBuiltIn) {
-                    val nameW = normalPaint.measureText(preset.name)
-                    canvas.drawText("built-in", nameX + nameW + 12f, ry + 28f, builtInBadge)
+                    tmpPaint.apply { textSize = 30f; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false }
+                    val nameW = tmpPaint.measureText(preset.name)
+                    tmpPaint.apply { textSize = ThemeManager.PX_MICRO; color = ThemeManager.TEXT_DIM }
+                    canvas.drawText("built-in", nameX + nameW + 12f, ry + 28f, tmpPaint)
                 }
 
                 // Summary line
-                val summary = "L:%.1f  F:%.1f  A:%.1f  Shd:%.0f%%  %s".format(
-                    preset.lightIntensity, preset.fillLightIntensity,
-                    preset.ambientIntensity, preset.shadowDarkness * 100,
-                    if (preset.autoAmbient) "Auto" else "Manual"
-                )
-                canvas.drawText(summary, nameX, ry + 50f, summaryPaint)
+                val li = (preset.lightIntensity * 10).toInt() / 10f
+                val fi = (preset.fillLightIntensity * 10).toInt() / 10f
+                val ai = (preset.ambientIntensity * 10).toInt() / 10f
+                val sd = (preset.shadowDarkness * 100).toInt()
+                val am = if (preset.autoAmbient) "Auto" else "Manual"
+                val summary = "L:$li  F:$fi  A:$ai  Shd:$sd%  $am"
+                tmpPaint.apply { textSize = 20f; color = ThemeManager.TEXT_DIM; isFakeBoldText = false; typeface = Typeface.MONOSPACE }
+                canvas.drawText(summary, nameX, ry + 50f, tmpPaint)
+                tmpPaint.typeface = Typeface.DEFAULT
             }
 
             // SAVE CURRENT button
             val saveBtnY = uiH - 150f
             val isSaveHovered = hoveredActionButton == 132
-            val saveBg = Paint().apply {
-                color = if (isSaveHovered) 0x808B5CF6.toInt() else 0x308B5CF6.toInt()
-            }
-            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBg)
-            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f,
-                Paint().apply {
-                    style = Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 3f else 1.5f
-                    color = 0xFF8B5CF6.toInt(); isAntiAlias = true
-                })
-            canvas.drawText("SAVE CURRENT LIGHTING", uiW / 2f, saveBtnY + 34f,
-                Paint().apply {
-                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
-                    color = if (isSaveHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt()
-                    isFakeBoldText = true
-                })
+            tmpPaint2.apply { color = if (isSaveHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL; maskFilter = null; shader = null }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, tmpPaint2)
+            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 2f else 1f; color = if (isSaveHovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, tmpPaint2)
+            tmpPaint.apply { textSize = ThemeManager.PX_HEADING; textAlign = Paint.Align.CENTER; color = if (isSaveHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; isFakeBoldText = true }
+            canvas.drawText("SAVE CURRENT LIGHTING", uiW / 2f, saveBtnY + 34f, tmpPaint)
 
             // SET DEFAULT / BACK row
             val row2Y = uiH - 80f
@@ -1106,34 +1128,18 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val isBackHovered = hoveredActionButton == 131
 
             // SET DEFAULT button
-            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f,
-                Paint().apply {
-                    color = if (isDefaultHovered) 0x70F59E0B.toInt() else 0x20F59E0B.toInt()
-                })
-            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f,
-                Paint().apply {
-                    style = Paint.Style.STROKE; strokeWidth = if (isDefaultHovered) 3f else 1.5f
-                    color = if (isDefaultHovered) 0xFFF59E0B.toInt() else 0x60F59E0B.toInt()
-                    isAntiAlias = true
-                })
-            canvas.drawText("SET DEFAULT", 30f + halfW / 2f, row2Y + 40f,
-                Paint().apply {
-                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
-                    color = if (isDefaultHovered) 0xFFFFFFFF.toInt() else 0xFFF59E0B.toInt()
-                    isFakeBoldText = true
-                })
+            tmpPaint2.apply { color = if (isDefaultHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f, tmpPaint2)
+            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = if (isDefaultHovered) 2f else 1f; color = if (isDefaultHovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT }
+            canvas.drawRoundRect(30f, row2Y, 30f + halfW, row2Y + 60f, 12f, 12f, tmpPaint2)
+            tmpPaint.apply { textSize = ThemeManager.PX_HEADING; textAlign = Paint.Align.CENTER; color = if (isDefaultHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM; isFakeBoldText = true }
+            canvas.drawText("SET DEFAULT", 30f + halfW / 2f, row2Y + 40f, tmpPaint)
 
             // BACK button
-            canvas.drawRoundRect(38f + halfW, row2Y, uiW - 30f, row2Y + 60f, 12f, 12f,
-                Paint().apply {
-                    color = if (isBackHovered) 0x70EC4899.toInt() else 0x20EC4899.toInt()
-                })
-            canvas.drawText("\u25C0 BACK", 38f + halfW + (uiW - 68f - halfW) / 2f, row2Y + 40f,
-                Paint().apply {
-                    isAntiAlias = true; textSize = 26f; textAlign = Paint.Align.CENTER
-                    color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
-                    isFakeBoldText = true
-                })
+            tmpPaint2.apply { color = if (isBackHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+            canvas.drawRoundRect(38f + halfW, row2Y, uiW - 30f, row2Y + 60f, 12f, 12f, tmpPaint2)
+            tmpPaint.apply { textSize = ThemeManager.PX_HEADING; textAlign = Paint.Align.CENTER; color = if (isBackHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PINK_SOFT; isFakeBoldText = true }
+            canvas.drawText("\u25C0 BACK", 38f + halfW + (uiW - 68f - halfW) / 2f, row2Y + 40f, tmpPaint)
 
             drawLaserCursorOverlay()
             publishBitmap(bitmap)
@@ -1142,10 +1148,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ═══ Save Name Editor ═══
         if (saveNameMode) {
-            val headerPaint = Paint().apply {
-                isAntiAlias = true; textSize = 36f; color = 0xFF8B5CF6.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("Save Scene", 50f, 110f, headerPaint)
+            tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.PURPLE_DEEP; isFakeBoldText = true; textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT }
+            canvas.drawText("Save Scene", 50f, 110f, tmpPaint)
 
             // Name display with cursor
             val nameY = 155f
@@ -1155,20 +1159,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val ch = if (i < saveNameLen) saveNameChars[i] else ' '
                 val isCursor = i == saveNameCursor
                 if (isCursor) {
-                    val cursorBg = Paint().apply { color = 0xFF8B5CF6.toInt() }
+                    tmpPaint2.apply { color = ThemeManager.PURPLE_DEEP; style = Paint.Style.FILL; maskFilter = null; shader = null }
                     canvas.drawRoundRect(nameStartX + i * charW - 2f, nameY - 32f,
-                        nameStartX + i * charW + charW - 4f, nameY + 6f, 4f, 4f, cursorBg)
+                        nameStartX + i * charW + charW - 4f, nameY + 6f, 4f, 4f, tmpPaint2)
                 }
-                val charPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 36f
-                    color = if (isCursor) 0xFFFFFFFF.toInt() else if (i < saveNameLen) 0xFFF3F4F6.toInt() else 0xFF3A3A42.toInt()
+                tmpPaint.apply {
+                    textSize = 36f; textAlign = Paint.Align.LEFT
+                    color = if (isCursor) Color.WHITE else if (i < saveNameLen) ThemeManager.TEXT_BRIGHT else ThemeManager.BORDER
                     isFakeBoldText = isCursor
                 }
-                canvas.drawText(ch.toString(), nameStartX + i * charW, nameY, charPaint)
+                canvas.drawText(ch.toString(), nameStartX + i * charW, nameY, tmpPaint)
             }
 
-            val underPaint = Paint().apply { color = 0x408B5CF6.toInt(); strokeWidth = 2f }
-            canvas.drawLine(nameStartX, nameY + 8f, nameStartX + 20 * charW, nameY + 8f, underPaint)
+            tmpPaint2.apply { color = ThemeManager.PURPLE_GLOW; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE }
+            canvas.drawLine(nameStartX, nameY + 8f, nameStartX + 20 * charW, nameY + 8f, tmpPaint2)
 
             // On-screen QWERTY keyboard
             val hoveredKey = ih.hoveredKeyboardKey
@@ -1177,44 +1181,24 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             // SAVE button (below keyboard)
             val saveBtnY = 555f
             val isSaveHovered = hoveredSaveButton == 0
-            val saveBg = Paint().apply {
-                color = if (isSaveHovered) 0x808B5CF6.toInt() else 0x308B5CF6.toInt()
-            }
-            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBg)
-            val saveBorder = Paint().apply {
-                style = Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 3f else 1.5f
-                color = 0xFF8B5CF6.toInt(); isAntiAlias = true
-            }
-            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, saveBorder)
-            val saveTxt = Paint().apply {
-                isAntiAlias = true; textSize = 28f; textAlign = Paint.Align.CENTER
-                color = if (isSaveHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); isFakeBoldText = true
-            }
+            tmpPaint2.apply { color = if (isSaveHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL; maskFilter = null; shader = null }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, tmpPaint2)
+            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = if (isSaveHovered) 2f else 1f; color = if (isSaveHovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT }
+            canvas.drawRoundRect(30f, saveBtnY, uiW - 30f, saveBtnY + 50f, 10f, 10f, tmpPaint2)
+            tmpPaint.apply { textSize = ThemeManager.PX_HEADING; textAlign = Paint.Align.CENTER; color = if (isSaveHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; isFakeBoldText = true }
             @Suppress("NAME_SHADOWING")
             val displayName = String(saveNameChars, 0, saveNameLen).trim().ifEmpty { "untitled" }
-            canvas.drawText("SAVE \"$displayName\"", uiW / 2f, saveBtnY + 34f, saveTxt)
+            canvas.drawText("SAVE \"$displayName\"", uiW / 2f, saveBtnY + 34f, tmpPaint)
 
             // Existing scenes (overwrite targets)
             activity.refreshSceneList()
             val scenes = savedSceneFiles
             if (scenes.isNotEmpty()) {
-                val secHeader = Paint().apply {
-                    isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
-                }
-                canvas.drawText("Or overwrite existing:", 50f, 630f, secHeader)
+                tmpPaint.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_DIM; isFakeBoldText = false; textAlign = Paint.Align.LEFT; typeface = Typeface.DEFAULT }
+                canvas.drawText("Or overwrite existing:", 50f, 630f, tmpPaint)
 
                 val rowH = 50f
                 val startY = 650f
-                val normalPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 30f; color = 0xFFF3F4F6.toInt()
-                }
-                val hoverPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 32f; color = 0xFF8B5CF6.toInt(); isFakeBoldText = true
-                }
-                val datePaint = Paint().apply {
-                    isAntiAlias = true; textSize = 22f; color = 0xFF6B7280.toInt()
-                }
-                val hoverBg = Paint().apply { color = 0x208B5CF6.toInt() }
 
                 for (vi in 0 until minOf(10, scenes.size)) {
                     val scene = scenes[vi]
@@ -1222,14 +1206,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val isHovered = vi == hoveredSceneIndex
 
                     if (isHovered) {
-                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                        tmpPaint2.apply { color = ThemeManager.BG_ELEVATED; style = Paint.Style.FILL; maskFilter = null; shader = null }
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, tmpPaint2)
                     }
-                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 30f, if (isHovered) hoverPaint else normalPaint)
+                    if (isHovered) {
+                        tmpPaint.apply { textSize = 32f; color = ThemeManager.PURPLE_DEEP; isFakeBoldText = true }
+                    } else {
+                        tmpPaint.apply { textSize = 30f; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false }
+                    }
+                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 30f, tmpPaint)
 
-                    val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
-                        .format(java.util.Date(scene.lastModified()))
-                    val dw = datePaint.measureText(dateStr)
-                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 30f, datePaint)
+                    val dateStr = sceneDateFormat.format(java.util.Date(scene.lastModified()))
+                    tmpPaint.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_DIM; isFakeBoldText = false }
+                    val dw = tmpPaint.measureText(dateStr)
+                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 30f, tmpPaint)
                 }
             }
 
@@ -1237,15 +1227,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val snBtnY = uiH - 80f
             val snBtnH = 60f
             val isBackHovered = hoveredSaveButton == 1
-            val backBg = Paint().apply {
-                color = if (isBackHovered) 0x708B5CF6.toInt() else 0x208B5CF6.toInt()
-            }
-            canvas.drawRoundRect(30f, snBtnY, uiW - 30f, snBtnY + snBtnH, 12f, 12f, backBg)
-            val backText = Paint().apply {
-                isAntiAlias = true; textSize = 30f; textAlign = Paint.Align.CENTER
-                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFF8B5CF6.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("\u25C0 BACK", uiW / 2f, snBtnY + 40f, backText)
+            tmpPaint2.apply { color = if (isBackHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL; maskFilter = null; shader = null }
+            canvas.drawRoundRect(30f, snBtnY, uiW - 30f, snBtnY + snBtnH, 12f, 12f, tmpPaint2)
+            tmpPaint.apply { textSize = 30f; textAlign = Paint.Align.CENTER; color = if (isBackHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; isFakeBoldText = true }
+            canvas.drawText("\u25C0 BACK", uiW / 2f, snBtnY + 40f, tmpPaint)
 
             drawLaserCursorOverlay()
             publishBitmap(bitmap)
@@ -1254,22 +1239,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ═══ GLB Picker Sub-Menu ═══
         if (glbPickerMode) {
-            val headerPaint = Paint().apply {
-                isAntiAlias = true; textSize = 42f; color = 0xFF10B981.toInt(); isFakeBoldText = true
-            }
-            canvas.drawText("Select a 3D Model", 70f, 112f, headerPaint)
-            val lineGlow = Paint().apply {
-                color = 0x4010B981.toInt(); strokeWidth = 2f; isAntiAlias = true
-                maskFilter = blurNormal4
-            }
-            canvas.drawLine(70f, 120f, uiW - 70f, 120f, lineGlow)
+            tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.GREEN; isFakeBoldText = true; textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT }
+            canvas.drawText("Select a 3D Model", 70f, 112f, tmpPaint)
+            tmpPaint2.apply { color = (ThemeManager.GREEN and 0x00FFFFFF) or 0x40000000; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE; maskFilter = blurNormal4; shader = null }
+            canvas.drawLine(70f, 120f, uiW - 70f, 120f, tmpPaint2)
+            tmpPaint2.maskFilter = null
 
             val files = availableGlbFiles
             if (files.isEmpty()) {
-                val emptyPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 34f; color = 0xFF6B7280.toInt()
-                }
-                canvas.drawText("No .glb files found on device", 70f, 200f, emptyPaint)
+                tmpPaint.apply { textSize = 34f; color = ThemeManager.TEXT_DIM; isFakeBoldText = false }
+                canvas.drawText("No .glb files found on device", 70f, 200f, tmpPaint)
             } else {
                 val maxVisible = 10
                 val rowH = 76f
@@ -1284,85 +1263,71 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val isHovered = idx == hoveredGlbIndex
                     val isLoaded = file.absolutePath in loadedPaths
 
-                    val rowBg = Paint().apply {
-                        isAntiAlias = true
+                    tmpPaint2.apply {
+                        style = Paint.Style.FILL; maskFilter = null; shader = null
                         color = when {
-                            isHovered && isLoaded -> 0x3010B981.toInt()
-                            isHovered -> 0x2010B981.toInt()
-                            isLoaded -> 0x14EC4899.toInt()
-                            vi % 2 == 0 -> 0x08FFFFFF.toInt()
+                            isHovered -> ThemeManager.BG_ELEVATED
+                            isLoaded -> (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x14000000
+                            vi % 2 == 0 -> ThemeManager.BG_SURFACE
                             else -> 0x00000000.toInt()
                         }
                     }
-                    canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, rowBg)
+                    canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, tmpPaint2)
 
                     if (isHovered) {
-                        canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f,
-                            Paint().apply {
-                                style = Paint.Style.STROKE; strokeWidth = 1.5f
-                                color = 0x6010B981.toInt(); isAntiAlias = true
-                                maskFilter = blurOuter3
-                            })
+                        tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = 1.5f; color = ThemeManager.BORDER_PINK; maskFilter = blurOuter3 }
+                        canvas.drawRoundRect(30f, ry - 2f, uiW - 30f, ry + rowH - 10f, 10f, 10f, tmpPaint2)
+                        tmpPaint2.maskFilter = null
                     }
 
                     if (isLoaded) {
-                        canvas.drawCircle(46f, ry + 30f, 4f,
-                            Paint().apply { color = 0xFFEC4899.toInt(); isAntiAlias = true })
-                        canvas.drawCircle(46f, ry + 30f, 6f,
-                            Paint().apply {
-                                color = 0x40EC4899.toInt(); isAntiAlias = true
-                                maskFilter = blurNormal3
-                            })
+                        tmpPaint2.apply { color = ThemeManager.PINK_SOFT; style = Paint.Style.FILL; maskFilter = null }
+                        canvas.drawCircle(46f, ry + 30f, 4f, tmpPaint2)
+                        tmpPaint2.apply { color = ThemeManager.PINK_GLOW; maskFilter = blurNormal3 }
+                        canvas.drawCircle(46f, ry + 30f, 6f, tmpPaint2)
+                        tmpPaint2.maskFilter = null
                     }
 
                     val label = file.nameWithoutExtension
                     @Suppress("NAME_SHADOWING")
                     val displayName = if (label.length > 26) label.take(24) + ".." else label
-                    val namePaint = Paint().apply {
-                        isAntiAlias = true
-                        textSize = if (isHovered) 38f else 36f
+                    tmpPaint.apply {
+                        textSize = if (isHovered) 38f else 36f; textAlign = Paint.Align.LEFT; letterSpacing = 0f; typeface = Typeface.DEFAULT
                         color = when {
-                            isHovered -> 0xFF10B981.toInt()
-                            isLoaded -> 0xFFD0C0E0.toInt()
-                            else -> 0xFFE8EAF0.toInt()
+                            isHovered -> ThemeManager.GREEN
+                            isLoaded -> ThemeManager.TEXT_MID
+                            else -> ThemeManager.TEXT_BRIGHT
                         }
                         isFakeBoldText = isHovered
                     }
-                    canvas.drawText(displayName, if (isLoaded) 62f else 50f, ry + 34f, namePaint)
+                    canvas.drawText(displayName, if (isLoaded) 62f else 50f, ry + 34f, tmpPaint)
 
                     val sizeMB = file.length() / 1048576f
-                    val sizeStr = if (sizeMB >= 10f) "%.0f MB".format(sizeMB) else "%.1f MB".format(sizeMB)
+                    val sizeStr = if (sizeMB >= 10f) "${sizeMB.toInt()} MB" else "${(sizeMB * 10).toInt() / 10f} MB"
                     val badgeColor = when {
-                        sizeMB > 50f -> 0xFFF04858.toInt()
-                        sizeMB > 10f -> 0xFFFF9500.toInt()
-                        else -> 0xFF6B7280.toInt()
+                        sizeMB > 50f -> ThemeManager.RED
+                        sizeMB > 10f -> ThemeManager.ORANGE
+                        else -> ThemeManager.TEXT_DIM
                     }
-                    val sizePaint = Paint().apply {
-                        isAntiAlias = true; textSize = 22f; color = badgeColor
-                    }
-                    val sw = sizePaint.measureText(sizeStr)
+                    tmpPaint.apply { textSize = 22f; color = badgeColor; isFakeBoldText = false }
+                    val sw = tmpPaint.measureText(sizeStr)
                     val bx = uiW - 60f - sw - 16f
-                    canvas.drawRoundRect(bx, ry + 18f, uiW - 50f, ry + 42f, 12f, 12f,
-                        Paint().apply { color = (badgeColor and 0x00FFFFFF) or 0x18000000; isAntiAlias = true })
-                    canvas.drawText(sizeStr, bx + 8f, ry + 37f, sizePaint)
+                    tmpPaint2.apply { color = (badgeColor and 0x00FFFFFF) or 0x18000000; style = Paint.Style.FILL }
+                    canvas.drawRoundRect(bx, ry + 18f, uiW - 50f, ry + 42f, 12f, 12f, tmpPaint2)
+                    canvas.drawText(sizeStr, bx + 8f, ry + 37f, tmpPaint)
 
                     val ext = file.extension.uppercase()
-                    val extPaint = Paint().apply {
-                        isAntiAlias = true; textSize = 16f; color = 0xFF8B5CF6.toInt()
-                        letterSpacing = 0.05f
-                    }
-                    canvas.drawText(ext, if (isLoaded) 62f else 50f, ry + 54f, extPaint)
+                    tmpPaint.apply { textSize = ThemeManager.PX_CAPTION; color = ThemeManager.PURPLE_DEEP; letterSpacing = 0.05f }
+                    canvas.drawText(ext, if (isLoaded) 62f else 50f, ry + 54f, tmpPaint)
+                    tmpPaint.letterSpacing = 0f
                 }
 
                 if (files.size > maxVisible) {
                     val page = glbPickerScrollOffset / maxVisible + 1
                     val totalPages = (files.size + maxVisible - 1) / maxVisible
-                    val pagePaint = Paint().apply {
-                        isAntiAlias = true; textSize = 22f; color = 0xFF505868.toInt()
-                        textAlign = Paint.Align.CENTER
-                    }
+                    tmpPaint.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_DIM; textAlign = Paint.Align.CENTER; isFakeBoldText = false }
                     canvas.drawText("Page $page of $totalPages  (${files.size} files)", uiW / 2f,
-                        startY + maxVisible * rowH + 16f, pagePaint)
+                        startY + maxVisible * rowH + 16f, tmpPaint)
                 }
             }
 
@@ -1371,29 +1336,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val glbBtnH = 60f
             val isBackHovered = hoveredActionButton == 103
             if (isBackHovered) {
-                canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f,
-                    Paint().apply {
-                        color = 0xFFEC4899.toInt(); isAntiAlias = true
-                        maskFilter = blurOuter8
-                        style = Paint.Style.STROKE; strokeWidth = 2f
-                    })
+                tmpPaint2.apply { color = ThemeManager.PINK_GLOW; maskFilter = blurOuter8; style = Paint.Style.STROKE; strokeWidth = 2f; shader = null }
+                canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f, tmpPaint2)
+                tmpPaint2.maskFilter = null
             }
-            canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f,
-                Paint().apply {
-                    color = if (isBackHovered) 0x60EC4899.toInt() else 0x18EC4899.toInt(); isAntiAlias = true
-                })
-            canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f,
-                Paint().apply {
-                    style = Paint.Style.STROKE; strokeWidth = if (isBackHovered) 2f else 1f
-                    color = if (isBackHovered) 0xFFEC4899.toInt() else 0x50EC4899.toInt()
-                    isAntiAlias = true
-                })
-            val backText = Paint().apply {
-                isAntiAlias = true; textSize = 32f; textAlign = Paint.Align.CENTER
-                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFFEC4899.toInt()
-                isFakeBoldText = true
-            }
-            canvas.drawText("\u25C0 BACK", uiW / 2f, glbBtnY + 40f, backText)
+            tmpPaint2.apply { color = if (isBackHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE; style = Paint.Style.FILL }
+            canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f, tmpPaint2)
+            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = if (isBackHovered) 2f else 1f; color = if (isBackHovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT }
+            canvas.drawRoundRect(30f, glbBtnY, uiW - 30f, glbBtnY + glbBtnH, 12f, 12f, tmpPaint2)
+            tmpPaint.apply { textSize = ThemeManager.PX_TITLE; textAlign = Paint.Align.CENTER; color = if (isBackHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PINK_SOFT; isFakeBoldText = true }
+            canvas.drawText("\u25C0 BACK", uiW / 2f, glbBtnY + 40f, tmpPaint)
 
             drawLaserCursorOverlay()
             publishBitmap(bitmap)
@@ -1402,31 +1354,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ═══ Scene Picker Sub-Menu ═══
         if (scenePickerMode) {
-            val headerPaint = Paint().apply {
-                isAntiAlias = true; textSize = 38f; color = 0xFF3B82F6.toInt(); isFakeBoldText = true
+            tmpPaint.apply {
+                textSize = ThemeManager.PX_TITLE; color = ThemeManager.BLUE; isFakeBoldText = true
+                textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT
             }
-            canvas.drawText("Load Scene", 50f, 115f, headerPaint)
+            canvas.drawText("Load Scene", 50f, 115f, tmpPaint)
 
             val scenes = savedSceneFiles
             if (scenes.isEmpty()) {
-                val emptyPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 32f; color = 0xFF6B7280.toInt()
-                }
-                canvas.drawText("No saved scenes", 50f, 200f, emptyPaint)
+                tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.TEXT_DIM; isFakeBoldText = false }
+                canvas.drawText("No saved scenes", 50f, 200f, tmpPaint)
             } else {
                 val maxVisible = 13
                 val rowH = 60f
                 val startY = 130f
-                val normalPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 34f; color = 0xFFF3F4F6.toInt()
-                }
-                val hoverPaint = Paint().apply {
-                    isAntiAlias = true; textSize = 36f; color = 0xFF3B82F6.toInt(); isFakeBoldText = true
-                }
-                val datePaint = Paint().apply {
-                    isAntiAlias = true; textSize = 24f; color = 0xFF6B7280.toInt()
-                }
-                val hoverBg = Paint().apply { color = 0x203B82F6.toInt() }
 
                 for (vi in 0 until minOf(maxVisible, scenes.size)) {
                     val scene = scenes[vi]
@@ -1434,15 +1375,21 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val isHovered = vi == hoveredSceneIndex
 
                     if (isHovered) {
-                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, hoverBg)
+                        tmpPaint2.apply { color = ThemeManager.BG_ELEVATED; style = Paint.Style.FILL }
+                        canvas.drawRoundRect(24f, ry - 4f, uiW - 24f, ry + rowH - 10f, 8f, 8f, tmpPaint2)
                     }
 
-                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 34f, if (isHovered) hoverPaint else normalPaint)
+                    if (isHovered) {
+                        tmpPaint.apply { textSize = 36f; color = ThemeManager.BLUE; isFakeBoldText = true }
+                    } else {
+                        tmpPaint.apply { textSize = 34f; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false }
+                    }
+                    canvas.drawText(scene.nameWithoutExtension, 50f, ry + 34f, tmpPaint)
 
-                    val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
-                        .format(java.util.Date(scene.lastModified()))
-                    val dw = datePaint.measureText(dateStr)
-                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 34f, datePaint)
+                    val dateStr = sceneDateFormat.format(java.util.Date(scene.lastModified()))
+                    tmpPaint2.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_DIM; style = Paint.Style.FILL }
+                    val dw = tmpPaint2.measureText(dateStr)
+                    canvas.drawText(dateStr, uiW - 60f - dw, ry + 34f, tmpPaint2)
                 }
             }
 
@@ -1450,21 +1397,21 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val scBtnY = uiH - 80f
             val scBtnH = 60f
             val isBackHovered = hoveredActionButton == 106
-            val backBg = Paint().apply {
-                color = if (isBackHovered) 0x703B82F6.toInt() else 0x203B82F6.toInt()
+            tmpPaint2.apply {
+                color = if (isBackHovered) ThemeManager.BG_ELEVATED else ThemeManager.BG_SURFACE
+                style = Paint.Style.FILL
             }
-            canvas.drawRoundRect(30f, scBtnY, uiW - 30f, scBtnY + scBtnH, 12f, 12f, backBg)
-            val backBorder = Paint().apply {
-                style = Paint.Style.STROKE; strokeWidth = if (isBackHovered) 3f else 1.5f
-                color = if (isBackHovered) 0xFF3B82F6.toInt() else 0x603B82F6.toInt()
-                isAntiAlias = true
+            canvas.drawRoundRect(30f, scBtnY, uiW - 30f, scBtnY + scBtnH, 12f, 12f, tmpPaint2)
+            tmpPaint2.apply {
+                style = Paint.Style.STROKE; strokeWidth = if (isBackHovered) 2f else 1f
+                color = if (isBackHovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT
             }
-            canvas.drawRoundRect(30f, scBtnY, uiW - 30f, scBtnY + scBtnH, 12f, 12f, backBorder)
-            val scBackText = Paint().apply {
-                isAntiAlias = true; textSize = 30f; textAlign = Paint.Align.CENTER
-                color = if (isBackHovered) 0xFFFFFFFF.toInt() else 0xFF3B82F6.toInt(); isFakeBoldText = true
+            canvas.drawRoundRect(30f, scBtnY, uiW - 30f, scBtnY + scBtnH, 12f, 12f, tmpPaint2)
+            tmpPaint.apply {
+                textSize = 30f; textAlign = Paint.Align.CENTER
+                color = if (isBackHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.BLUE; isFakeBoldText = true
             }
-            canvas.drawText("\u25C0 BACK", uiW / 2f, scBtnY + 40f, scBackText)
+            canvas.drawText("\u25C0 BACK", uiW / 2f, scBtnY + 40f, tmpPaint)
 
             drawLaserCursorOverlay()
             publishBitmap(bitmap)
@@ -1477,27 +1424,27 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             !autoAmbient -> "Manual"
             xrLightEstimateAvailable && xrSHAvailable -> "XR+SH"
             xrLightEstimateAvailable -> "XR Light"
-            else -> "%.0f lux".format(roomLux)
+            else -> "${roomLux.toInt()} lux"
         }
         val gridStr = if (gridVisible) "ON" else "OFF"
-        val gridColor = if (gridVisible) 0xFF10B981.toInt() else 0xFF6B7280.toInt()
+        val gridColor = if (gridVisible) ThemeManager.GREEN else ThemeManager.TEXT_DIM
 
         var chipX = 40f
-        chipX = drawStatusChip(canvas, chipX, y, "${models.size} mdl", 0xFF10B981.toInt())
+        chipX = drawStatusChip(canvas, chipX, y, "${models.size} mdl", ThemeManager.GREEN)
         chipX = drawStatusChip(canvas, chipX + 8f, y, "Grid: $gridStr", gridColor)
-        chipX = drawStatusChip(canvas, chipX + 8f, y, luxStr, 0xFFF59E0B.toInt())
+        chipX = drawStatusChip(canvas, chipX + 8f, y, luxStr, ThemeManager.GOLD_WARM)
         if (hapticConnected) {
-            drawStatusChip(canvas, chipX + 8f, y, "Haptic", 0xFF8B5CF6.toInt())
+            drawStatusChip(canvas, chipX + 8f, y, "Haptic", ThemeManager.PURPLE_DEEP)
         }
         y += 28f
 
         val model = models.getOrNull(selectedModelIndex)
         val modelName = model?.file?.nameWithoutExtension ?: "No selection"
-        tmpPaint.textSize = 30f; tmpPaint.color = 0xFF30D8D0.toInt(); tmpPaint.isFakeBoldText = true
+        tmpPaint.textSize = 30f; tmpPaint.color = ThemeManager.CYAN_ICE; tmpPaint.isFakeBoldText = true
         canvas.drawText(modelName, 50f, y, tmpPaint)
         tmpPaint.isFakeBoldText = false
         if (selectedModelIndex >= 0 && models.size > 1) {
-            tmpPaint.textSize = 20f; tmpPaint.color = 0xFF6B7280.toInt()
+            tmpPaint.textSize = 20f; tmpPaint.color = ThemeManager.TEXT_DIM
             tmpPaint.typeface = Typeface.MONOSPACE
             canvas.drawText("[${selectedModelIndex + 1}/${models.size}]",
                 50f + tmpPaint.measureText(modelName) + 10f, y, tmpPaint)
@@ -1506,29 +1453,31 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         y += 12f
 
         // ── Separator ──
-        tmpPaint.color = 0x30EC4899.toInt(); tmpPaint.strokeWidth = 1f
+        tmpPaint.color = ThemeManager.BORDER_PINK; tmpPaint.strokeWidth = 1f
         canvas.drawLine(40f, y, uiW - 40f, y, tmpPaint)
         y += 14f
 
         // ── Parameters ──
         val noModel = "---"
+        fun fmtDec1(v: Float): String { val i = (v * 10).toInt(); return "${i / 10}.${kotlin.math.abs(i % 10)}" }
+        fun fmtSign1(v: Float): String { val s = if (v >= 0f) "+" else ""; return "$s${fmtDec1(v)}" }
         val params = arrayOf(
-            "Metallic" to (if (model != null) "%.0f%%".format(model.metallic * 100) else noModel),
-            "Roughness" to (if (model != null) "%.0f%%".format(model.roughness * 100) else noModel),
-            "Exposure" to (if (model != null) "%+.1f EV".format(model.exposure) else noModel),
-            "Contrast" to (if (model != null) "%.0f%%".format(model.contrast * 100) else noModel),
-            "Saturation" to (if (model != null) "%.0f%%".format(model.saturation * 100) else noModel),
-            "Light" to "%.1f".format(renderer?.lightIntensity ?: 2f),
-            "Fill" to "%.1f".format(renderer?.fillLightIntensity ?: 0.5f),
-            "Ambient" to "%.1f%s".format(renderer?.ambientIntensity ?: 1f, if (autoAmbient) " auto" else ""),
-            "Azimuth" to "%.0f\u00B0".format(renderer?.lightAngleDeg ?: 0f),
-            "Elevation" to "%.0f\u00B0".format(renderer?.lightElevDeg ?: 60f),
-            "Shadow" to "%.0f%%".format((renderer?.shadowDarkness ?: 0.7f) * 100),
-            "Softness" to "%.1f".format(renderer?.shadowSoftness ?: 2f),
-            "Spread" to "%.1fm".format(renderer?.shadowSpread ?: 8f),
+            "Metallic" to (if (model != null) "${(model.metallic * 100).toInt()}%" else noModel),
+            "Roughness" to (if (model != null) "${(model.roughness * 100).toInt()}%" else noModel),
+            "Exposure" to (if (model != null) "${fmtSign1(model.exposure)} EV" else noModel),
+            "Contrast" to (if (model != null) "${(model.contrast * 100).toInt()}%" else noModel),
+            "Saturation" to (if (model != null) "${(model.saturation * 100).toInt()}%" else noModel),
+            "Light" to fmtDec1(renderer?.lightIntensity ?: 2f),
+            "Fill" to fmtDec1(renderer?.fillLightIntensity ?: 0.5f),
+            "Ambient" to "${fmtDec1(renderer?.ambientIntensity ?: 1f)}${if (autoAmbient) " auto" else ""}",
+            "Azimuth" to "${(renderer?.lightAngleDeg ?: 0f).toInt()}\u00B0",
+            "Elevation" to "${(renderer?.lightElevDeg ?: 60f).toInt()}\u00B0",
+            "Shadow" to "${((renderer?.shadowDarkness ?: 0.7f) * 100).toInt()}%",
+            "Softness" to fmtDec1(renderer?.shadowSoftness ?: 2f),
+            "Spread" to "${fmtDec1(renderer?.shadowSpread ?: 8f)}m",
             "BeatReactor" to if (beatReactorEnabled) {
                 val r2 = audioReactor
-                if (r2 != null) "ON %.0f%%".format((r2.boxFillPct) * 100) else "ON"
+                if (r2 != null) "ON ${(r2.boxFillPct * 100).toInt()}%" else "ON"
             } else "OFF",
             "Foveation" to if (foveationAvailable) {
                 arrayOf("OFF", "LOW", "MED", "HIGH")[foveationLevel]
@@ -1541,11 +1490,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             "Room Edit" to if (activity.roomEditMode) {
                 val idx = activity.selectedPlaneIndex
                 if (idx >= 0) {
-                    val p = activity.glesRenderer?.shadowPlanes?.getOrNull(idx)
-                    if (p != null) {
-                        val key = activity.planeKey(p.posX, p.posZ)
+                    val p2 = activity.glesRenderer?.shadowPlanes?.getOrNull(idx)
+                    if (p2 != null) {
+                        val key = activity.planeKey(p2.posX, p2.posZ)
                         val off = activity.planeAdjustments[key] ?: 0f
-                        "Plane $idx %+.0fcm".format(off * 100)
+                        val offCm = (off * 100).toInt()
+                        "Plane $idx ${if (offCm >= 0) "+$offCm" else "$offCm"}cm"
                     } else "ON"
                 } else "SELECT"
             } else "OFF",
@@ -1573,12 +1523,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // Section dividers with colored accents
         val sections = mapOf(0 to "MODEL", 5 to "LIGHTING", 13 to "SYSTEM")
-        val sectionColors = mapOf(0 to 0xFF10B981.toInt(), 5 to 0xFFF59E0B.toInt(), 13 to 0xFF8B5CF6.toInt())
+        val sectionColors = mapOf(0 to ThemeManager.GREEN, 5 to ThemeManager.GOLD_WARM, 13 to ThemeManager.PURPLE_DEEP)
 
         for ((i, param) in params.withIndex()) {
             // Section header with colored dot and gradient line
-            if (i in sections) {
-                val sColor = sectionColors[i] ?: 0xFF6B5080.toInt()
+            val sectionLabel = sections[i]
+            if (sectionLabel != null) {
+                val sColor = sectionColors[i] ?: ThemeManager.TEXT_DIM
                 y += 6f
 
                 // Colored dot
@@ -1587,10 +1538,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
                 // Section label
                 sectionLabelPaint.color = sColor
-                canvas.drawText(sections[i]!!, 56f, y + 2f, sectionLabelPaint)
+                canvas.drawText(sectionLabel, 56f, y + 2f, sectionLabelPaint)
 
                 // Gradient separator line
-                val lineStart = 56f + sectionLabelPaint.measureText(sections[i]!!) + 10f
+                val lineStart = 56f + sectionLabelPaint.measureText(sectionLabel) + 10f
                 sectionLinePaint.shader = LinearGradient(
                     lineStart,
                     0f,
@@ -1612,19 +1563,19 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
             // Row background
             if (isSelected) {
-                pGlow.color = 0x2030D8D0.toInt()
+                pGlow.color = (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x20000000
                 pGlow.maskFilter = blurNormal8
                 canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pGlow)
-                pBg.color = 0x2818C8C0.toInt()
+                pBg.color = ThemeManager.BG_ELEVATED
                 canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pBg)
-                pGlow.color = 0xFFEC4899.toInt()
+                pGlow.color = ThemeManager.PINK_SOFT
                 pGlow.maskFilter = blurNormal4
                 canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, pGlow)
-                pBg.color = 0xFFEC4899.toInt()
+                pBg.color = ThemeManager.PINK_SOFT
                 canvas.drawRoundRect(24f, rowTop + 2f, 30f, rowBot - 2f, 3f, 3f, pBg)
                 pGlow.maskFilter = null
             } else if (isHovered) {
-                pBg.color = 0x14EC4899.toInt()
+                pBg.color = (ThemeManager.PINK_SOFT and 0x00FFFFFF) or 0x14000000
                 canvas.drawRoundRect(28f, rowTop, uiW - 28f, rowBot, 6f, 6f, pBg)
             }
 
@@ -1633,7 +1584,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val labelP = when {
                 isDead -> paramDisabledPaint
                 isSelected -> paramHighlightPaint
-                isHovered -> { pDim.textSize = 29f; pDim.color = 0xFFD8D0E0.toInt(); pDim }
+                isHovered -> { pDim.textSize = ThemeManager.PX_BODY + 2f; pDim.color = ThemeManager.TEXT_BRIGHT; pDim }
                 else -> paramNormalPaint
             }
             val arrow = if (isSelected) "\u25B6 " else "  "
@@ -1651,20 +1602,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val fillRight = sliderLeft + (sliderRight - sliderLeft) * t
 
                 // Track
-                pBg.color = 0xFF0E0E1C.toInt(); pBg.style = Paint.Style.FILL
+                pBg.color = ThemeManager.BG_PANEL; pBg.style = Paint.Style.FILL
                 canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f, pBg)
-                pBorder.strokeWidth = 0.5f; pBorder.color = 0xFF202035.toInt()
+                pBorder.strokeWidth = 0.5f; pBorder.color = ThemeManager.BORDER
                 canvas.drawRoundRect(sliderLeft, sliderY, sliderRight, sliderY + sliderH, 4f, 4f, pBorder)
 
                 if (!isDead) {
                     // Section-appropriate slider gradient colors
-                    val secColor = when { i <= 4 -> 0xFF10B981.toInt(); i <= 12 -> 0xFFF59E0B.toInt(); else -> 0xFF8B5CF6.toInt() }
+                    val secColor = when { i <= 4 -> ThemeManager.GREEN; i <= 12 -> ThemeManager.GOLD_WARM; else -> ThemeManager.PURPLE_DEEP }
                     pFill.shader = null; pFill.style = Paint.Style.FILL
                     val fillPaint = pFill
                     if (isSelected) {
                         fillPaint.shader = LinearGradient(
                             sliderLeft, 0f, fillRight, 0f,
-                            0xFF0A4040.toInt(), 0xFF30D8D0.toInt(),
+                            ThemeManager.CYAN_ICE, ThemeManager.PURPLE_DEEP,
                             Shader.TileMode.CLAMP)
                     } else if (isHovered) {
                         val darkSec = (secColor and 0x00FFFFFF) or 0xFF0A0000.toInt()
@@ -1681,7 +1632,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     canvas.drawRoundRect(sliderLeft, sliderY, fillRight, sliderY + sliderH, 4f, 4f, fillPaint)
 
                     if (isSelected && t > 0.02f) {
-                        pGlow.color = 0x6030D8D0.toInt()
+                        pGlow.color = (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x60000000
                         pGlow.maskFilter = blurNormal6
                         canvas.drawCircle(fillRight, sliderY + sliderH / 2f, 6f, pGlow)
                         pGlow.maskFilter = null
@@ -1691,14 +1642,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     val thumbX = fillRight.coerceIn(sliderLeft + 4f, sliderRight - 4f)
                     val thumbR = if (isSelected) 6f else 4f
                     if (isSelected) {
-                        pGlow.color = 0x4030D8D0.toInt()
+                        pGlow.color = (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x40000000
                         pGlow.maskFilter = blurNormal3
                         canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR + 3f, pGlow)
                         pGlow.maskFilter = null
                     }
-                    pBg.color = if (isSelected) 0xFFFFFFFF.toInt()
-                        else if (isHovered) 0xFFC0B0D0.toInt()
-                        else 0xFF707888.toInt()
+                    pBg.color = if (isSelected) Color.WHITE
+                        else if (isHovered) ThemeManager.TEXT_MID
+                        else ThemeManager.TEXT_DIM
                     pBg.style = Paint.Style.FILL
                     canvas.drawCircle(thumbX, sliderY + sliderH / 2f, thumbR, pBg)
 
@@ -1719,21 +1670,21 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 val isOn = valStr.startsWith("ON") || valStr == "HIGH" || valStr == "MED" || valStr == "LOW"
                         || valStr == "4096" || valStr == "2048" || valStr == "1024"
                 val badgeBg = if (isOn) {
-                    if (isSelected) 0x4030D8D0.toInt() else 0x2010B981.toInt()
+                    if (isSelected) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.GREEN and 0x00FFFFFF) or 0x20000000
                 } else {
-                    0x18404050.toInt()
+                    ThemeManager.BG_SURFACE
                 }
                 pBg.color = badgeBg; pBg.style = Paint.Style.FILL
                 canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f, pBg)
                 pBorder.strokeWidth = 0.8f
-                pBorder.color = if (isOn && isSelected) 0x6030D8D0.toInt()
-                    else if (isOn) 0x3010B981.toInt()
-                    else 0x20505060.toInt()
+                pBorder.color = if (isOn && isSelected) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x60000000
+                    else if (isOn) (ThemeManager.GREEN and 0x00FFFFFF) or 0x30000000
+                    else ThemeManager.BORDER_SOFT
                 canvas.drawRoundRect(badgeLeft, badgeY, badgeLeft + badgeW, badgeY + badgeH, 10f, 10f, pBorder)
-                pText.textSize = 18f; pText.textAlign = Paint.Align.CENTER
+                pText.textSize = ThemeManager.PX_LABEL; pText.textAlign = Paint.Align.CENTER
                 pText.color = if (isOn) {
-                    if (isSelected) 0xFF30D8D0.toInt() else 0xFF10B981.toInt()
-                } else 0xFF606068.toInt()
+                    if (isSelected) ThemeManager.CYAN_ICE else ThemeManager.GREEN
+                } else ThemeManager.TEXT_DIM
                 pText.isFakeBoldText = isSelected
                 canvas.drawText(valStr, badgeLeft + badgeW / 2f, badgeY + 15f, pText)
                 pText.textAlign = Paint.Align.LEFT; pText.isFakeBoldText = false
@@ -1743,7 +1694,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         }
 
         // Controls hint
-        pDim.textSize = 14f; pDim.color = 0xFF404048.toInt()
+        pDim.textSize = ThemeManager.PX_MICRO; pDim.color = ThemeManager.TEXT_DIM
         canvas.drawText("Stick:Adjust  A:Reset  B:Close  X:Gizmo  Y:Next  Grip:Grab", 40f, y + 4f, pDim)
 
         // ── Action buttons (2 rows) ──
@@ -1752,44 +1703,47 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         fun drawButton(bx1: Float, bx2: Float, by: Float, label: String, hovered: Boolean, normalColor: Int) {
             if (hovered) {
-                actionButtonGlowPaint.color = normalColor
+                actionButtonGlowPaint.color = ThemeManager.PINK_GLOW
+                actionButtonGlowPaint.maskFilter = blurOuter8
                 canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, actionButtonGlowPaint)
+                actionButtonGlowPaint.maskFilter = blurOuter12
             }
-            actionButtonBgPaint.color = if (hovered) (normalColor and 0x00FFFFFF) or 0x70000000
-            else (normalColor and 0x00FFFFFF) or 0x20000000
+            // Fill: colored fill for primary actions, BG_SURFACE for normal, BG_ELEVATED for hover
+            actionButtonBgPaint.color = if (hovered) normalColor
+            else (normalColor and 0x00FFFFFF) or 0xD9000000.toInt()
             canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, actionButtonBgPaint)
-            actionButtonBorderPaint.strokeWidth = if (hovered) 3f else 1.5f
-            actionButtonBorderPaint.color = if (hovered) normalColor else (normalColor and 0x00FFFFFF) or 0x60000000.toInt()
+            actionButtonBorderPaint.strokeWidth = if (hovered) 2f else 1f
+            actionButtonBorderPaint.color = if (hovered) ThemeManager.BORDER_GLOW else ThemeManager.BORDER_SOFT
             canvas.drawRoundRect(bx1, by, bx2, by + btnH, 10f, 10f, actionButtonBorderPaint)
-            actionButtonTextPaint.color = if (hovered) 0xFFFFFFFF.toInt() else normalColor
+            actionButtonTextPaint.color = if (hovered) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
             canvas.drawText(label, (bx1 + bx2) / 2f, by + 35f, actionButtonTextPaint)
         }
 
         // Row 1: SAVE / LOAD
         val row1Y = uiH - 226f
         val btn2W = (uiW - 60f - btnGap) / 2f
-        drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, 0xFF8B5CF6.toInt())
-        drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, 0xFF3B82F6.toInt())
+        drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, ThemeManager.PURPLE_DEEP)
+        drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, ThemeManager.BLUE)
 
         // Row 2: ADD / DELETE / RESET
         val row2Y = row1Y + btnH + btnGap
         val btn3W = (uiW - 60f - btnGap * 2f) / 3f
         val r2b1 = 30f; val r2b2 = r2b1 + btn3W + btnGap; val r2b3 = r2b2 + btn3W + btnGap
-        drawButton(r2b1, r2b1 + btn3W, row2Y, "+ ADD", hoveredActionButton == 101, 0xFF10B981.toInt())
-        drawButton(r2b2, r2b2 + btn3W, row2Y, "DELETE", hoveredActionButton == 107, 0xFFF04858.toInt())
-        drawButton(r2b3, r2b3 + btn3W, row2Y, "RESET", hoveredActionButton == 108, 0xFFFF9500.toInt())
+        drawButton(r2b1, r2b1 + btn3W, row2Y, "+ ADD", hoveredActionButton == 101, ThemeManager.GREEN)
+        drawButton(r2b2, r2b2 + btn3W, row2Y, "DELETE", hoveredActionButton == 107, ThemeManager.RED)
+        drawButton(r2b3, r2b3 + btn3W, row2Y, "RESET", hoveredActionButton == 108, ThemeManager.ORANGE)
 
         // Row 3: AUDIO / FILE MENU / EXIT
         val row3Y = row2Y + btnH + btnGap
-        drawButton(r2b1, r2b1 + btn3W, row3Y, "AUDIO", hoveredActionButton == 109, 0xFF8B5CF6.toInt())
-        drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, 0xFFEC4899.toInt())
-        drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, 0xFFF04858.toInt())
+        drawButton(r2b1, r2b1 + btn3W, row3Y, "AUDIO", hoveredActionButton == 109, ThemeManager.PURPLE_DEEP)
+        drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, ThemeManager.PINK_HOT)
+        drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, ThemeManager.RED)
 
         // Row 4: LIGHTS / SENSOR HUD
         val row4Y = row3Y + btnH + btnGap
-        drawButton(r2b1, r2b1 + btn3W, row4Y, "LIGHTS", hoveredActionButton == 130, 0xFFF59E0B.toInt())
-        drawButton(r2b2, r2b2 + btn3W, row4Y, "SENSOR HUD", hoveredActionButton == 134, 0xFF10B981.toInt())
-        drawButton(r2b3, r2b3 + btn3W, row4Y, "BLOOM", hoveredActionButton == 135, 0xFF8B5CF6.toInt())
+        drawButton(r2b1, r2b1 + btn3W, row4Y, "LIGHTS", hoveredActionButton == 130, ThemeManager.GOLD_WARM)
+        drawButton(r2b2, r2b2 + btn3W, row4Y, "SENSOR HUD", hoveredActionButton == 134, ThemeManager.GREEN)
+        drawButton(r2b3, r2b3 + btn3W, row4Y, "BLOOM", hoveredActionButton == 135, ThemeManager.PURPLE_DEEP)
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
@@ -1830,14 +1784,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         layout.addView(TextView(activity).apply {
             text = "3D Model Viewer (Filament)"
             textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(ThemeManager.TEXT_BRIGHT)
             setPadding(0, 0, 0, 12)
         })
 
         layout.addView(TextView(activity).apply {
             text = "${models.size} model${if (models.size != 1) "s" else ""} in scene"
             textSize = 14f
-            setTextColor(0xFF999999.toInt())
+            setTextColor(ThemeManager.TEXT_MID)
             setPadding(0, 0, 0, 16)
         })
 
@@ -1846,7 +1800,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             layout.addView(LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setBackgroundColor(if (isSelected) 0xFF1565C0.toInt() else 0xFF1E1E1E.toInt())
+                setBackgroundColor(if (isSelected) ThemeManager.BLUE else ThemeManager.BG_SURFACE)
                 setPadding(24, 16, 24, 16)
                 val lp = LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -1858,7 +1812,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 addView(TextView(activity).apply {
                     text = "${model.file.name} (${String.format("%.2f", model.scale)}x)"
                     textSize = 14f
-                    setTextColor(0xFFE0E0E0.toInt())
+                    setTextColor(ThemeManager.TEXT_BRIGHT)
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1920,13 +1874,13 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 text = if (activity.handsLocked) "Unlock Hands" else "Lock Hands (walk around)"
                 textSize = 16f
                 minHeight = 72
-                setBackgroundColor(if (activity.handsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
+                setBackgroundColor(if (activity.handsLocked) ThemeManager.BLUE else ThemeManager.BG_ELEVATED)
+                setTextColor(ThemeManager.TEXT_BRIGHT)
                 setPadding(20, 16, 20, 16)
                 setOnClickListener {
                     activity.handsLocked = !activity.handsLocked
                     text = if (activity.handsLocked) "Unlock Hands" else "Lock Hands (walk around)"
-                    setBackgroundColor(if (activity.handsLocked) 0xFF1565C0.toInt() else 0xFF333333.toInt())
+                    setBackgroundColor(if (activity.handsLocked) ThemeManager.BLUE else ThemeManager.BG_ELEVATED)
                     if (activity.handsLocked) {
                         activity.menuVisible = false
                         activity.setContentView(android.view.View(activity))
@@ -1938,8 +1892,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             layout.addView(Button(activity).apply {
                 text = "Reset Position"
                 textSize = 14f
-                setBackgroundColor(0xFF333333.toInt())
-                setTextColor(0xFFFFFFFF.toInt())
+                setBackgroundColor(ThemeManager.BG_ELEVATED)
+                setTextColor(ThemeManager.TEXT_BRIGHT)
                 setOnClickListener {
                     models.getOrNull(activity.sceneManager.selectedModelIndex)?.let {
                         it.posX = 0f; it.posY = 0f; it.posZ = -1f
@@ -1965,15 +1919,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     "  X = Toggle grid\n" +
                     "  B = Close panel / Exit"
             textSize = 12f
-            setTextColor(0xFF666666.toInt())
+            setTextColor(ThemeManager.TEXT_DIM)
         })
 
         layout.addView(makeSpacer(16))
         layout.addView(Button(activity).apply {
             text = "Back to Files"
             textSize = 16f
-            setBackgroundColor(0xFF8B0000.toInt())
-            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(ThemeManager.RED)
+            setTextColor(ThemeManager.TEXT_BRIGHT)
             setOnClickListener {
                 activity.running = false
                 activity.finish()
@@ -1988,11 +1942,11 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
     private val chipBgPaint = Paint().apply { isAntiAlias = true }
     private val chipBorderPaint = Paint().apply { isAntiAlias = true; style = Paint.Style.STROKE; strokeWidth = 0.8f }
-    private val chipTextPaint = Paint().apply { isAntiAlias = true; textSize = 18f; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
+    private val chipTextPaint = Paint().apply { isAntiAlias = true; textSize = ThemeManager.PX_LABEL; textAlign = Paint.Align.CENTER; isFakeBoldText = true }
 
     /** Draw a colored status chip. Returns the right edge X for chaining. */
     private fun drawStatusChip(canvas: Canvas, x: Float, y: Float, text: String, color: Int): Float {
-        chipTextPaint.textSize = 18f
+        chipTextPaint.textSize = ThemeManager.PX_LABEL
         val textW = chipTextPaint.measureText(text)
         val chipW = textW + 20f
         val chipH = 22f
@@ -2016,7 +1970,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         activity.setContentView(TextView(activity).apply {
             this.text = text
             textSize = 20f
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(ThemeManager.TEXT_BRIGHT)
             gravity = Gravity.CENTER
         })
     }
@@ -2033,7 +1987,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         return TextView(activity).apply {
             this.text = text
             textSize = 16f
-            setTextColor(0xFFBBBBBB.toInt())
+            setTextColor(ThemeManager.TEXT_MID)
             setPadding(0, 8, 0, 4)
         }
     }
@@ -2044,7 +1998,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val valueLabel = TextView(activity).apply {
             text = "$label: $initial"
             textSize = 14f
-            setTextColor(0xFFCCCCCC.toInt())
+            setTextColor(ThemeManager.TEXT_BRIGHT)
             gravity = Gravity.CENTER
         }
         return LinearLayout(activity).apply {
