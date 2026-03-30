@@ -65,6 +65,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var menuVisible = true
     private var currentFile: File? = null
 
+    // Cached control panel view (avoids rebuilding 50-100+ Views on every menu toggle)
+    private var cachedControlPanelView: View? = null
+    private var cachedControlPanelFile: File? = null
+
     // Native OpenXR controller input
     private var openXRInput: OpenXRInput? = null
 
@@ -106,6 +110,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // Trigger tap detection
     private var triggerDownTime = 0L
     private val TAP_THRESHOLD_MS = 300
+
+    // Cached ScrollView ref — avoids O(n) view hierarchy traversal at 120Hz
+    private var cachedScrollView: ScrollView? = null
 
     // Seek bar
     private var seekBar: SeekBar? = null
@@ -153,8 +160,18 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     @Volatile private var lastAimFwdY = 0f
     @Volatile private var lastAimFwdZ = -1f
 
+    // Main panel drag + resize (file picker / control panel)
+    private var mainPanelDragging = false
+    private var mainPanelDragDist = 1.5f  // distance from hand along laser
+    private var lastPanelPoseX = 0f  // delta threshold for setPose
+    private var lastPanelPoseY = 0f
+    private var lastPanelPoseZ = 0f
+    private var mainPanelScale = 2.0f     // current panel scale
+
     // Scrub bar (quick B button access)
     private var scrubBarVisible = false
+
+    private var lastScrollTime = 0L
 
     // Chroma key
     private val chromaKeyState = ChromaKeyState()
@@ -410,6 +427,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             when (val result = Session.create(this)) {
                 is SessionCreateSuccess -> {
                     xrSession = result.session
+                    // Scale the main panel up for VR readability (default is too small)
+                    try {
+                        result.session.scene.mainPanelEntity.setScale(mainPanelScale)
+                    } catch (e: Exception) {
+                        android.util.Log.w("ChloeVR", "Panel scale failed: ${e.message}")
+                    }
                 }
                 else -> {
                     android.util.Log.w("ChloeVR", "XR session creation returned non-success: $result")
@@ -444,6 +467,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // ── File Picker ──
 
     private fun showFilePicker(forceRescan: Boolean = false) {
+        cachedControlPanelView = null
         isPlaying = false
         menuVisible = true
         currentFile = null
@@ -455,6 +479,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(ThemeManager.BG_VOID)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            clipToPadding = false
         }
 
         val layout = LinearLayout(this).apply {
@@ -627,6 +653,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         layout.addView(filePickerResultsContainer)
 
         scrollView.addView(layout)
+        cachedScrollView = scrollView
         setContentView(scrollView)
         setPanelVisible(true)
 
@@ -925,12 +952,23 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // ── Control Panel (shown during playback) ──
 
     private fun showControlPanel() {
+        // Reuse cached panel if the file hasn't changed
+        val cached = cachedControlPanelView
+        if (cached != null && cachedControlPanelFile == currentFile) {
+            setContentView(cached)
+            menuVisible = true
+            setPanelVisible(true)
+            return
+        }
+
         val scrollView = ScrollView(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(ThemeManager.BG_PANEL)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            clipToPadding = false
         }
 
         val layout = LinearLayout(this).apply {
@@ -1118,6 +1156,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         ))
 
         scrollView.addView(layout)
+        cachedScrollView = scrollView
+        cachedControlPanelView = scrollView
+        cachedControlPanelFile = currentFile
         setContentView(scrollView)
 
         updateSeekBarLoop()
@@ -1883,6 +1924,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun applyScreenType(type: ScreenType) {
+        cachedControlPanelView = null
         currentScreenType = type
         try {
             surfaceEntity?.shape = shapeForScreenType(type)
@@ -1893,6 +1935,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun applyStereoMode(mode: StereoMode) {
+        cachedControlPanelView = null
         currentStereoMode = mode
         try {
             surfaceEntity?.stereoMode = sdkStereoMode(mode)
@@ -2202,6 +2245,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun setPanelVisible(visible: Boolean) {
         if (!visible) {
+            cachedScrollView = null
             // Clear stale content so it doesn't flash when panel is next shown
             setContentView(android.view.View(this))
             window.decorView.setBackgroundColor(ThemeManager.BG_VOID)
@@ -2358,6 +2402,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         bar.addView(btnRow)
 
         frame.addView(bar)
+        cachedScrollView = null
         setContentView(frame)
         updateSeekBarLoop()
     }
@@ -2396,6 +2441,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(ThemeManager.BG_VOID)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            clipToPadding = false
         }
 
         val layout = LinearLayout(this).apply {
@@ -2626,6 +2673,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         })
 
         scrollView.addView(layout)
+        cachedScrollView = scrollView
         setContentView(scrollView)
     }
 
@@ -3304,9 +3352,9 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             // Amplify vertical scroll for faster menu/file picker scrolling
             val vScroll = event.getAxisValue(android.view.MotionEvent.AXIS_VSCROLL)
             if (kotlin.math.abs(vScroll) > 0.01f) {
-                val scrollView = findScrollView(window.decorView)
-                if (scrollView != null) {
-                    scrollView.scrollBy(0, -(vScroll * 3000).toInt())
+                val sv = cachedScrollView ?: findScrollView(window.decorView)
+                if (sv != null) {
+                    sv.scrollBy(0, -(vScroll * 3000).toInt())
                     return true
                 }
             }
@@ -3339,6 +3387,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun stopPlayback() {
+        cachedControlPanelView = null
         // Save resume position before releasing
         val file = currentFile
         val pos = videoPlayer?.currentPositionMs ?: 0
@@ -3522,12 +3571,60 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
         // Thumbstick scroll when menu/file picker is showing
         if (menuVisible || filePickerActive) {
-            val vAxis = if (kotlin.math.abs(input.rightThumbY) > kotlin.math.abs(input.leftThumbY))
-                input.rightThumbY else input.leftThumbY
-            if (kotlin.math.abs(vAxis) > NATIVE_STICK_DEADZONE) {
-                runOnUiThread {
-                    val sv = findScrollView(window.decorView)
-                    sv?.scrollBy(0, -(vAxis * 80).toInt())
+            // Grip = drag the main panel in 3D space
+            val gripHeld = input.rightSqueeze > 0.5f || input.leftSqueeze > 0.5f
+            val aimValid = if (input.rightSqueeze > 0.5f) input.rightAimValid else input.leftAimValid
+            val aimRot = if (input.rightSqueeze > 0.5f) input.rightAimRot else input.leftAimRot
+            val handPos = if (input.rightSqueeze > 0.5f) input.rightHandPos else input.leftHandPos
+
+            if (gripHeld && aimValid && aimRot != null && handPos != null) {
+                mainPanelDragging = true
+                val fwd = quatForward(aimRot)
+                val px = handPos[0] + fwd[0] * mainPanelDragDist
+                val py = handPos[1] + fwd[1] * mainPanelDragDist
+                val pz = handPos[2] + fwd[2] * mainPanelDragDist
+                // Face the panel toward the user (auto-billboard) — only update if moved >5mm
+                val dx = kotlin.math.abs(px - lastPanelPoseX)
+                val dy = kotlin.math.abs(py - lastPanelPoseY)
+                val dz = kotlin.math.abs(pz - lastPanelPoseZ)
+                if (dx > 0.005f || dy > 0.005f || dz > 0.005f) {
+                    val yaw = Math.toDegrees(kotlin.math.atan2((-px).toDouble(), (-pz).toDouble())).toFloat()
+                    try {
+                        xrSession?.scene?.mainPanelEntity?.setPose(
+                            Pose(Vector3(px, py, pz), Quaternion.fromEulerAngles(0f, yaw, 0f))
+                        )
+                        lastPanelPoseX = px; lastPanelPoseY = py; lastPanelPoseZ = pz
+                    } catch (_: Exception) {}
+                }
+
+                // Thumbstick Y while gripping = push/pull distance
+                val thumbY = if (input.rightSqueeze > 0.5f) input.rightThumbY else input.leftThumbY
+                if (kotlin.math.abs(thumbY) > 0.15f) {
+                    mainPanelDragDist = (mainPanelDragDist + thumbY * 0.05f).coerceIn(0.5f, 5f)
+                }
+                // Thumbstick X while gripping = resize
+                val thumbX = if (input.rightSqueeze > 0.5f) input.rightThumbX else input.leftThumbX
+                if (kotlin.math.abs(thumbX) > 0.15f) {
+                    mainPanelScale = (mainPanelScale + thumbX * 0.03f).coerceIn(0.8f, 4f)
+                    try {
+                        xrSession?.scene?.mainPanelEntity?.setScale(mainPanelScale)
+                    } catch (_: Exception) {}
+                }
+            } else {
+                mainPanelDragging = false
+
+                // No grip — thumbstick Y scrolls the content
+                val vAxis = if (kotlin.math.abs(input.rightThumbY) > kotlin.math.abs(input.leftThumbY))
+                    input.rightThumbY else input.leftThumbY
+                if (kotlin.math.abs(vAxis) > NATIVE_STICK_DEADZONE) {
+                    val now = SystemClock.uptimeMillis()
+                    if (now - lastScrollTime > 33L) {  // ~30Hz
+                        lastScrollTime = now
+                        runOnUiThread {
+                            val sv = cachedScrollView ?: findScrollView(window.decorView)
+                            sv?.scrollBy(0, -(vAxis * 80).toInt())
+                        }
+                    }
                 }
             }
         }
@@ -3884,11 +3981,13 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 grabStartScreenY = screenY
                 grabStartScreenZ = screenZ
                 grabStartHandPos = grabHandPos.copyOf()
-                // Compute distance from hand to screen for laser lock
+                // Project screen onto aim ray to get zero-snap lock distance
+                val aimFwd = quatForward(rollRot)
                 val dx0 = screenX - grabHandPos[0]
                 val dy0 = screenY - grabHandPos[1]
                 val dz0 = screenZ - grabHandPos[2]
-                grabLockDistance = kotlin.math.sqrt(dx0*dx0 + dy0*dy0 + dz0*dz0).coerceAtLeast(0.5f)
+                val projected = dx0 * aimFwd[0] + dy0 * aimFwd[1] + dz0 * aimFwd[2]
+                grabLockDistance = projected.coerceAtLeast(0.3f)
             } else {
                 if (currentScreenType == ScreenType.FLAT) {
                     // FLAT screens (images + flat video): laser-lock placement
@@ -3913,8 +4012,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                                  else if (leftGrab) input.leftThumbY else 0f
                 if (kotlin.math.abs(grabThumbY) > 0.15f) {
                     if (currentScreenType == ScreenType.FLAT) {
-                        // Adjust lock distance (push/pull along laser)
-                        grabLockDistance = (grabLockDistance + grabThumbY * 0.15f).coerceIn(0.5f, 30f)
+                        // Adjust lock distance (push/pull along laser — reel in/out)
+                        grabLockDistance = (grabLockDistance + grabThumbY * 0.15f).coerceIn(0.3f, 30f)
                     } else {
                         val dX = grabHandPos[0] - grabStartHandPos[0]
                         val dY = grabHandPos[1] - grabStartHandPos[1]
@@ -4086,6 +4185,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     // ── Helpers ──
 
     private fun showMessage(text: String) {
+        cachedScrollView = null
         setContentView(TextView(this).apply {
             this.text = text
             textSize = ThemeManager.TEXT_BODY

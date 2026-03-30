@@ -448,11 +448,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         else hoveredAudioButton = 52
                                     }
                                 }
-                                val now = SystemClock.uptimeMillis()
-                                if (now - lastCursorRefreshMs >= 90L) {
-                                    lastCursorRefreshMs = now
-                                    activity.uiNeedsRefresh = true
-                                }
+                                // Refresh every frame for smooth cursor tracking
+                                activity.uiNeedsRefresh = true
                             } else if (activity.beatSettingsMode) {
                                 val prevDragging = beatDraggingSlider
                                 beatDraggingSlider = -1
@@ -729,27 +726,20 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     }
                 }
 
-                // Refresh only when hover state actually changes
-                if (hoveredMenuParam != lastHoveredMenuParam || hoveredActionButton != lastHoveredActionButton
-                    || (activity.glbPickerMode && hoveredGlbIndex != lastHoveredGlbIndex)
-                    || (activity.scenePickerMode && hoveredSceneIndex != lastHoveredSceneIndex)
-                    || (activity.lightingPresetMode && (hoveredLightingPresetIndex != lastHoveredLightingPresetIndex || hoveredActionButton != lastHoveredActionButton))
-                    || (activity.saveNameMode && (hoveredSaveButton != lastHoveredSaveButton || hoveredSceneIndex != lastHoveredSceneIndex || hoveredKeyboardKey != lastHoveredKeyboardKey))
-                    || (activity.audioPlayerMode && (
-                        hoveredAudioButton != lastHoveredAudioButton ||
-                            (activity.audioPickerMode && hoveredAudioFileIndex != lastHoveredAudioFileIndex)))
-                ) {
-                    lastHoveredMenuParam = hoveredMenuParam
-                    lastHoveredActionButton = hoveredActionButton
-                    lastHoveredGlbIndex = hoveredGlbIndex
-                    lastHoveredSceneIndex = hoveredSceneIndex
-                    lastHoveredSaveButton = hoveredSaveButton
-                    lastHoveredAudioButton = hoveredAudioButton
-                    lastHoveredAudioFileIndex = hoveredAudioFileIndex
-                    lastHoveredLightingPresetIndex = hoveredLightingPresetIndex
-                    lastHoveredKeyboardKey = hoveredKeyboardKey
+                // Always refresh when laser is on panel — cursor must track smoothly
+                if (laserOnPanel) {
                     activity.uiNeedsRefresh = true
                 }
+                // Track hover state changes for interaction logic
+                lastHoveredMenuParam = hoveredMenuParam
+                lastHoveredActionButton = hoveredActionButton
+                lastHoveredGlbIndex = hoveredGlbIndex
+                lastHoveredSceneIndex = hoveredSceneIndex
+                lastHoveredSaveButton = hoveredSaveButton
+                lastHoveredAudioButton = hoveredAudioButton
+                lastHoveredAudioFileIndex = hoveredAudioFileIndex
+                lastHoveredLightingPresetIndex = hoveredLightingPresetIndex
+                lastHoveredKeyboardKey = hoveredKeyboardKey
 
                 // When menu is up and laser is on the panel, block model interaction
                 // But allow model hover when laser points away from the panel

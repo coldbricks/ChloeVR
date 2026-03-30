@@ -61,12 +61,18 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     private val backgroundPaint = Paint().apply {
         shader = LinearGradient(0f, 0f, 0f, 1280f, bgGradientColors, bgGradientStops, Shader.TileMode.CLAMP)
     }
-    // Radial vignette overlay: darken corners by ~15%
-    private val vignettePaint = Paint().apply {
-        shader = RadialGradient(512f, 640f, 720f, 0x00000000, 0x26000000, Shader.TileMode.CLAMP)
+    // Pre-rendered overlay bitmap (vignette + scanlines) — drawn once, blitted per-frame
+    private val overlayBitmap: Bitmap = Bitmap.createBitmap(1024, 1280, Bitmap.Config.ARGB_8888).also { bmp ->
+        val c = Canvas(bmp)
+        // Radial vignette: darken corners ~15%
+        c.drawRect(0f, 0f, 1024f, 1280f, Paint().apply {
+            shader = RadialGradient(512f, 640f, 720f, 0x00000000, 0x26000000, Shader.TileMode.CLAMP)
+        })
+        // Scanlines: horizontal lines every 4px at 3% white
+        val slp = Paint().apply { color = 0x08FFFFFF; strokeWidth = 1f }
+        var sy = 0f
+        while (sy < 1280f) { c.drawLine(0f, sy, 1024f, sy, slp); sy += 4f }
     }
-    // Scanline overlay paint (3% white, drawn every 4px)
-    private val scanlinePaint = Paint().apply { color = 0x08FFFFFF; strokeWidth = 1f }
 
     private val blurOuter3 = BlurMaskFilter(3f, BlurMaskFilter.Blur.OUTER)
     private val blurOuter6 = BlurMaskFilter(6f, BlurMaskFilter.Blur.OUTER)
@@ -318,16 +324,8 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         // ═══ Velvet Dark Theme ═══
         // Background: BG_VOID → BG_PANEL → BG_VOID gradient
         canvas.drawRect(0f, 0f, uiW.toFloat(), uiH.toFloat(), backgroundPaint)
-        // Radial vignette overlay (darken corners ~15%)
-        canvas.drawRect(0f, 0f, uiW.toFloat(), uiH.toFloat(), vignettePaint)
-        // Subtle scanline overlay (horizontal lines every 4px at 3% white)
-        run {
-            var sy = 0f
-            while (sy < uiH) {
-                canvas.drawLine(0f, sy, uiW.toFloat(), sy, scanlinePaint)
-                sy += 4f
-            }
-        }
+        // Pre-rendered vignette + scanline overlay (single bitmap blit, no per-frame draw calls)
+        canvas.drawBitmap(overlayBitmap, 0f, 0f, null)
 
         // Neon border glow
         canvas.drawRoundRect(8f, 8f, uiW - 8f, uiH - 8f, 20f, 20f, neonBorderGlowPaint)
