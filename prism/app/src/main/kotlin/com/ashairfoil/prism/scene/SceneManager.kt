@@ -55,7 +55,7 @@ class SceneManager(
 
     val models: MutableList<PlacedModel> = java.util.concurrent.CopyOnWriteArrayList()
     var selectedModelIndex = -1
-    val yeetingModels = mutableListOf<YeetingModel>()
+    val yeetingModels = java.util.concurrent.CopyOnWriteArrayList<YeetingModel>()
     val yeetingModelsLock = Object()
 
     /** Callback for posting work to the UI thread (set by the activity). */

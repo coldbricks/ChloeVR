@@ -2,7 +2,6 @@ package com.ashairfoil.prism
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.text.Editable
@@ -19,6 +18,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -49,6 +49,7 @@ import com.ashairfoil.prism.playback.SubtitleRenderer
 import com.ashairfoil.prism.settings.SettingsManager
 import com.ashairfoil.prism.ui.ThemeManager
 import java.io.File
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -57,6 +58,22 @@ import kotlinx.coroutines.withContext
 
 @UnstableApi
 class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
+
+    private val coroutineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        android.util.Log.e("MainActivity", "Unhandled coroutine exception", throwable)
+    }
+
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        // Returned from MANAGE_EXTERNAL_STORAGE settings
+        if (android.os.Environment.isExternalStorageManager()) {
+            onPermissionGranted()
+        } else {
+            // User didn't grant full access -- fall back to media-only permissions
+            requestBasicMediaPermissions()
+        }
+    }
 
     private var xrSession: Session? = null
     private var videoPlayer: VideoPlayer? = null
@@ -286,21 +303,20 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun requestStoragePermission() {
-        // For SDK 30+, MANAGE_EXTERNAL_STORAGE gives full file access (needed for .glb, .funscript, etc.)
+        // MANAGE_EXTERNAL_STORAGE gives full file access (needed for .glb, .funscript, etc.)
         // This requires a settings screen visit, not the normal permission dialog.
-        if (Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager()) {
+        if (!android.os.Environment.isExternalStorageManager()) {
             try {
                 val intent = android.content.Intent(
                     android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     android.net.Uri.parse("package:$packageName")
                 )
-                startActivityForResult(intent, 101)
+                storagePermissionLauncher.launch(intent)
             } catch (e: Exception) {
                 // Fallback: open general file access settings
                 try {
-                    startActivityForResult(
-                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-                        101
+                    storagePermissionLauncher.launch(
+                        android.content.Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
                     )
                 } catch (e2: Exception) {
                     // Last resort: request basic media permissions
@@ -310,8 +326,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             return
         }
 
-        // Already have full access, or pre-SDK 30
-        if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
+        // Already have full access
+        if (android.os.Environment.isExternalStorageManager()) {
             onPermissionGranted()
             return
         }
@@ -320,11 +336,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun requestBasicMediaPermissions() {
-        val permissions = if (Build.VERSION.SDK_INT >= 33) {
-            arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        val permissions = arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
 
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -334,20 +346,6 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             onPermissionGranted()
         } else {
             ActivityCompat.requestPermissions(this, permissions, 100)
-        }
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 101) {
-            // Returned from MANAGE_EXTERNAL_STORAGE settings
-            if (Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager()) {
-                onPermissionGranted()
-            } else {
-                // User didn't grant full access — fall back to media-only permissions
-                requestBasicMediaPermissions()
-            }
         }
     }
 
@@ -679,7 +677,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         filePickerStatusText = "Scanning storage..."
         refreshFilePickerResults()
 
-        filePickerScanJob = lifecycleScope.launch(Dispatchers.IO) {
+        filePickerScanJob = lifecycleScope.launch(Dispatchers.IO + coroutineExceptionHandler) {
             val finalResults = FilePicker.listVideoFilesProgressive(this@MainActivity) { partial, scannedRoots, totalRoots ->
                 runOnUiThread {
                     if (!filePickerActive || session != filePickerScanSession) return@runOnUiThread
@@ -2696,7 +2694,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         val original = placedModels.getOrNull(index) ?: return
         val session = xrSession ?: return
 
-        lifecycleScope.launch {
+        lifecycleScope.launch(coroutineExceptionHandler) {
             try {
                 val gltfModel = GltfModel.create(session, original.file.readBytes(), original.file.name)
                 val origPose = original.entity.getPose()
@@ -2895,7 +2893,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun showImageOnSurface(file: File) {
-        lifecycleScope.launch(Dispatchers.IO) {
+        lifecycleScope.launch(Dispatchers.IO + coroutineExceptionHandler) {
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
             if (opts.outWidth <= 0 || opts.outHeight <= 0) {
@@ -3287,7 +3285,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 spatialAudio.is360 = (currentScreenType == ScreenType.SPHERE_360)
                 videoPlayer?.let { vp ->
                     // Delay briefly to ensure audio session is ready
-                    lifecycleScope.launch {
+                    lifecycleScope.launch(coroutineExceptionHandler) {
                         delay(200)
                         // ExoPlayer exposes audioSessionId through the underlying player
                         // For now, attach with session 0 which uses output mix
@@ -3433,7 +3431,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     private fun startResumeSaveLoop(file: File) {
         resumeSaveJob?.cancel()
-        resumeSaveJob = lifecycleScope.launch {
+        resumeSaveJob = lifecycleScope.launch(coroutineExceptionHandler) {
             while (true) {
                 delay(10_000) // Save every 10 seconds
                 val pos = videoPlayer?.currentPositionMs ?: continue
@@ -3523,7 +3521,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 setPanelVisible(true)
 
                 // Auto-hide after 3 seconds
-                lifecycleScope.launch {
+                lifecycleScope.launch(coroutineExceptionHandler) {
                     delay(3000)
                     if (videoInfoVisible && !menuVisible && !scrubBarVisible) {
                         videoInfoVisible = false
@@ -3914,7 +3912,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
                 val triggerDown = input.rightTrigger > 0.5f || input.leftTrigger > 0.5f
                 if (triggerDown && uv != null) {
-                    lifecycleScope.launch(Dispatchers.IO) {
+                    lifecycleScope.launch(Dispatchers.IO + coroutineExceptionHandler) {
                         sampleColorAtUV(uv[0], uv[1])
                         withContext(Dispatchers.Main) {
                             colorPickMode = false
@@ -4166,6 +4164,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Pause video when going to background
+        videoPlayer?.pause()
+    }
+
     override fun onDestroy() {
         filePickerActive = false
         filePickerScanJob?.cancel()
@@ -4179,6 +4183,11 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         openXRInput?.stop()
         openXRInput = null
         stopPlayback()
+        subtitleRenderer = null
+        mediaLibrary = null
+        // Release XR session to free GPU/compositor resources
+        xrSession?.close()
+        xrSession = null
         super.onDestroy()
     }
 

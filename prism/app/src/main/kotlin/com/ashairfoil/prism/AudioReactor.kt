@@ -128,6 +128,8 @@ class AudioReactor {
     private val beatColorBuf = FloatArray(3)
     // Pre-allocated buffer for Chloe-Vibes FFT magnitudes (avoids per-callback alloc)
     private var vibesMagBuf: FloatArray? = null
+    // Frame delta tracking for update() — replaces hardcoded 1/72 assumption
+    private var lastUpdateNanos = 0L
 
     // Per-band raw values (written by FFT thread, read by render thread)
     @Volatile private var rawBass = 0f
@@ -181,6 +183,7 @@ class AudioReactor {
         }
         visualizer = null
         started = false
+        lastUpdateNanos = 0L
         bass = 0f; mid = 0f; high = 0f
         boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
         box2FillPct = 0f; smoothedOutput2 = 0f; prevFillPct2 = 0f
@@ -219,13 +222,24 @@ class AudioReactor {
         var midE = 0f; var midCnt = 0
         var highE = 0f; var highCnt = 0
 
+        // Pre-compute FFT magnitudes into vibesMagBuf so we can reuse them
+        // for both the display bin mapping and the Chloe-Vibes engine (avoids
+        // computing sqrt(real*real + imag*imag) twice when useVibesEngine is on).
+        var mags = vibesMagBuf
+        if (mags == null || mags.size != binCount) {
+            mags = FloatArray(binCount)
+            vibesMagBuf = mags
+        }
+        mags[0] = 0f
         for (i in 1 until binCount) {
             val real = fft[2 * i].toFloat()
             val imag = fft[2 * i + 1].toFloat()
-            val mag = kotlin.math.sqrt(real * real + imag * imag)
+            mags[i] = kotlin.math.sqrt(real * real + imag * imag)
+        }
 
+        for (i in 1 until binCount) {
             // Normalize and apply sensitivity as display gain
-            val norm = (mag / normValue) * sensitivity
+            val norm = (mags[i] / normValue) * sensitivity
 
             val freq = i * freqPerBin
 
@@ -260,19 +274,15 @@ class AudioReactor {
         rawHigh = if (highCnt > 0) (highE / highCnt).coerceIn(0f, 1f) else 0f
         fftFrameStamp = updateFrameCount  // mark that we got fresh data
 
-        // Feed Chloe-Vibes engine with FFT magnitudes (if enabled)
+        // Feed Chloe-Vibes engine with FFT magnitudes (if enabled).
+        // Magnitudes already computed into vibesMagBuf above — just normalize
+        // for the vibes engine (/ 128 * sensitivity) and pass through.
         if (useVibesEngine) {
-            // Reuse pre-allocated buffer (resize only if capture size changed)
-            var mags = vibesMagBuf
-            if (mags == null || mags.size != binCount) {
-                mags = FloatArray(binCount)
-                vibesMagBuf = mags
-            }
-            mags[0] = 0f
+            // Scale raw magnitudes to the normalized form the vibes engine expects.
+            // We write in-place since the display bin loop above already consumed
+            // the raw values it needed via (mags[i] / normValue) * sensitivity.
             for (i in 1 until binCount) {
-                val real = fft[2 * i].toFloat()
-                val imag = fft[2 * i + 1].toFloat()
-                mags[i] = kotlin.math.sqrt(real * real + imag * imag) / 128f * sensitivity
+                mags[i] = mags[i] / 128f * sensitivity
             }
             vibesEngine.processVisualizerFFT(mags)
         }
@@ -328,9 +338,12 @@ class AudioReactor {
 
         // ── Step 2: Mode-specific processing ──
         // Convert ms to per-frame alpha: alpha = 1 - exp(-dt/tau)
-        val dt = 1f / 72f  // frame time ~14ms
-        val atkAlpha = (1f - kotlin.math.exp(-dt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
-        val relAlpha = (1f - kotlin.math.exp(-dt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
+        val now = System.nanoTime()
+        val dt = if (lastUpdateNanos == 0L) 1f / 72f else (now - lastUpdateNanos) / 1_000_000_000f
+        lastUpdateNanos = now
+        val safeDt = dt.coerceIn(0.001f, 0.1f)
+        val atkAlpha = (1f - kotlin.math.exp(-safeDt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
+        val relAlpha = (1f - kotlin.math.exp(-safeDt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
 
         if (rolloff == Rolloff.THROB) {
             // THROB: one-shot burst. Trigger fires, runs FULL decay cycle,
@@ -343,7 +356,7 @@ class AudioReactor {
             }
             if (throbLocked) {
                 // In decay cycle — count down, ignore all input
-                hardKneeTimer += dt
+                hardKneeTimer += safeDt
                 val releaseSec = releaseMs / 1000f
                 val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
                 smoothedOutput = 1f - progress  // linear ramp down
@@ -370,7 +383,7 @@ class AudioReactor {
                         hardKneeTimer = 0f
                     } else if (hardKneeTriggered) {
                         // Linear decay from peak over releaseMs
-                        hardKneeTimer += dt
+                        hardKneeTimer += safeDt
                         val progress = (hardKneeTimer / (releaseMs / 1000f)).coerceIn(0f, 1f)
                         smoothedOutput = smoothedOutput * (1f - progress * 0.3f)  // gradual
                         if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
@@ -470,10 +483,9 @@ class AudioReactor {
         }
 
         // Color cycling
-        val dt2 = 1f / 72f
         when (colorMode) {
             ColorMode.CYCLE -> {
-                cycleHue = (cycleHue + cycleSpeed * dt2) % 360f
+                cycleHue = (cycleHue + cycleSpeed * safeDt) % 360f
             }
             ColorMode.FLASH -> {
                 // New random color on each throb/beat trigger

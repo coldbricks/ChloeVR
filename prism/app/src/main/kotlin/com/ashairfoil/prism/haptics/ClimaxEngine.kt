@@ -22,6 +22,10 @@ import kotlin.math.*
  */
 class ClimaxEngine {
 
+    companion object {
+        private val TAU = 2f * PI.toFloat()
+    }
+
     private var cycleAnchorMs: Float = 0f
     private var lastTimeMs: Float = 0f
     private var microPhase: Float = 0f
@@ -201,12 +205,11 @@ class ClimaxEngine {
         val pulseRateHz = (2f + intensityClamped * 3f + energy * 2f + ramp * 1f).coerceAtMost(maxPulseHz)
         val detune1 = 0.07f
         val detune2 = 0.13f
-        val tau = 2f * PI.toFloat()
-        microPhase  = wrapPhase(microPhase  + dt * pulseRateHz * tau)
-        microPhase2 = wrapPhase(microPhase2 + dt * pulseRateHz * (1f + detune1) * tau)
-        microPhase3 = wrapPhase(microPhase3 + dt * pulseRateHz * (1f - detune1) * tau)
-        microPhase4 = wrapPhase(microPhase4 + dt * pulseRateHz * (1f + detune2) * tau)
-        microPhase5 = wrapPhase(microPhase5 + dt * pulseRateHz * (1f - detune2) * tau)
+        microPhase  = wrapPhase(microPhase  + dt * pulseRateHz * TAU)
+        microPhase2 = wrapPhase(microPhase2 + dt * pulseRateHz * (1f + detune1) * TAU)
+        microPhase3 = wrapPhase(microPhase3 + dt * pulseRateHz * (1f - detune1) * TAU)
+        microPhase4 = wrapPhase(microPhase4 + dt * pulseRateHz * (1f + detune2) * TAU)
+        microPhase5 = wrapPhase(microPhase5 + dt * pulseRateHz * (1f - detune2) * TAU)
         val pulseRaw = 0.35f * sin(microPhase) +
                 0.22f * sin(microPhase2) +
                 0.22f * sin(microPhase3) +
@@ -217,7 +220,7 @@ class ClimaxEngine {
         // ---- Sub-harmonic resonance: scales with progression ----
         // Base 8% depth, building to 24% during surge.
         val subFreqHz = 1.5f + ramp * 2.5f + energy * 0.5f
-        subHarmonicPhase = wrapPhase(subHarmonicPhase + dt * subFreqHz * tau)
+        subHarmonicPhase = wrapPhase(subHarmonicPhase + dt * subFreqHz * TAU)
         val subDepth = 0.08f + 0.16f * ramp // 8% → 24%
         val subResonance = 1f + subDepth * intensityClamped * sin(subHarmonicPhase)
 
@@ -239,7 +242,7 @@ class ClimaxEngine {
         // sine couples with the user's involuntary breathing pattern,
         // amplifying the physiological feedback loop between body and device.
         val breathingHz = 0.18f
-        breathingPhase = wrapPhase(breathingPhase + dt * breathingHz * tau)
+        breathingPhase = wrapPhase(breathingPhase + dt * breathingHz * TAU)
         val breathingDepth = 0.06f + 0.10f * ramp // 6% → 16%
         val breathingMod = 1f + breathingDepth * sin(breathingPhase)
 
@@ -256,7 +259,7 @@ class ClimaxEngine {
 
         // ---- Dual-motor spatial contrast ----
         val phaseOffsetHz = 0.3f + ramp * 1.7f
-        motor2Phase = wrapPhase(motor2Phase + dt * phaseOffsetHz * tau)
+        motor2Phase = wrapPhase(motor2Phase + dt * phaseOffsetHz * TAU)
         val phaseMod = 0.5f + 0.5f * sin(motor2Phase)
         val antiPhaseDepth = rawOutput.coerceIn(0f, 1f) * 0.85f
         val motor2Factor = lerp(1f, 0.15f + 0.85f * phaseMod, antiPhaseDepth)
@@ -320,7 +323,7 @@ class ClimaxEngine {
     }
 
     private fun wrapPhase(phase: Float): Float {
-        val tau = 2f * PI.toFloat()
+        val tau = TAU
         val wrapped = phase.rem(tau)
         return if (wrapped < 0f) wrapped + tau else wrapped
     }

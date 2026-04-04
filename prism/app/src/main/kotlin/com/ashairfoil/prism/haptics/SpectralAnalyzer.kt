@@ -134,6 +134,12 @@ class SpectralAnalyzer(private val sampleRate: Float = 48000f) {
     /** Reusable magnitude buffer. */
     private val magnitudes = FloatArray(FFT_SIZE / 2)
 
+    /** Pre-allocated mono mixdown buffer. Resized as needed. */
+    private var monoBuffer = FloatArray(FFT_SIZE)
+
+    /** Pre-allocated band energies array (reused across calls). */
+    private val bandEnergiesBuffer = FloatArray(NUM_BANDS)
+
     /**
      * Analyze a buffer of interleaved audio samples.
      * Returns a SpectralData with all extracted features.
@@ -145,7 +151,8 @@ class SpectralAnalyzer(private val sampleRate: Float = 48000f) {
     fun analyze(samples: FloatArray, channels: Int = 1): SpectralData {
         // Step 1: Mix to mono
         val monoLen = samples.size / channels.coerceAtLeast(1)
-        val mono = FloatArray(monoLen)
+        if (monoBuffer.size < monoLen) monoBuffer = FloatArray(monoLen)
+        val mono = monoBuffer
         val ch = channels.coerceAtLeast(1)
         for (i in 0 until monoLen) {
             var sum = 0f
@@ -179,8 +186,9 @@ class SpectralAnalyzer(private val sampleRate: Float = 48000f) {
             magnitudes[i] = sqrt(re * re + im * im) * scale
         }
 
-        // Step 6: Calculate band energies
-        val bandEnergies = FloatArray(NUM_BANDS)
+        // Step 6: Calculate band energies (reuse pre-allocated buffer)
+        val bandEnergies = bandEnergiesBuffer
+        for (i in 0 until NUM_BANDS) bandEnergies[i] = 0f
         for (i in 0 until NUM_BANDS) {
             val (binStart, binEnd) = bandBinRanges[i]
             if (binEnd > binStart && binEnd <= magnitudes.size) {
@@ -230,7 +238,7 @@ class SpectralAnalyzer(private val sampleRate: Float = 48000f) {
         magnitudes.copyInto(prevMagnitude)
 
         return SpectralData(
-            bandEnergies = bandEnergies,
+            bandEnergies = bandEnergies.copyOf(),
             rmsPower = rmsPower,
             spectralCentroid = spectralCentroid,
             spectralFlux = spectralFlux,

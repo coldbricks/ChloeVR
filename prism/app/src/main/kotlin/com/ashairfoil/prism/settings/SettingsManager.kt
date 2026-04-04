@@ -3,6 +3,8 @@ package com.ashairfoil.prism.settings
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import java.net.URLDecoder
+import java.net.URLEncoder
 
 /**
  * Singleton persistence layer for all ChloeVR user settings.
@@ -183,7 +185,9 @@ object SettingsManager {
         return entries.mapNotNull { entry ->
             val parts = entry.split(separator, limit = 2)
             if (parts.size == 2) {
-                val path = parts[0]
+                // URL-decode the path to reverse the encoding applied in serializeResumeMap.
+                // Legacy entries that were never encoded will pass through unchanged.
+                val path = try { URLDecoder.decode(parts[0], "UTF-8") } catch (_: Exception) { parts[0] }
                 val pos = parts[1].toLongOrNull()
                 if (pos != null) path to pos else null
             } else null
@@ -191,26 +195,31 @@ object SettingsManager {
     }
 
     private fun serializeResumeMap(map: Map<String, Long>): String {
-        return map.entries.joinToString("\n") { "${it.key}\t${it.value}" }
+        // URL-encode paths so that tab (\t) and newline (\n) characters in file paths
+        // cannot corrupt the delimiter-separated format.
+        return map.entries.joinToString("\n") { (path, pos) ->
+            val encodedPath = URLEncoder.encode(path, "UTF-8")
+            "$encodedPath\t$pos"
+        }
     }
 
     // ── Playback speed ──────────────────────────────────────────────────
 
     var playbackSpeed: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_PLAYBACK_SPEED, DEFAULT_PLAYBACK_SPEED) }
-        set(value) { ensureInit(); prefs.edit().putFloat(KEY_PLAYBACK_SPEED, value).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_PLAYBACK_SPEED, DEFAULT_PLAYBACK_SPEED).coerceIn(0.25f, 4.0f) }
+        set(value) { ensureInit(); prefs.edit().putFloat(KEY_PLAYBACK_SPEED, value.coerceIn(0.25f, 4.0f)).apply() }
 
     // ── Seek increment ──────────────────────────────────────────────────
 
     var seekIncrementMs: Long
-        get() { ensureInit(); return prefs.getLong(KEY_SEEK_INCREMENT_MS, DEFAULT_SEEK_INCREMENT_MS) }
-        set(value) { ensureInit(); prefs.edit().putLong(KEY_SEEK_INCREMENT_MS, value).apply() }
+        get() { ensureInit(); return prefs.getLong(KEY_SEEK_INCREMENT_MS, DEFAULT_SEEK_INCREMENT_MS).coerceIn(1_000L, 120_000L) }
+        set(value) { ensureInit(); prefs.edit().putLong(KEY_SEEK_INCREMENT_MS, value.coerceIn(1_000L, 120_000L)).apply() }
 
     // ── Zoom level ──────────────────────────────────────────────────────
 
     var zoomLevel: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_ZOOM_LEVEL, DEFAULT_ZOOM_LEVEL) }
-        set(value) { ensureInit(); prefs.edit().putFloat(KEY_ZOOM_LEVEL, value).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_ZOOM_LEVEL, DEFAULT_ZOOM_LEVEL).coerceIn(0.1f, 20.0f) }
+        set(value) { ensureInit(); prefs.edit().putFloat(KEY_ZOOM_LEVEL, value.coerceIn(0.1f, 20.0f)).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 
@@ -273,24 +282,24 @@ object SettingsManager {
     // ── Chroma key settings ─────────────────────────────────────────────
 
     var chromaKeyR: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_R, 0f) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_R, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_R, 0f).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_R, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var chromaKeyG: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_G, 1f) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_G, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_G, 1f).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_G, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var chromaKeyB: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_B, 0f) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_B, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_KEY_B, 0f).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_KEY_B, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var chromaTolerance: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_TOLERANCE, 0.30f) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_TOLERANCE, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_TOLERANCE, 0.30f).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_TOLERANCE, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var chromaSoftness: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_SOFTNESS, 0.10f) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_SOFTNESS, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CHROMA_SOFTNESS, 0.10f).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CHROMA_SOFTNESS, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var chromaEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_CHROMA_ENABLED, false) }
@@ -299,32 +308,32 @@ object SettingsManager {
     // ── Color grading settings ──────────────────────────────────────────
 
     var cgBrightness: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_BRIGHTNESS, DEFAULT_CG_BRIGHTNESS) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_BRIGHTNESS, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_BRIGHTNESS, DEFAULT_CG_BRIGHTNESS).coerceIn(-1.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_BRIGHTNESS, v.coerceIn(-1.0f, 1.0f)).apply() }
 
     var cgContrast: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_CONTRAST, DEFAULT_CG_CONTRAST) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_CONTRAST, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_CONTRAST, DEFAULT_CG_CONTRAST).coerceIn(0.0f, 4.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_CONTRAST, v.coerceIn(0.0f, 4.0f)).apply() }
 
     var cgSaturation: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_SATURATION, DEFAULT_CG_SATURATION) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_SATURATION, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_SATURATION, DEFAULT_CG_SATURATION).coerceIn(0.0f, 4.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_SATURATION, v.coerceIn(0.0f, 4.0f)).apply() }
 
     var cgSharpening: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_SHARPENING, DEFAULT_CG_SHARPENING) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_SHARPENING, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_SHARPENING, DEFAULT_CG_SHARPENING).coerceIn(0.0f, 2.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_SHARPENING, v.coerceIn(0.0f, 2.0f)).apply() }
 
     var cgGamma: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_GAMMA, DEFAULT_CG_GAMMA) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_GAMMA, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_GAMMA, DEFAULT_CG_GAMMA).coerceIn(0.1f, 5.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_GAMMA, v.coerceIn(0.1f, 5.0f)).apply() }
 
     var cgHueShift: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_CG_HUE_SHIFT, DEFAULT_CG_HUE_SHIFT) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_HUE_SHIFT, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_CG_HUE_SHIFT, DEFAULT_CG_HUE_SHIFT).coerceIn(-180.0f, 180.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_CG_HUE_SHIFT, v.coerceIn(-180.0f, 180.0f)).apply() }
 
     var cgToneMapMode: Int
-        get() { ensureInit(); return prefs.getInt(KEY_CG_TONE_MAP_MODE, DEFAULT_CG_TONE_MAP_MODE) }
-        set(v) { ensureInit(); prefs.edit().putInt(KEY_CG_TONE_MAP_MODE, v).apply() }
+        get() { ensureInit(); return prefs.getInt(KEY_CG_TONE_MAP_MODE, DEFAULT_CG_TONE_MAP_MODE).coerceIn(0, 2) }
+        set(v) { ensureInit(); prefs.edit().putInt(KEY_CG_TONE_MAP_MODE, v.coerceIn(0, 2)).apply() }
 
     var cgEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_CG_ENABLED, false) }
@@ -337,24 +346,24 @@ object SettingsManager {
         set(v) { ensureInit(); prefs.edit().putString(KEY_LENS_PRESET, v).apply() }
 
     var lensK1: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_LENS_K1, DEFAULT_LENS_K1) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_K1, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_LENS_K1, DEFAULT_LENS_K1).coerceIn(-2.0f, 2.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_K1, v.coerceIn(-2.0f, 2.0f)).apply() }
 
     var lensK2: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_LENS_K2, DEFAULT_LENS_K2) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_K2, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_LENS_K2, DEFAULT_LENS_K2).coerceIn(-2.0f, 2.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_K2, v.coerceIn(-2.0f, 2.0f)).apply() }
 
     var lensFov: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_LENS_FOV, DEFAULT_LENS_FOV) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_FOV, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_LENS_FOV, DEFAULT_LENS_FOV).coerceIn(10.0f, 360.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_FOV, v.coerceIn(10.0f, 360.0f)).apply() }
 
     var lensCx: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_LENS_CX, DEFAULT_LENS_CX) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_CX, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_LENS_CX, DEFAULT_LENS_CX).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_CX, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var lensCy: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_LENS_CY, DEFAULT_LENS_CY) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_CY, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_LENS_CY, DEFAULT_LENS_CY).coerceIn(0.0f, 1.0f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_LENS_CY, v.coerceIn(0.0f, 1.0f)).apply() }
 
     var lensEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_LENS_ENABLED, false) }
@@ -363,12 +372,12 @@ object SettingsManager {
     // ── IPD / stereo adjustment ─────────────────────────────────────────
 
     var ipdOffset: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_IPD_OFFSET, DEFAULT_IPD_OFFSET) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_IPD_OFFSET, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_IPD_OFFSET, DEFAULT_IPD_OFFSET).coerceIn(-0.05f, 0.05f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_IPD_OFFSET, v.coerceIn(-0.05f, 0.05f)).apply() }
 
     var stereoVerticalOffset: Float
-        get() { ensureInit(); return prefs.getFloat(KEY_STEREO_VERTICAL_OFFSET, DEFAULT_STEREO_VERTICAL_OFFSET) }
-        set(v) { ensureInit(); prefs.edit().putFloat(KEY_STEREO_VERTICAL_OFFSET, v).apply() }
+        get() { ensureInit(); return prefs.getFloat(KEY_STEREO_VERTICAL_OFFSET, DEFAULT_STEREO_VERTICAL_OFFSET).coerceIn(-0.05f, 0.05f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_STEREO_VERTICAL_OFFSET, v.coerceIn(-0.05f, 0.05f)).apply() }
 
     var stereoEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_STEREO_ENABLED, false) }
@@ -390,7 +399,9 @@ object SettingsManager {
     fun getFavoriteFolders(): List<String> {
         ensureInit()
         val raw = prefs.getString(KEY_FAVORITE_FOLDERS, "") ?: ""
-        return if (raw.isBlank()) emptyList() else raw.split("\n").filter { it.isNotBlank() }
+        return if (raw.isBlank()) emptyList() else raw.split("\n").filter { it.isNotBlank() }.map {
+            try { URLDecoder.decode(it, "UTF-8") } catch (_: Exception) { it }
+        }
     }
 
     fun addFavoriteFolder(path: String) {
@@ -398,7 +409,9 @@ object SettingsManager {
         val current = getFavoriteFolders().toMutableList()
         if (path !in current) {
             current.add(path)
-            prefs.edit().putString(KEY_FAVORITE_FOLDERS, current.joinToString("\n")).apply()
+            prefs.edit().putString(KEY_FAVORITE_FOLDERS, current.joinToString("\n") {
+                URLEncoder.encode(it, "UTF-8")
+            }).apply()
         }
     }
 
@@ -406,7 +419,9 @@ object SettingsManager {
         ensureInit()
         val current = getFavoriteFolders().toMutableList()
         current.remove(path)
-        prefs.edit().putString(KEY_FAVORITE_FOLDERS, current.joinToString("\n")).apply()
+        prefs.edit().putString(KEY_FAVORITE_FOLDERS, current.joinToString("\n") {
+            URLEncoder.encode(it, "UTF-8")
+        }).apply()
     }
 
     fun isFavoriteFolder(path: String): Boolean = path in getFavoriteFolders()
@@ -455,7 +470,9 @@ object SettingsManager {
         val idx = list.indexOfFirst { it.name == preset.name }
         if (idx >= 0) list[idx] = preset else list.add(preset)
         val serialized = list.joinToString(";;") {
-            "${it.name}|${it.brightness}|${it.contrast}|${it.saturation}|${it.sharpening}|${it.gamma}|${it.hueShift}|${it.toneMapMode}"
+            // Sanitize name: "|" is the field delimiter, ";;" is the entry delimiter
+            val safeName = it.name.replace('|', '-').replace(";;", "--")
+            "$safeName|${it.brightness}|${it.contrast}|${it.saturation}|${it.sharpening}|${it.gamma}|${it.hueShift}|${it.toneMapMode}"
         }
         prefs.edit().putString(KEY_CG_PRESETS, serialized).apply()
     }
@@ -464,7 +481,8 @@ object SettingsManager {
         ensureInit()
         val list = getColorGradingPresets().filterNot { it.name == name }
         val serialized = list.joinToString(";;") {
-            "${it.name}|${it.brightness}|${it.contrast}|${it.saturation}|${it.sharpening}|${it.gamma}|${it.hueShift}|${it.toneMapMode}"
+            val safeName = it.name.replace('|', '-').replace(";;", "--")
+            "$safeName|${it.brightness}|${it.contrast}|${it.saturation}|${it.sharpening}|${it.gamma}|${it.hueShift}|${it.toneMapMode}"
         }
         prefs.edit().putString(KEY_CG_PRESETS, serialized).apply()
     }

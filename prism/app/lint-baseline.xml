@@ -311,28 +311,6 @@
 
     <issue
         id="GradleDependency"
-        message="A newer version of androidx.xr.arcore:arcore than 1.0.0-alpha11 is available: 1.0.0-alpha12"
-        errorLine1="    implementation(&quot;androidx.xr.arcore:arcore:1.0.0-alpha11&quot;)"
-        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="build.gradle.kts"
-            line="87"
-            column="20"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of com.google.guava:listenablefuture than 1.0 is available: 9999.0-empty-to-avoid-conflict-with-guava"
-        errorLine1="    implementation(&quot;com.google.guava:listenablefuture:1.0&quot;)"
-        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="build.gradle.kts"
-            line="88"
-            column="20"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
         message="A newer version of androidx.media3:media3-exoplayer than 1.5.1 is available: 1.10.0"
         errorLine1="    implementation(&quot;androidx.media3:media3-exoplayer:1.5.1&quot;)"
         errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
@@ -394,17 +372,6 @@
         <location
             file="build.gradle.kts"
             line="106"
-            column="20"/>
-    </issue>
-
-    <issue
-        id="GradleDependency"
-        message="A newer version of androidx.recyclerview:recyclerview than 1.3.2 is available: 1.4.0"
-        errorLine1="    implementation(&quot;androidx.recyclerview:recyclerview:1.3.2&quot;)"
-        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="build.gradle.kts"
-            line="107"
             column="20"/>
     </issue>
 
@@ -897,83 +864,6 @@
             file="build.gradle.kts"
             line="19"
             column="27"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        return if (Build.VERSION.SDK_INT >= 31) {"
-        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/haptics/BleDeviceManager.kt"
-            line="54"
-            column="20"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        if (Build.VERSION.SDK_INT >= 31) {"
-        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/haptics/BleDeviceManager.kt"
-            line="68"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        if (Build.VERSION.SDK_INT >= 30 &amp;&amp; !android.os.Environment.isExternalStorageManager()) {"
-        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/MainActivity.kt"
-            line="272"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        if (Build.VERSION.SDK_INT >= 30 &amp;&amp; android.os.Environment.isExternalStorageManager()) {"
-        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/MainActivity.kt"
-            line="295"
-            column="13"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        val permissions = if (Build.VERSION.SDK_INT >= 33) {"
-        errorLine2="                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/MainActivity.kt"
-            line="304"
-            column="31"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="            if (Build.VERSION.SDK_INT >= 30 &amp;&amp; android.os.Environment.isExternalStorageManager()) {"
-        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/MainActivity.kt"
-            line="326"
-            column="17"/>
-    </issue>
-
-    <issue
-        id="ObsoleteSdkInt"
-        message="Unnecessary; SDK_INT is always >= 34"
-        errorLine1="        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {"
-        errorLine2="                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/kotlin/com/ashairfoil/prism/playback/ScreenshotCapture.kt"
-            line="107"
-            column="20"/>
     </issue>
 
     <issue

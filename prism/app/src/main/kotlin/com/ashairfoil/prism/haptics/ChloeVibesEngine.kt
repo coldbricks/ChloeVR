@@ -112,7 +112,9 @@ class ChloeVibesEngine {
         isGateOpen = gate.process(energy, gateThreshold, autoGateAmount, gateSmoothing, 0.05f)
 
         // Beat detection
-        val (isOnset, onsetStrength) = beatDetector.process(spectralFlux, currentTimeMs)
+        beatDetector.process(spectralFlux, currentTimeMs)
+        val isOnset = beatDetector.lastIsOnset
+        val onsetStrength = beatDetector.lastOnsetStrength
 
         // Envelope
         val envelopeOutput = envelope.drive(

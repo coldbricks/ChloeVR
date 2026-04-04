@@ -13,6 +13,7 @@
 
 package com.ashairfoil.prism.haptics
 
+import kotlin.math.pow
 import kotlin.math.sin
 
 // ---------------------------------------------------------------------------
@@ -359,6 +360,3 @@ class EnvelopeProcessor {
         nextMicroPauseMs = 0f
     }
 }
-
-/** Kotlin Float.pow extension for readability. */
-private fun Float.pow(exp: Float): Float = Math.pow(this.toDouble(), exp.toDouble()).toFloat()

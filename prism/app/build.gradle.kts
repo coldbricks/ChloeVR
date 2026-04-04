@@ -84,8 +84,7 @@ dependencies {
     // Android XR
     implementation("androidx.xr.runtime:runtime:1.0.0-alpha11")
     implementation("androidx.xr.scenecore:scenecore:1.0.0-alpha12")
-    implementation("androidx.xr.arcore:arcore:1.0.0-alpha11")
-    implementation("com.google.guava:listenablefuture:1.0")
+    implementation("com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava")
 
     // OpenXR loader (native, via prefab)
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.49")
@@ -104,7 +103,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.recyclerview:recyclerview:1.3.2")
 
     // Security (encrypted shared preferences for auth tokens)
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // alpha06 required for MasterKey.Builder; pin to this version
@@ -114,4 +112,8 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    testImplementation("io.mockk:mockk:1.13.10")
+    testImplementation("org.robolectric:robolectric:4.12")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.json:json:20231013")
 }

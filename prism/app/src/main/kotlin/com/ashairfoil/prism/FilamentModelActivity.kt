@@ -1,10 +1,6 @@
 package com.ashairfoil.prism
 
 import android.app.Activity
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -28,7 +24,6 @@ class FilamentModelActivity : ComponentActivity() {
         const val TAG = "ChloeVR-ModelActivity"
         const val EXTRA_MODEL_PATH = "model_path"
         const val EXTRA_MODEL_PATHS = "model_paths"
-        private const val REQUEST_ADD_MODEL = 1001
     }
 
     // Rendering
@@ -55,9 +50,6 @@ class FilamentModelActivity : ComponentActivity() {
     // ── Sensor Hub (ALL Android hardware sensors) ──
     internal var sensorHub: SensorHub? = null
 
-    // Legacy sensor compat (SensorHub now owns these)
-    private var sensorManager: SensorManager? = null
-    private var lightSensor: Sensor? = null
     @Volatile internal var roomLux = 200f  // default indoor
     @Volatile internal var autoAmbient = true
     private val lightEstimateBuffer = FloatArray(41)
@@ -97,6 +89,7 @@ class FilamentModelActivity : ComponentActivity() {
 
     // Sensor debug HUD
     @Volatile internal var sensorHudVisible = false
+    private var lastRenderNanos = 0L
     @Volatile internal var sensorDebugStr = ""
     internal var sensorPollFrame = 0
 
@@ -267,13 +260,7 @@ class FilamentModelActivity : ComponentActivity() {
         sensorHub = SensorHub(this).also { it.start() }
         Log.i(TAG, "SensorHub started: ${sensorHub?.activeCount() ?: 0} sensors active")
 
-        // Legacy sensor compat (light sensor also available via SensorHub)
-        sensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
-        lightSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_LIGHT)
-        if (lightSensor != null) {
-            sensorManager?.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_UI)
-            Log.i(TAG, "Ambient light sensor registered (legacy)")
-        }
+        // Light sensor now handled by SensorHub — read via sensorHub?.lightLux
 
         // Initialize audio reactor (BeatReactor-style)
         audioReactor = AudioReactor()
@@ -574,10 +561,12 @@ class FilamentModelActivity : ComponentActivity() {
                                         gr.useSH = true
                                     }
 
-                                    // Debug string for HUD
-                                    xrLightDebugStr = "Amb(%.1f,%.1f,%.1f) Dir(%.1f,%.1f,%.1f) %s".format(
-                                        ambR, ambG, ambB, dirX, dirY, dirZ,
-                                        if (shValid) "SH:L2" else "SH:off")
+                                    // Debug string for HUD (only allocate when visible)
+                                    if (sensorHudVisible) {
+                                        xrLightDebugStr = "Amb(%.1f,%.1f,%.1f) Dir(%.1f,%.1f,%.1f) %s".format(
+                                            ambR, ambG, ambB, dirX, dirY, dirZ,
+                                            if (shValid) "SH:L2" else "SH:off")
+                                    }
                                 } else {
                                     // Fallback: lux sensor
                                     xrLightEstimateAvailable = false
@@ -795,17 +784,20 @@ class FilamentModelActivity : ComponentActivity() {
                             }
 
                             // ── Yeet animation: flying deleted models ──
-                            val yeetDt = 1f / 72f
+                            val now = System.nanoTime()
+                            val yeetDt = if (lastRenderNanos == 0L) 1f / 72f else (now - lastRenderNanos) / 1_000_000_000f
+                            lastRenderNanos = now
+                            val safeYeetDt = yeetDt.coerceIn(0.001f, 0.1f)
                             synchronized(sceneManager.yeetingModelsLock) {
                             val yeetIter = yeetingModels.iterator()
                             while (yeetIter.hasNext()) {
                                 val ym = yeetIter.next()
-                                ym.timer += yeetDt
-                                ym.velY -= 9.8f * yeetDt  // gravity
-                                ym.posX += ym.velX * yeetDt
-                                ym.posY += ym.velY * yeetDt
-                                ym.posZ += ym.velZ * yeetDt
-                                ym.spin += 720f * yeetDt  // spin wildly
+                                ym.timer += safeYeetDt
+                                ym.velY -= 9.8f * safeYeetDt  // gravity
+                                ym.posX += ym.velX * safeYeetDt
+                                ym.posY += ym.velY * safeYeetDt
+                                ym.posZ += ym.velZ * safeYeetDt
+                                ym.spin += 720f * safeYeetDt  // spin wildly
                                 ym.scale *= 0.92f  // shrink each frame
 
                                 val gpuModel = gr.getModel(ym.gpuModelId)
@@ -1045,9 +1037,6 @@ class FilamentModelActivity : ComponentActivity() {
         Log.i(TAG, "onResume")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         sensorHub?.start()
-        if (lightSensor != null) {
-            sensorManager?.registerListener(lightListener, lightSensor, SensorManager.SENSOR_DELAY_UI)
-        }
         // Resume audio player and reactor if they were playing before pause
         val ap = audioPlayer
         if (ap != null && audioPlayerMode) {
@@ -1069,7 +1058,6 @@ class FilamentModelActivity : ComponentActivity() {
         // Pause audio player so it doesn't keep playing with headset removed
         audioPlayer?.pause()
         audioReactor?.stop()
-        sensorManager?.unregisterListener(lightListener)
         sensorHub?.stop()
         super.onPause()
     }
@@ -1090,13 +1078,6 @@ class FilamentModelActivity : ComponentActivity() {
             return true
         }
         return super.dispatchKeyEvent(event)
-    }
-
-    private val lightListener = object : SensorEventListener {
-        override fun onSensorChanged(event: SensorEvent) {
-            roomLux = event.values[0]
-        }
-        override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {}
     }
 
     override fun onDestroy() {
@@ -1133,8 +1114,9 @@ class FilamentModelActivity : ComponentActivity() {
         hapticManager = null
         audioPlayer?.release(); audioPlayer = null
         audioReactor?.stop()
-        sensorManager?.unregisterListener(lightListener)
-        sensorHub?.stop()
+        // Full teardown: unregister sensors + quit handler thread
+        sensorHub?.release()
+        sensorHub = null
         renderThread?.join(3000)
         if (renderThread?.isAlive == true) {
             Log.w(TAG, "Render thread still alive after join timeout, interrupting")

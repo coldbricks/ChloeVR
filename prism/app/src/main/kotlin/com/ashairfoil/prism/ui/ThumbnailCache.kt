@@ -44,8 +44,8 @@ class ThumbnailCache(private val context: Context) {
     // Background scope for thumbnail generation
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // Track in-flight generation to avoid duplicates
-    private val inFlight = mutableSetOf<String>()
+    // Track in-flight generation to avoid duplicates (key -> start timestamp)
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * Get thumbnail for a video file.
@@ -87,10 +87,17 @@ class ThumbnailCache(private val context: Context) {
     }
 
     private fun generateAndCache(file: File, key: String, callback: (Bitmap?) -> Unit) {
-        synchronized(inFlight) {
-            if (inFlight.contains(key)) return // Already generating
-            inFlight.add(key)
+        // Check if already in-flight, evict stale entries (>30s) to prevent leaks
+        val now = System.currentTimeMillis()
+        val existing = inFlight[key]
+        if (existing != null) {
+            if (now - existing > 30_000) {
+                inFlight.remove(key)
+            } else {
+                return // Already generating
+            }
         }
+        if (inFlight.putIfAbsent(key, now) != null) return // Race-safe guard
 
         scope.launch {
             try {
@@ -117,7 +124,7 @@ class ThumbnailCache(private val context: Context) {
                 Log.w(TAG, "Thumbnail generation failed for ${file.name}: ${e.message}")
                 withContext(Dispatchers.Main) { callback(null) }
             } finally {
-                synchronized(inFlight) { inFlight.remove(key) }
+                inFlight.remove(key)
             }
         }
     }

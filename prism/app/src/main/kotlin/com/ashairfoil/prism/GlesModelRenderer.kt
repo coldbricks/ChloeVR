@@ -74,7 +74,9 @@ class GlesModelRenderer {
     )
 
     private val models = mutableListOf<GpuModel>()
+    private val modelIndex = HashMap<Int, GpuModel>()
     private var nextModelId = 1
+    private val glIdBuf = intArrayOf(0)
     private var maxTextureSize = 4096
     var textureMaxSize = 0  // 0=auto, else hard cap (4096/2048/1024)
 
@@ -942,6 +944,7 @@ class GlesModelRenderer {
                 GLES30.glBindVertexArray(0)
             }
             models.add(model)
+            modelIndex[model.id] = model
             Log.i(TAG, "GLB loaded #${model.id}: $posCnt verts, $idxCnt idx")
             return model.id
         } catch (e: Exception) {
@@ -950,19 +953,19 @@ class GlesModelRenderer {
         }
     }
 
-    fun getModel(id: Int): GpuModel? = models.find { it.id == id }
+    fun getModel(id: Int): GpuModel? = modelIndex[id]
     fun removeModel(id: Int) {
-        val m = models.find { it.id == id } ?: return
-        if (m.vao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(m.vao), 0)
-        if (m.vboPositions != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboPositions), 0)
-        if (m.vboNormals != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboNormals), 0)
-        if (m.vboTexCoords != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboTexCoords), 0)
-        if (m.vboTangents != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboTangents), 0)
-        if (m.ebo != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.ebo), 0)
-        if (m.textureId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.textureId), 0)
-        if (m.normalMapTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.normalMapTexId), 0)
-        if (m.metallicRoughnessTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.metallicRoughnessTexId), 0)
-        if (m.emissiveTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.emissiveTexId), 0)
+        val m = modelIndex.remove(id) ?: return
+        if (m.vao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = m.vao }, 0)
+        if (m.vboPositions != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboPositions }, 0)
+        if (m.vboNormals != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboNormals }, 0)
+        if (m.vboTexCoords != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboTexCoords }, 0)
+        if (m.vboTangents != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboTangents }, 0)
+        if (m.ebo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.ebo }, 0)
+        if (m.textureId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.textureId }, 0)
+        if (m.normalMapTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.normalMapTexId }, 0)
+        if (m.metallicRoughnessTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.metallicRoughnessTexId }, 0)
+        if (m.emissiveTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.emissiveTexId }, 0)
         models.remove(m)
     }
     fun getAllModels(): List<GpuModel> = models.toList()
@@ -1695,52 +1698,53 @@ class GlesModelRenderer {
 
     fun destroy() {
         for (m in models) {
-            if (m.vao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(m.vao), 0)
-            if (m.vboPositions != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboPositions), 0)
-            if (m.vboNormals != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboNormals), 0)
-            if (m.vboTexCoords != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboTexCoords), 0)
-            if (m.vboTangents != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.vboTangents), 0)
-            if (m.ebo != 0) GLES30.glDeleteBuffers(1, intArrayOf(m.ebo), 0)
-            if (m.textureId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.textureId), 0)
-            if (m.normalMapTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.normalMapTexId), 0)
-            if (m.metallicRoughnessTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.metallicRoughnessTexId), 0)
-            if (m.emissiveTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(m.emissiveTexId), 0)
+            if (m.vao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = m.vao }, 0)
+            if (m.vboPositions != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboPositions }, 0)
+            if (m.vboNormals != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboNormals }, 0)
+            if (m.vboTexCoords != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboTexCoords }, 0)
+            if (m.vboTangents != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.vboTangents }, 0)
+            if (m.ebo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = m.ebo }, 0)
+            if (m.textureId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.textureId }, 0)
+            if (m.normalMapTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.normalMapTexId }, 0)
+            if (m.metallicRoughnessTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.metallicRoughnessTexId }, 0)
+            if (m.emissiveTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = m.emissiveTexId }, 0)
         }
         models.clear()
+        modelIndex.clear()
         if (programId != 0) GLES30.glDeleteProgram(programId)
         if (shadowDepthProgramId != 0) GLES30.glDeleteProgram(shadowDepthProgramId)
         if (laserProgramId != 0) GLES30.glDeleteProgram(laserProgramId)
         if (gridProgramId != 0) GLES30.glDeleteProgram(gridProgramId)
         if (gizmoProgramId != 0) GLES30.glDeleteProgram(gizmoProgramId)
-        if (fbo != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fbo), 0)
-        if (depthRb != 0) GLES30.glDeleteRenderbuffers(1, intArrayOf(depthRb), 0)
-        if (shadowMapFbo != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(shadowMapFbo), 0)
-        if (shadowMapTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(shadowMapTexId), 0)
-        if (shadowColorRb != 0) GLES30.glDeleteRenderbuffers(1, intArrayOf(shadowColorRb), 0)
-        if (laserVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(laserVao), 0)
-        if (laserVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(laserVbo), 0)
-        if (dotVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(dotVao), 0)
-        if (dotVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(dotVbo), 0)
-        if (gridVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(gridVao), 0)
-        if (gridVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gridVbo), 0)
-        if (gizmoVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(gizmoVao), 0)
-        if (gizmoVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoVbo), 0)
-        if (gizmoEbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(gizmoEbo), 0)
+        if (fbo != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = fbo }, 0)
+        if (depthRb != 0) GLES30.glDeleteRenderbuffers(1, glIdBuf.also { it[0] = depthRb }, 0)
+        if (shadowMapFbo != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = shadowMapFbo }, 0)
+        if (shadowMapTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = shadowMapTexId }, 0)
+        if (shadowColorRb != 0) GLES30.glDeleteRenderbuffers(1, glIdBuf.also { it[0] = shadowColorRb }, 0)
+        if (laserVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = laserVao }, 0)
+        if (laserVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = laserVbo }, 0)
+        if (dotVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = dotVao }, 0)
+        if (dotVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = dotVbo }, 0)
+        if (gridVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = gridVao }, 0)
+        if (gridVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = gridVbo }, 0)
+        if (gizmoVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = gizmoVao }, 0)
+        if (gizmoVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = gizmoVbo }, 0)
+        if (gizmoEbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = gizmoEbo }, 0)
         if (shadowPlaneProgramId != 0) GLES30.glDeleteProgram(shadowPlaneProgramId)
         if (planeVisProgramId != 0) GLES30.glDeleteProgram(planeVisProgramId)
-        if (spVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(spVao), 0)
-        if (spVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(spVbo), 0)
+        if (spVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = spVao }, 0)
+        if (spVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = spVbo }, 0)
         if (uiProgramId != 0) GLES30.glDeleteProgram(uiProgramId)
-        if (uiVao != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(uiVao), 0)
-        if (uiVbo != 0) GLES30.glDeleteBuffers(1, intArrayOf(uiVbo), 0)
+        if (uiVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = uiVao }, 0)
+        if (uiVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = uiVbo }, 0)
         // Bloom cleanup
         if (bloomBrightProgramId != 0) GLES30.glDeleteProgram(bloomBrightProgramId)
         if (bloomBlurProgramId != 0) GLES30.glDeleteProgram(bloomBlurProgramId)
         if (bloomCompositeProgramId != 0) GLES30.glDeleteProgram(bloomCompositeProgramId)
-        if (bloomTexA != 0) GLES30.glDeleteTextures(1, intArrayOf(bloomTexA), 0)
-        if (bloomTexB != 0) GLES30.glDeleteTextures(1, intArrayOf(bloomTexB), 0)
-        if (bloomFboA != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(bloomFboA), 0)
-        if (bloomFboB != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(bloomFboB), 0)
+        if (bloomTexA != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = bloomTexA }, 0)
+        if (bloomTexB != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = bloomTexB }, 0)
+        if (bloomFboA != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = bloomFboA }, 0)
+        if (bloomFboB != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = bloomFboB }, 0)
         Log.i(TAG, "GLES renderer destroyed")
     }
 
@@ -1904,6 +1908,9 @@ class GlesModelRenderer {
     private val scratchEmitterModel = FloatArray(16)
     private val scratchPlaneModel = FloatArray(16)
     private val scratchRayW = FloatArray(3)
+    private val shadowLookAt = FloatArray(16)
+    private val shadowOrtho = FloatArray(16)
+    private val shadowResult = FloatArray(16)
 
     private fun multiplyMat4(a: FloatArray, b: FloatArray, r: FloatArray): FloatArray {
         for (col in 0..3) for (row in 0..3)
@@ -1990,35 +1997,36 @@ class GlesModelRenderer {
         val ld = lightDir
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
-        val view = lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f)
+        lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f, shadowLookAt)
         val s = shadowSpread
-        val proj = ortho(-s, s, -s, s, 0.1f, 30f)
-        return multiplyMat4(proj, view)
+        ortho(-s, s, -s, s, 0.1f, 30f, shadowOrtho)
+        return multiplyMat4(shadowOrtho, shadowLookAt, shadowResult)
     }
 
     private fun lookAt(eyeX: Float, eyeY: Float, eyeZ: Float,
-                       cx: Float, cy: Float, cz: Float): FloatArray {
+                       cx: Float, cy: Float, cz: Float, out: FloatArray) {
         var fx = cx-eyeX; var fy = cy-eyeY; var fz = cz-eyeZ
         val fl = kotlin.math.sqrt(fx*fx+fy*fy+fz*fz); fx/=fl; fy/=fl; fz/=fl
         // up = (0,1,0) unless forward is parallel
         var ux = 0f; var uy = 1f; var uz = 0f
         if (kotlin.math.abs(fy) > 0.99f) { ux = 1f; uy = 0f }
-        // s = f × up
+        // s = f x up
         var sx = fy*uz-fz*uy; var sy = fz*ux-fx*uz; var sz = fx*uy-fy*ux
         val sl = kotlin.math.sqrt(sx*sx+sy*sy+sz*sz); sx/=sl; sy/=sl; sz/=sl
-        // u = s × f
+        // u = s x f
         val uux = sy*fz-sz*fy; val uuy = sz*fx-sx*fz; val uuz = sx*fy-sy*fx
-        return floatArrayOf(
-            sx, uux, -fx, 0f,
-            sy, uuy, -fy, 0f,
-            sz, uuz, -fz, 0f,
-            -(sx*eyeX+sy*eyeY+sz*eyeZ), -(uux*eyeX+uuy*eyeY+uuz*eyeZ), fx*eyeX+fy*eyeY+fz*eyeZ, 1f)
+        out[0]=sx;  out[1]=uux;  out[2]=-fx;  out[3]=0f
+        out[4]=sy;  out[5]=uuy;  out[6]=-fy;  out[7]=0f
+        out[8]=sz;  out[9]=uuz;  out[10]=-fz; out[11]=0f
+        out[12]=-(sx*eyeX+sy*eyeY+sz*eyeZ); out[13]=-(uux*eyeX+uuy*eyeY+uuz*eyeZ); out[14]=fx*eyeX+fy*eyeY+fz*eyeZ; out[15]=1f
     }
 
-    private fun ortho(l: Float, r: Float, b: Float, t: Float, n: Float, f: Float): FloatArray {
+    private fun ortho(l: Float, r: Float, b: Float, t: Float, n: Float, f: Float, out: FloatArray) {
         val rl=r-l; val tb=t-b; val fn=f-n
-        return floatArrayOf(2f/rl,0f,0f,0f, 0f,2f/tb,0f,0f, 0f,0f,-2f/fn,0f,
-            -(r+l)/rl, -(t+b)/tb, -(f+n)/fn, 1f)
+        out[0]=2f/rl; out[1]=0f; out[2]=0f; out[3]=0f
+        out[4]=0f; out[5]=2f/tb; out[6]=0f; out[7]=0f
+        out[8]=0f; out[9]=0f; out[10]=-2f/fn; out[11]=0f
+        out[12]=-(r+l)/rl; out[13]=-(t+b)/tb; out[14]=-(f+n)/fn; out[15]=1f
     }
 }
 

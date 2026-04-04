@@ -13,9 +13,9 @@ import android.bluetooth.*
 import android.bluetooth.le.*
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.content.ContextCompat
 import java.util.*
 
@@ -51,29 +51,19 @@ class BleDeviceManager(private val context: Context) {
 
     /** Check if BLE permissions are granted (required on Android 12+). */
     fun hasBlePermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= 31) {
-            ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") ==
-                PackageManager.PERMISSION_GRANTED &&
-            ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") ==
-                PackageManager.PERMISSION_GRANTED
-        } else {
-            ContextCompat.checkSelfPermission(context, "android.permission.ACCESS_FINE_LOCATION") ==
-                PackageManager.PERMISSION_GRANTED
-        }
+        return ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") ==
+            PackageManager.PERMISSION_GRANTED &&
+        ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") ==
+            PackageManager.PERMISSION_GRANTED
     }
 
     /** Returns the list of required BLE permissions that are not yet granted. */
     fun getMissingPermissions(): List<String> {
         val needed = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= 31) {
-            if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED)
-                needed.add("android.permission.BLUETOOTH_CONNECT")
-            if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") != PackageManager.PERMISSION_GRANTED)
-                needed.add("android.permission.BLUETOOTH_SCAN")
-        } else {
-            if (ContextCompat.checkSelfPermission(context, "android.permission.ACCESS_FINE_LOCATION") != PackageManager.PERMISSION_GRANTED)
-                needed.add("android.permission.ACCESS_FINE_LOCATION")
-        }
+        if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED)
+            needed.add("android.permission.BLUETOOTH_CONNECT")
+        if (ContextCompat.checkSelfPermission(context, "android.permission.BLUETOOTH_SCAN") != PackageManager.PERMISSION_GRANTED)
+            needed.add("android.permission.BLUETOOTH_SCAN")
         return needed
     }
 
@@ -110,6 +100,7 @@ class BleDeviceManager(private val context: Context) {
     private val discoveredDevices = Collections.synchronizedMap(mutableMapOf<String, BleDeviceInfo>())
     private var isScanning = false
     private val handler = Handler(Looper.getMainLooper())
+    private var scanTimeoutRunnable: Runnable? = null
 
     // Callbacks
     var onDeviceDiscovered: ((BleDeviceInfo) -> Unit)? = null
@@ -120,8 +111,19 @@ class BleDeviceManager(private val context: Context) {
     // Auto-connect: when true, connect to first Lovense device found
     private var autoConnect = true
 
-    // Known-device allowlist: only auto-connect to previously approved devices
+    // Known-device allowlist: only auto-connect to previously approved devices.
+    // Persisted to SharedPreferences so auto-connect works across app restarts.
     private val knownDeviceAddresses = java.util.concurrent.CopyOnWriteArraySet<String>()
+    private val prefs = context.applicationContext.getSharedPreferences("chloe_vr", Context.MODE_PRIVATE)
+
+    init {
+        // Load persisted known device addresses
+        val saved = prefs.getString(PREF_KNOWN_BLE_ADDRESSES, null)
+        if (!saved.isNullOrBlank()) {
+            knownDeviceAddresses.addAll(saved.split(",").filter { it.isNotBlank() })
+            Log.i(TAG, "Loaded ${knownDeviceAddresses.size} known BLE device addresses from prefs")
+        }
+    }
 
     // Known Lovense service/characteristic UUID sets.
     // Older devices use Nordic UART; newer firmware uses Lovense-specific UUIDs.
@@ -135,12 +137,12 @@ class BleDeviceManager(private val context: Context) {
      *  When autoConnect is true, automatically connects to first Lovense device.
      */
     fun startScan(context: Context? = null): Boolean {
-        android.util.Log.i(TAG, "startScan: scanner=$scanner isScanning=$isScanning adapter=${bluetoothAdapter?.isEnabled}")
+        Log.i(TAG, "startScan: scanner=$scanner isScanning=$isScanning adapter=${bluetoothAdapter?.isEnabled}")
         if (!hasBlePermissions()) {
-            android.util.Log.e(TAG, "BLE permissions not granted! Missing: ${getMissingPermissions()}")
+            Log.e(TAG, "BLE permissions not granted! Missing: ${getMissingPermissions()}")
             return false
         }
-        if (scanner == null) { android.util.Log.e(TAG, "No BLE scanner available!"); return false }
+        if (scanner == null) { Log.e(TAG, "No BLE scanner available!"); return false }
         if (isScanning) return false
         discoveredDevices.clear()
         autoConnect = true
@@ -148,11 +150,13 @@ class BleDeviceManager(private val context: Context) {
         try {
             scanner.startScan(scanCallback)
             isScanning = true
-            android.util.Log.i(TAG, "BLE scan STARTED — looking for Lovense devices...")
-            handler.postDelayed({ stopScan() }, SCAN_TIMEOUT_MS)
+            Log.i(TAG, "BLE scan STARTED — looking for Lovense devices...")
+            val timeout = Runnable { stopScan() }
+            scanTimeoutRunnable = timeout
+            handler.postDelayed(timeout, SCAN_TIMEOUT_MS)
             return true
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "BLE scan start failed: ${e.message}", e)
+            Log.e(TAG, "BLE scan start failed: ${e.message}", e)
             return false
         }
     }
@@ -160,9 +164,13 @@ class BleDeviceManager(private val context: Context) {
     /** Stop scanning. */
     fun stopScan() {
         if (!isScanning) return
+        scanTimeoutRunnable?.let { handler.removeCallbacks(it) }
+        scanTimeoutRunnable = null
         try {
             scanner?.stopScan(scanCallback)
-        } catch (_: Exception) { }
+        } catch (e: Exception) {
+            Log.w(TAG, "stopScan: failed to stop BLE scanner", e)
+        }
         isScanning = false
         if (connectionState == ConnectionState.Disconnected) {
             handler.post { onScanStopped?.invoke() }
@@ -186,7 +194,7 @@ class BleDeviceManager(private val context: Context) {
 
             val displayName = name ?: "Unknown-${device.address.takeLast(5)}"
             if (isLovense) {
-                android.util.Log.i(TAG, "Found Lovense device: $displayName rssi=${result.rssi}")
+                Log.i(TAG, "Found Lovense device: $displayName rssi=${result.rssi}")
             }
 
             val info = BleDeviceInfo(
@@ -198,20 +206,28 @@ class BleDeviceManager(private val context: Context) {
             discoveredDevices[device.address] = info
             onDeviceDiscovered?.invoke(info)
 
-            // Auto-connect to first Lovense device found
-            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected) {
-                android.util.Log.i(TAG, "Auto-connecting to Lovense: $displayName (${device.address})")
+            // Auto-connect to first known Lovense device found
+            // Only auto-connect to previously-paired devices (address in knownDeviceAddresses).
+            // First-time pairing requires manual connect() which adds the address.
+            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected
+                && device.address in knownDeviceAddresses) {
+                Log.i(TAG, "Auto-connecting to Lovense: $displayName (**:**:**:**:${device.address.takeLast(5)})")
                 autoConnect = false
+                // Cancel scan timeout since we're connecting now
+                scanTimeoutRunnable?.let { handler.removeCallbacks(it) }
+                scanTimeoutRunnable = null
                 // Stop scanner without firing onScanStopped (we're about to connect)
                 isScanning = false
                 val cb: ScanCallback = this
-                try { scanner?.stopScan(cb) } catch (_: Exception) {}
+                try { scanner?.stopScan(cb) } catch (e: Exception) {
+                    Log.w(TAG, "Auto-connect: failed to stop scanner", e)
+                }
                 connect(device.address)
             }
         }
 
         override fun onScanFailed(errorCode: Int) {
-            android.util.Log.e(TAG, "BLE scan failed: errorCode=$errorCode")
+            Log.e(TAG, "BLE scan failed: errorCode=$errorCode")
             isScanning = false
         }
     }
@@ -220,16 +236,23 @@ class BleDeviceManager(private val context: Context) {
     // Connection
     // -----------------------------------------------------------------------
 
+    /** Persist the current knownDeviceAddresses set to SharedPreferences. */
+    private fun persistKnownAddresses() {
+        prefs.edit().putString(PREF_KNOWN_BLE_ADDRESSES, knownDeviceAddresses.joinToString(",")).apply()
+    }
+
     /** Approve a device address for auto-connect. */
     fun approveDevice(address: String) {
         knownDeviceAddresses.add(address)
+        persistKnownAddresses()
     }
 
     /** Connect to a device by address. */
     fun connect(address: String): Boolean {
         knownDeviceAddresses.add(address)
+        persistKnownAddresses()
         if (!hasBlePermissions()) {
-            android.util.Log.e(TAG, "BLE permissions not granted for connect!")
+            Log.e(TAG, "BLE permissions not granted for connect!")
             return false
         }
         val device = bluetoothAdapter?.getRemoteDevice(address) ?: return false
@@ -258,7 +281,9 @@ class BleDeviceManager(private val context: Context) {
                 wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 g0.writeCharacteristic(wc)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.w(TAG, "disconnect: failed to send motor-stop command", e)
+        }
         val g = gatt
         gatt = null
         // disconnect() is async — close() should ideally wait for onConnectionStateChange,
@@ -284,7 +309,7 @@ class BleDeviceManager(private val context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (isStale(gatt)) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                android.util.Log.e(TAG, "GATT error: status=$status newState=$newState")
+                Log.e(TAG, "GATT error: status=$status newState=$newState")
                 gatt.close()
                 this@BleDeviceManager.gatt = null
                 writeCharacteristic = null
@@ -351,16 +376,39 @@ class BleDeviceManager(private val context: Context) {
         private fun enableNotificationsAndFinish(gatt: BluetoothGatt, rxChar: BluetoothGattCharacteristic) {
             gatt.setCharacteristicNotification(rxChar, true)
             val descriptor = rxChar.getDescriptor(CCCD_UUID)
-            descriptor?.let {
-                it.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                gatt.writeDescriptor(it)
+            if (descriptor != null) {
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                gatt.writeDescriptor(descriptor)
+                // Ready state is set in onDescriptorWrite once the write completes
+            } else {
+                // No CCCD descriptor -- mark ready immediately (unusual but handle gracefully)
+                Log.w(TAG, "No CCCD descriptor on rx characteristic, marking ready without notification enable")
+                connectionState = ConnectionState.Ready
+                Log.i(TAG, "Lovense device READY: ${gatt.device.name}")
+                handler.post { onConnectionStateChanged?.invoke(connectionState) }
+                handler.postDelayed({ sendCommand("Battery;") }, 500)
+                handler.postDelayed({ sendCommand("DeviceType;") }, 1200)
             }
-            connectionState = ConnectionState.Ready
-            android.util.Log.i(TAG, "Lovense device READY: ${gatt.device.name}")
-            handler.post { onConnectionStateChanged?.invoke(connectionState) }
-            handler.postDelayed({ sendCommand("Battery;") }, 500)
-            // Query device type to detect dual-motor devices (Domi 2, Edge, etc.)
-            handler.postDelayed({ sendCommand("DeviceType;") }, 1200)
+        }
+
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (isStale(gatt)) return
+            if (descriptor.uuid == CCCD_UUID) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    connectionState = ConnectionState.Ready
+                    Log.i(TAG, "Lovense device READY: ${gatt.device.name}")
+                    handler.post { onConnectionStateChanged?.invoke(connectionState) }
+                    handler.postDelayed({ sendCommand("Battery;") }, 500)
+                    // Query device type to detect dual-motor devices (Domi 2, Edge, etc.)
+                    handler.postDelayed({ sendCommand("DeviceType;") }, 1200)
+                } else {
+                    Log.e(TAG, "CCCD descriptor write failed: status=$status")
+                }
+            }
         }
 
         override fun onCharacteristicWrite(
@@ -411,11 +459,11 @@ class BleDeviceManager(private val context: Context) {
             }
             writeInFlight = true
             lastWriteMs = now
+            // Hold lock through the actual write to prevent concurrent setValue/write races
+            characteristic.value = command.toByteArray(Charsets.US_ASCII)
+            characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            return g.writeCharacteristic(characteristic)
         }
-
-        characteristic.value = command.toByteArray(Charsets.US_ASCII)
-        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        return g.writeCharacteristic(characteristic)
     }
 
     /** Flush pending command after a write completes. */
@@ -500,19 +548,20 @@ class BleDeviceManager(private val context: Context) {
         if (trimmed.length == 1 && trimmed[0].isLetter()) {
             deviceTypeLetter = trimmed[0].uppercaseChar()
             isDualMotor = deviceTypeLetter in DUAL_MOTOR_TYPES
-            android.util.Log.i(TAG, "DeviceType: '$deviceTypeLetter' isDualMotor=$isDualMotor")
+            Log.i(TAG, "DeviceType: '$deviceTypeLetter' isDualMotor=$isDualMotor")
             return
         }
         // Some firmware returns "Jxx:yy:zz;" format
         if (trimmed.isNotEmpty() && trimmed[0].isLetter() && trimmed.contains(':')) {
             deviceTypeLetter = trimmed[0].uppercaseChar()
             isDualMotor = deviceTypeLetter in DUAL_MOTOR_TYPES
-            android.util.Log.i(TAG, "DeviceType(ext): '$deviceTypeLetter' isDualMotor=$isDualMotor")
+            Log.i(TAG, "DeviceType(ext): '$deviceTypeLetter' isDualMotor=$isDualMotor")
         }
     }
 
     companion object {
         private const val TAG = "ChloeVR-BLE"
+        private const val PREF_KNOWN_BLE_ADDRESSES = "ble_known_device_addresses"
 
         // Lovense device type letters with dual vibration motors
         // J=Domi2, W=Edge, P=Edge2, A=Nora(vibe+rotate)

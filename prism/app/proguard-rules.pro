@@ -1,87 +1,69 @@
-# ChloeVR ProGuard Rules
+# ChloeVR ProGuard / R8 Rules
+#
+# PHILOSOPHY: Only keep what R8 cannot trace on its own. Direct Kotlin
+# references, interface implementations, and lambda callbacks are all
+# traceable. Keep rules are needed for:
+#   1. JNI — native code calls Java/Kotlin via name strings
+#   2. Reflection — libraries that load classes/methods by name at runtime
+#   3. Serialization — if field names must survive minification
+#
+# Everything else (effects, data classes, UI, scene, input, settings,
+# playback) is directly referenced from Kotlin and does NOT need keep rules.
 
 # ── JNI bridges ──────────────────────────────────────────────────────────
-# Keep OpenXR JNI bridge (called from native via JNI)
+# Native C++ code (jni_bridge.cpp, renderer_jni_bridge.cpp) calls these
+# classes and methods by name. R8 cannot see across the JNI boundary.
+
 -keep class com.ashairfoil.prism.OpenXRInput { *; }
 -keepclassmembers class com.ashairfoil.prism.OpenXRInput {
     native <methods>;
 }
 
-# Keep native JNI methods for model viewer
--keepclasseswithmembers class com.ashairfoil.prism.GlesModelRenderer { native <methods>; }
 -keepclasseswithmembers class com.ashairfoil.prism.FilamentModelActivity { native <methods>; }
+-keepclasseswithmembers class com.ashairfoil.prism.GlesModelRenderer { native <methods>; }
 
-# ── Effects (reflection for shader uniform binding) ──────────────────────
--keep class com.ashairfoil.prism.effects.** { *; }
--keep class com.ashairfoil.prism.DeoVrAlphaPackedEffect** { *; }
--keep class com.ashairfoil.prism.ChromaKeyEffect** { *; }
-
-# ── Data classes (JSON parsing, SharedPreferences serialization) ─────────
--keep class com.ashairfoil.prism.data.** { *; }
--keep class com.ashairfoil.prism.FileNameParser$VideoMetadata { *; }
-
-# ── Filament 3D rendering engine ────────────────────────────────────────
--keep class com.google.android.filament.** { *; }
--dontwarn com.google.android.filament.**
-
-# ── Haptics (BLE callbacks, GATT characteristic writes) ─────────────────
--keep class com.ashairfoil.prism.haptics.** { *; }
-
-# ── Billing / licensing ─────────────────────────────────────────────────
--keep class com.ashairfoil.prism.billing.** { *; }
-
-# ── UI classes (Canvas-based rendering, ViewHolder pattern) ─────────────
--keep class com.ashairfoil.prism.ui.** { *; }
-
-# ── Input / sensors (callback-based, SensorEventListener) ───────────────
--keep class com.ashairfoil.prism.input.** { *; }
--keep class com.ashairfoil.prism.SensorHub { *; }
--keep class com.ashairfoil.prism.AudioReactor { *; }
--keep class com.ashairfoil.prism.AudioPlayer { *; }
-
-# ── Scene management ────────────────────────────────────────────────────
--keep class com.ashairfoil.prism.scene.** { *; }
-
-# ── Settings ────────────────────────────────────────────────────────────
--keep class com.ashairfoil.prism.settings.** { *; }
-
-# ── Playback components ────────────────────────────────────────────────
--keep class com.ashairfoil.prism.playback.** { *; }
-
-# ── Kotlin coroutines ──────────────────────────────────────────────────
--dontwarn kotlinx.coroutines.**
--keep class kotlinx.coroutines.** { *; }
-
-# ── ExoPlayer / Media3 ─────────────────────────────────────────────────
--keep class androidx.media3.** { *; }
--dontwarn androidx.media3.**
-
-# ── Jetpack XR SDK ──────────────────────────────────────────────────────
--keep class androidx.xr.** { *; }
--dontwarn androidx.xr.**
-
-# ── OpenXR loader ───────────────────────────────────────────────────────
--keep class org.khronos.openxr.** { *; }
--dontwarn org.khronos.openxr.**
-
-# ── EncryptedSharedPreferences (security-crypto) ────────────────────────
--keep class androidx.security.crypto.** { *; }
--dontwarn androidx.security.crypto.**
-
-# ── Guava ListenableFuture (required by XR SDK) ────────────────────────
--keep class com.google.common.util.concurrent.** { *; }
--dontwarn com.google.common.util.concurrent.**
-
-# ── Tink crypto (transitive dep of security-crypto) ────────────────────
--keep class com.google.crypto.tink.** { *; }
--dontwarn com.google.crypto.tink.**
-
-# ── Android XR extensions (platform classes, present on-device only) ────
--dontwarn com.android.extensions.xr.**
--dontwarn com.google.androidxr.**
--dontwarn com.google.imp.splitengine.**
-
-# ── Catch-all: keep all native methods ─────────────────────────────────
+# Catch-all: any class with native methods must keep those method signatures
+# so the JNI RegisterNatives / dynamic lookup can find them.
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+
+# ── Tink crypto (reflection-heavy) ──────────────────────────────────────
+# EncryptedSharedPreferences → MasterKey → Tink KeysetManager uses
+# reflection to instantiate key managers, AEAD primitives, etc.
+# Stripping these causes runtime NoSuchMethodException / ClassNotFoundException.
+-keep class com.google.crypto.tink.** { *; }
+-dontwarn com.google.crypto.tink.**
+
+# ── EncryptedSharedPreferences (security-crypto) ────────────────────────
+# Uses Tink internally via reflection. Keep the facade class so R8 doesn't
+# inline away the entry point that Tink reflects into.
+-keep class androidx.security.crypto.EncryptedSharedPreferences { *; }
+-keep class androidx.security.crypto.MasterKey { *; }
+-keep class androidx.security.crypto.MasterKey$Builder { *; }
+-dontwarn androidx.security.crypto.**
+
+# ── Billing (future BillingClient integration) ─────────────────────────
+# ProUpgrade is currently a stub. When BillingClient is added, Google Play
+# Billing uses AIDL + reflection for purchase verification. Keep the class
+# so the future migration doesn't hit minification issues.
+-keep class com.ashairfoil.prism.billing.ProUpgrade { *; }
+
+# ── Filament 3D engine ─────────────────────────────────────────────────
+# Filament uses JNI internally (nObject pointers, native destroy calls).
+# The public Java API classes must survive for its own JNI to work.
+-keep class com.google.android.filament.** { *; }
+-dontwarn com.google.android.filament.**
+
+# ── Library -dontwarn (suppress warnings for optional platform classes) ──
+# These libraries reference classes that may not exist on all devices or
+# at compile time. The -dontwarn prevents build failures; the libraries
+# handle missing classes gracefully at runtime.
+-dontwarn kotlinx.coroutines.**
+-dontwarn androidx.media3.**
+-dontwarn androidx.xr.**
+-dontwarn org.khronos.openxr.**
+-dontwarn com.android.extensions.xr.**
+-dontwarn com.google.androidxr.**
+-dontwarn com.google.imp.splitengine.**
+-dontwarn com.google.common.util.concurrent.**

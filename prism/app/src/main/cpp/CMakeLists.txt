@@ -19,3 +19,10 @@ target_link_libraries(openxr_input
 )
 
 target_compile_features(openxr_input PRIVATE cxx_std_17)
+
+# Release optimizations
+target_compile_options(openxr_input PRIVATE "$<$<CONFIG:Release>:-O2;-DNDEBUG>")
+
+# Contract test — compile-only, validates struct layout via static_assert
+add_library(contract_test STATIC ${CMAKE_SOURCE_DIR}/../../test/cpp/controller_state_contract_test.cpp)
+target_include_directories(contract_test PRIVATE ${CMAKE_SOURCE_DIR})

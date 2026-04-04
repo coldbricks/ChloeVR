@@ -93,6 +93,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeWaitFrame(
     data[68] = (float)g_frameData.eyes[0].height;
 
     env->SetFloatArrayRegion(outFrameData, 0, 69, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -114,6 +118,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollInput(
     ControllerState state;
     if (!g_renderer->pollInput(state)) return JNI_FALSE;
     env->SetFloatArrayRegion(outState, 0, ControllerState::SIZE, state.data());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -225,6 +233,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollLightEstimate(
     data[13] = est.shValid ? 1.0f : 0.0f;
     memcpy(&data[14], est.sh, 27 * sizeof(float));
     env->SetFloatArrayRegion(outData, 0, 41, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -257,6 +269,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollHandTracking(
         data[off+7] = hjd.joints[j].radius;
     }
     env->SetFloatArrayRegion(outData, 0, XrRenderer::HandJointData::SIZE, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -290,6 +306,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollEyeTracking(
     data[18] = etd.combPosX; data[19] = etd.combPosY; data[20] = etd.combPosZ;
     data[21] = etd.combRotX; data[22] = etd.combRotY; data[23] = etd.combRotZ; data[24] = etd.combRotW;
     env->SetFloatArrayRegion(outData, 0, XrRenderer::EyeTrackingData::SIZE, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -311,6 +331,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollFaceTracking(
     data[0] = ftd.valid ? 1.0f : 0.0f;
     memcpy(&data[1], ftd.blendShapes, sizeof(float) * XR_FACE_BLEND_SHAPE_COUNT_ANDROID);
     env->SetFloatArrayRegion(outData, 0, XrRenderer::FaceTrackingData::SIZE, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -355,6 +379,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPlanes(
         }
     }
     env->SetFloatArrayRegion(outData, 0, XrRenderer::PlaneData::SIZE, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 
@@ -380,6 +408,10 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativePollPerfMetrics(
     data[3] = pm.compositorDroppedFrames;
     data[4] = pm.displayRefreshRate;
     env->SetFloatArrayRegion(outData, 0, XrRenderer::PerfMetrics::SIZE, data);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 

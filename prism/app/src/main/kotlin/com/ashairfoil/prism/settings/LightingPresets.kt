@@ -77,7 +77,8 @@ object LightingPresets {
 
     private fun serializeList(list: List<LightingPreset>): String =
         list.joinToString(";;") { p ->
-            val safeName = p.name.replace('|', '-')
+            // Sanitize name: "|" is the field delimiter, ";;" is the entry delimiter
+            val safeName = p.name.replace('|', '-').replace(";;", "--")
             "$safeName|${p.lightIntensity}|${p.fillLightIntensity}|${p.ambientIntensity}" +
                 "|${p.lightAngleDeg}|${p.lightElevDeg}|${p.shadowDarkness}" +
                 "|${p.shadowSoftness}|${p.shadowSpread}|${p.autoAmbient}"

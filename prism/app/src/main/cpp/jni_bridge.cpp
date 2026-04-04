@@ -32,10 +32,16 @@ Java_com_ashairfoil_prism_OpenXRInput_nativePoll(
     JNIEnv* env, jobject thiz, jfloatArray outState) {
     std::lock_guard<std::mutex> lock(gInputMutex);
     if (!outState) return JNI_FALSE;
+    jsize len = env->GetArrayLength(outState);
+    if (len < ControllerState::SIZE) return JNI_FALSE;
     ControllerState state;
     if (!gInput.poll(state)) return JNI_FALSE;
 
     env->SetFloatArrayRegion(outState, 0, ControllerState::SIZE, state.data());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     return JNI_TRUE;
 }
 

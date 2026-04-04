@@ -10,7 +10,6 @@ import com.ashairfoil.prism.effects.ColorGradingEffect
 import com.ashairfoil.prism.effects.ColorGradingState
 import com.ashairfoil.prism.effects.LensDistortionEffect
 import com.ashairfoil.prism.effects.LensDistortionState
-import com.ashairfoil.prism.effects.PassthroughEffect
 import com.ashairfoil.prism.effects.StereoAdjustmentEffect
 import com.ashairfoil.prism.effects.StereoAdjustmentState
 import java.io.File

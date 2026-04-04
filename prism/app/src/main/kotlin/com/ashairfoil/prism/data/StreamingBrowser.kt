@@ -64,7 +64,7 @@ class StreamingBrowser(private val context: Context) {
         )
     } catch (e: Exception) {
         Log.w(TAG, "EncryptedSharedPreferences unavailable, auth tokens will NOT be persisted", e)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        context.getSharedPreferences("${PREFS_NAME}_fallback", Context.MODE_PRIVATE)
     }
     private val encryptionAvailable = prefs is EncryptedSharedPreferences
     private var endpoints: MutableList<StreamingEndpoint> = mutableListOf()

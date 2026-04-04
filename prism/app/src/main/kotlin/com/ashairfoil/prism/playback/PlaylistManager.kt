@@ -32,7 +32,7 @@ class PlaylistManager {
     val currentFile: File? get() = if (currentIndex in files.indices) files[currentIndex] else null
     val size: Int get() = files.size
     val isEmpty: Boolean get() = files.isEmpty()
-    val hasNext: Boolean get() {
+    val hasNext: Boolean @Synchronized get() {
         if (files.isEmpty()) return false
         if (repeatMode == RepeatMode.ALL) return true
         if (shuffleEnabled) {
@@ -41,7 +41,7 @@ class PlaylistManager {
         }
         return currentIndex < files.size - 1
     }
-    val hasPrevious: Boolean get() {
+    val hasPrevious: Boolean @Synchronized get() {
         if (files.isEmpty()) return false
         if (repeatMode == RepeatMode.ALL) return true
         if (history.isNotEmpty()) return true
@@ -184,6 +184,7 @@ class PlaylistManager {
     /**
      * Get position string like "3 / 47"
      */
+    @Synchronized
     fun positionString(): String {
         if (files.isEmpty()) return "0 / 0"
         return "${currentIndex + 1} / ${files.size}"
@@ -198,7 +199,7 @@ class PlaylistManager {
         }
         // Move current to front so we don't replay it immediately
         if (currentIndex >= 0) {
-            indices.remove(currentIndex)
+            (indices as MutableCollection<Int>).remove(currentIndex)
             indices.add(0, currentIndex)
         }
         shuffledIndices = indices

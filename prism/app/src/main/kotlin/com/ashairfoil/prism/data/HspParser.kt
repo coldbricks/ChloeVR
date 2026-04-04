@@ -84,6 +84,10 @@ class HspParser {
      */
     fun parse(file: File): HspFile? {
         try {
+            if (file.length() > 10 * 1024 * 1024) {
+                Log.w(TAG, "HSP file too large: ${file.length()} bytes (>10MB), skipping")
+                return null
+            }
             val json = file.readText()
             return parseJson(json, file.absolutePath)
         } catch (e: Exception) {
@@ -109,8 +113,8 @@ class HspParser {
                     timestampMs = obj.getLong("ts"),
                     endTimestampMs = if (obj.has("end_ts")) obj.getLong("end_ts") else null,
                     name = obj.optString("name", ""),
-                    color = obj.optString("color", null),
-                    category = obj.optString("category", null),
+                    color = if (obj.isNull("color") || !obj.has("color")) null else obj.getString("color"),
+                    category = if (obj.isNull("category") || !obj.has("category")) null else obj.getString("category"),
                 ))
             }
             tags.sortBy { it.timestampMs }
@@ -134,8 +138,8 @@ class HspParser {
                 version = version,
                 tags = tags,
                 corrections = corrections,
-                projection = root.optString("projection", null),
-                stereo = root.optString("stereo", null),
+                projection = if (root.isNull("projection") || !root.has("projection")) null else root.getString("projection"),
+                stereo = if (root.isNull("stereo") || !root.has("stereo")) null else root.getString("stereo"),
                 source = source,
             )
 

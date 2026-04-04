@@ -53,6 +53,8 @@ class OpenXRInput(private val activity: Activity) {
     private var initialized = false
     private var isPolling = false
     private var listener: ControllerListener? = null
+    private var consecutivePollFailures = 0
+    private val MAX_POLL_FAILURES = 10
 
     interface ControllerListener {
         fun onControllerState(input: OpenXRInput)
@@ -67,6 +69,7 @@ class OpenXRInput(private val activity: Activity) {
         }
         if (initialized) {
             isPolling = true
+            consecutivePollFailures = 0
             Log.i(TAG, "OpenXR input started")
             handler.post(pollRunnable)
         } else {
@@ -86,8 +89,9 @@ class OpenXRInput(private val activity: Activity) {
 
     private val pollRunnable = object : Runnable {
         override fun run() {
-            if (!initialized) return
+            if (!initialized || !isPolling) return
             if (nativePoll(stateBuffer)) {
+                consecutivePollFailures = 0
                 leftThumbX = stateBuffer[0]
                 rightThumbX = stateBuffer[1]
                 leftThumbY = stateBuffer[2]
@@ -114,6 +118,13 @@ class OpenXRInput(private val activity: Activity) {
                 leftAimValid = stateBuffer[39] > 0.5f
                 rightAimValid = stateBuffer[40] > 0.5f
                 listener?.onControllerState(this@OpenXRInput)
+            } else {
+                consecutivePollFailures++
+                if (consecutivePollFailures >= MAX_POLL_FAILURES) {
+                    Log.w(TAG, "OpenXR poll failed $consecutivePollFailures consecutive times — possible session loss, stopping input polling")
+                    isPolling = false
+                    return
+                }
             }
             handler.postDelayed(this, POLL_INTERVAL_MS)
         }

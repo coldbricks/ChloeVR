@@ -41,6 +41,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
         private val ASS_TIME_PATTERN: Pattern = Pattern.compile(
             "(\\d+):(\\d{2}):(\\d{2})\\.(\\d{2})"
         )
+        private const val MAX_SUBTITLE_SIZE = 10L * 1024 * 1024 // 10 MB
     }
 
     data class SubtitleCue(
@@ -72,6 +73,7 @@ class SubtitleRenderer(private val parent: ViewGroup) {
      * Scan for subtitle files matching the video filename and load if found.
      * Returns true if subtitles were found and loaded.
      */
+
     fun loadForVideo(videoFile: File): Boolean {
         clear()
         val baseName = videoFile.nameWithoutExtension
@@ -81,6 +83,10 @@ class SubtitleRenderer(private val parent: ViewGroup) {
         for (ext in SRT_EXTENSIONS) {
             val subFile = File(dir, "$baseName$ext")
             if (subFile.exists() && subFile.canRead()) {
+                if (subFile.length() > MAX_SUBTITLE_SIZE) {
+                    Log.w(TAG, "Subtitle file too large (${subFile.length()} bytes), skipping: ${subFile.name}")
+                    continue
+                }
                 cues = parseSrt(subFile)
                 if (cues.isNotEmpty()) {
                     Log.i(TAG, "Loaded ${cues.size} SRT cues from ${subFile.name}")
@@ -93,6 +99,10 @@ class SubtitleRenderer(private val parent: ViewGroup) {
         for (ext in ASS_EXTENSIONS) {
             val subFile = File(dir, "$baseName$ext")
             if (subFile.exists() && subFile.canRead()) {
+                if (subFile.length() > MAX_SUBTITLE_SIZE) {
+                    Log.w(TAG, "Subtitle file too large (${subFile.length()} bytes), skipping: ${subFile.name}")
+                    continue
+                }
                 cues = parseAss(subFile)
                 if (cues.isNotEmpty()) {
                     Log.i(TAG, "Loaded ${cues.size} ASS cues from ${subFile.name}")

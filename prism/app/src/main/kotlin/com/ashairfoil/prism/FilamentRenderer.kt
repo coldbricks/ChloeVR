@@ -423,7 +423,7 @@ class FilamentRenderer(
                   m[4]*m[2]*m[9] + m[8]*m[1]*m[6] - m[8]*m[2]*m[5]
 
         det = m[0]*inv[0] + m[1]*inv[4] + m[2]*inv[8] + m[3]*inv[12]
-        if (det == 0f) return FloatArray(16).also { it[0] = 1f; it[5] = 1f; it[10] = 1f; it[15] = 1f }
+        if (Math.abs(det) < 1e-10f) return FloatArray(16).also { it[0] = 1f; it[5] = 1f; it[10] = 1f; it[15] = 1f }
 
         val invDet = 1f / det
         for (i in 0..15) inv[i] *= invDet

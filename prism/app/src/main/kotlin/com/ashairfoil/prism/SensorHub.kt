@@ -230,7 +230,7 @@ class SensorHub(context: Context) : SensorEventListener {
     }
 
     /**
-     * Unregister all sensors. Call from onDestroy.
+     * Unregister all sensors. Call from onPause or when temporarily suspending.
      */
     fun stop() {
         if (!isRunning) return
@@ -241,10 +241,19 @@ class SensorHub(context: Context) : SensorEventListener {
             sensorManager.cancelTriggerSensor(sigMotionTrigger, sigMotion)
         }
         activeSensors.clear()
+        Log.i(TAG, "All sensors unregistered")
+    }
+
+    /**
+     * Full teardown — unregisters sensors AND quits the handler thread.
+     * Call from onDestroy. After this, the SensorHub instance is unusable.
+     */
+    fun release() {
+        stop()
         sensorThread?.quitSafely()
         sensorThread = null
         sensorHandler = null
-        Log.i(TAG, "All sensors unregistered")
+        Log.i(TAG, "SensorHub released (thread quit)")
     }
 
     // ── Trigger listener for significant motion ──

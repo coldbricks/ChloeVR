@@ -35,6 +35,12 @@ class BeatDetector {
     /** Recent onset strength for velocity tracking. */
     private var recentOnsetStrength: Float = 0f
 
+    /** Last onset detection result (avoids Pair allocation on hot path). */
+    @Volatile var lastIsOnset: Boolean = false
+        private set
+    @Volatile var lastOnsetStrength: Float = 0f
+        private set
+
     // Tempo tracking for predictive onset
     private val onsetTimestamps = FloatArray(16)
     private var onsetTsIndex: Int = 0
@@ -105,6 +111,8 @@ class BeatDetector {
 
         val strength = if (threshold > 0f) spectralFlux / threshold else 0f
 
+        lastIsOnset = isOnset
+        lastOnsetStrength = strength
         return Pair(isOnset, strength)
     }
 
@@ -115,6 +123,8 @@ class BeatDetector {
         for (i in 1 until onsetTsCount) {
             val curr = onsetTimestamps[(onsetTsIndex - i + onsetTimestamps.size) % onsetTimestamps.size]
             val prev = onsetTimestamps[(onsetTsIndex - i - 1 + onsetTimestamps.size) % onsetTimestamps.size]
+            // Skip uninitialized (zero) timestamps from circular buffer
+            if (curr == 0f || prev == 0f) continue
             val interval = curr - prev
             if (interval in 150f..2000f) { // 30-400 BPM range
                 intervals[count] = interval

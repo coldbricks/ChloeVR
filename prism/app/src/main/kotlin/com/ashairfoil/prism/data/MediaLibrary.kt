@@ -10,6 +10,7 @@ import kotlinx.coroutines.*
 import org.json.JSONArray
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * MediaLibrary — Indexed media collection with metadata, tags, resume positions,
@@ -81,7 +82,8 @@ class MediaLibrary(private val context: Context) {
 
     private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private var entries: MutableList<MediaEntry> = java.util.concurrent.CopyOnWriteArrayList()
-    private val entryIndex = HashMap<String, MediaEntry>()
+    private val entryIndex = ConcurrentHashMap<String, MediaEntry>()
+    private val pathIndex = ConcurrentHashMap<String, MediaEntry>()
 
     /**
      * Build media entries from a list of files (from FilePicker scan).
@@ -112,7 +114,11 @@ class MediaLibrary(private val context: Context) {
         // Atomic swap: build full list, then replace reference in one operation
         entries = java.util.concurrent.CopyOnWriteArrayList(built)
         entryIndex.clear()
-        entries.forEach { entryIndex[it.fileId] = it }
+        pathIndex.clear()
+        entries.forEach {
+            entryIndex[it.fileId] = it
+            pathIndex[it.file.absolutePath] = it
+        }
 
         Log.i(TAG, "Built library: ${entries.size} entries, " +
                 "${entries.count { it.isFavorite }} favorites, " +
@@ -197,9 +203,7 @@ class MediaLibrary(private val context: Context) {
 
     fun getRecentFiles(): List<MediaEntry> {
         val recentPaths = getRecentPaths()
-        return recentPaths.mapNotNull { path ->
-            entries.find { it.file.absolutePath == path }
-        }
+        return recentPaths.mapNotNull { path -> pathIndex[path] }
     }
 
     private fun getRecentPaths(): List<String> {
@@ -289,11 +293,24 @@ class MediaLibrary(private val context: Context) {
     // Helpers
     // -----------------------------------------------------------------------
 
-    private fun fileIdFor(file: File): String {
-        // Use MD5 of absolute path for stable ID (survives renames of parent dirs)
-        val md5 = MessageDigest.getInstance("MD5")
-        val hash = md5.digest(file.absolutePath.toByteArray())
-        return hash.joinToString("") { "%02x".format(it) }.take(16)
+    private val HEX = "0123456789abcdef".toCharArray()
+    private val sha256 = MessageDigest.getInstance("SHA-256")
+
+    private fun bytesToHex(bytes: ByteArray, len: Int): String {
+        val sb = StringBuilder(len * 2)
+        for (i in 0 until len) {
+            val b = bytes[i].toInt()
+            sb.append(HEX[b shr 4 and 0xf])
+            sb.append(HEX[b and 0xf])
+        }
+        return sb.toString()
+    }
+
+    private fun fileIdFor(file: File): String = synchronized(sha256) {
+        // Use SHA-256 of absolute path for stable ID (survives renames of parent dirs)
+        sha256.reset()
+        val hash = sha256.digest(file.absolutePath.toByteArray())
+        bytesToHex(hash, 8) // 8 bytes = 16 hex chars
     }
 
     private fun checkSubtitles(videoFile: File): Boolean {

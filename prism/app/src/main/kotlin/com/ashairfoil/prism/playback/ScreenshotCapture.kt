@@ -4,13 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
-import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.util.Log
 import kotlinx.coroutines.*
 import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -96,24 +94,13 @@ class ScreenshotCapture(private val context: Context) {
     }
 
     /**
-     * Save bitmap to the Pictures/ChloeVR gallery directory.
-     * Uses MediaStore on Android 10+ for proper gallery integration.
+     * Save bitmap to the Pictures/ChloeVR gallery directory via MediaStore.
      */
     private fun saveToGallery(bitmap: Bitmap, videoName: String, positionMs: Long): File? {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val posStr = formatPosition(positionMs)
         val fileName = "ChloeVR_${videoName}_${posStr}_$timestamp.jpg"
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+ — use MediaStore
-            saveViaMediaStore(bitmap, fileName)
-        } else {
-            // Older — direct file write
-            saveDirectly(bitmap, fileName)
-        }
-    }
-
-    private fun saveViaMediaStore(bitmap: Bitmap, fileName: String): File? {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
@@ -133,7 +120,7 @@ class ScreenshotCapture(private val context: Context) {
             resolver.update(uri, values, null, null)
             Log.i(TAG, "Screenshot saved via MediaStore: $fileName")
 
-            // Return a File reference (approximate — MediaStore doesn't guarantee path)
+            // Return a File reference (approximate -- MediaStore doesn't guarantee path)
             return File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
                 "$SAVE_DIR/$fileName"
@@ -142,25 +129,6 @@ class ScreenshotCapture(private val context: Context) {
             Log.e(TAG, "MediaStore save failed: ${e.message}")
             resolver.delete(uri, null, null)
             return null
-        }
-    }
-
-    private fun saveDirectly(bitmap: Bitmap, fileName: String): File? {
-        val dir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-            SAVE_DIR
-        )
-        dir.mkdirs()
-        val file = File(dir, fileName)
-        return try {
-            FileOutputStream(file).use { out ->
-                bitmap.compress(Bitmap.CompressFormat.JPEG, QUALITY, out)
-            }
-            Log.i(TAG, "Screenshot saved: ${file.absolutePath}")
-            file
-        } catch (e: Exception) {
-            Log.e(TAG, "Direct save failed: ${e.message}")
-            null
         }
     }
 

@@ -107,11 +107,17 @@ class DeoVrApi {
                     Log.e(TAG, "Rejected non-HTTP URL scheme: ${url.protocol}")
                     return@withContext ApiResponse(scenes = emptyList(), totalCount = 0, error = "Invalid URL scheme: ${url.protocol}")
                 }
-                if (url.host in listOf("localhost", "127.0.0.1", "0.0.0.0", "[::1]")) {
-                    Log.w(TAG, "Rejected localhost URL")
-                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0, error = "Localhost URLs are not allowed")
+                val addr = java.net.InetAddress.getByName(url.host)
+                if (addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress || addr.isAnyLocalAddress) {
+                    Log.w(TAG, "Rejected private/local URL: ${url.host}")
+                    return@withContext ApiResponse(scenes = emptyList(), totalCount = 0, error = "Private network URLs are not allowed")
                 }
-                val conn = url.openConnection() as HttpURLConnection
+                // Pin the resolved IP in the URL to prevent DNS rebinding TOCTOU attacks.
+                // Without this, url.openConnection() re-resolves DNS independently and an
+                // attacker could return a public IP on first lookup, then a private IP on second.
+                val resolvedUrl = URL(url.protocol, addr.hostAddress, url.port, url.file)
+                val conn = resolvedUrl.openConnection() as HttpURLConnection
+                conn.setRequestProperty("Host", url.host) // Preserve original Host header for virtual hosting
                 conn.requestMethod = "GET"
                 conn.connectTimeout = CONNECT_TIMEOUT
                 conn.readTimeout = READ_TIMEOUT
@@ -229,7 +235,7 @@ class DeoVrApi {
             skipIntro = obj.optInt("skipIntro", 0),
             videoPreviewUrl = obj.optString("videoPreview", ""),
             corrections = corrections,
-            hspUrl = obj.optString("hsp", null)
+            hspUrl = if (obj.isNull("hsp") || !obj.has("hsp")) null else obj.getString("hsp")
         )
     }
 

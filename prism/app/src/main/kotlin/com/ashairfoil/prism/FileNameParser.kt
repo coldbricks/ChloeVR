@@ -40,8 +40,8 @@ object FileNameParser {
     private val RF52_PATTERN = Regex("""[_.\-](rf52|rf5\.2)[_.\-]""", RegexOption.IGNORE_CASE)
     private val FISHEYE190_PATTERN = Regex("""_fisheye190""", RegexOption.IGNORE_CASE)
     private val FISHEYE_PATTERN = Regex("""_fisheye""", RegexOption.IGNORE_CASE)
-    private val P360_PATTERN = Regex("""_360""", RegexOption.IGNORE_CASE)
-    private val P180_PATTERN = Regex("""_180""", RegexOption.IGNORE_CASE)
+    private val P360_PATTERN = Regex("""[_.\-]360[_.\-]""", RegexOption.IGNORE_CASE)
+    private val P180_PATTERN = Regex("""[_.\-]180[_.\-]""", RegexOption.IGNORE_CASE)
 
     fun parse(file: File): VideoMetadata {
         val name = "_${file.nameWithoutExtension}_"

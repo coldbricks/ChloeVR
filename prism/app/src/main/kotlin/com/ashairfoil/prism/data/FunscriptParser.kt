@@ -93,20 +93,42 @@ class FunscriptParser {
 
             val a = actions[lo]
             val b = actions[hi]
-            val range = (b.atMs - a.atMs).toFloat()
-            if (range <= 0) return a.position
+            val span = (b.atMs - a.atMs).toFloat()
+            if (span <= 0) return a.position
 
-            val t = ((timeMs - a.atMs).toFloat() / range).coerceIn(0f, 1f)
-            val pos = (a.position + (b.position - a.position) * t).toInt()
+            val t = ((timeMs - a.atMs).toFloat() / span).coerceIn(0f, 1f)
+            val rawPos = (a.position + (b.position - a.position) * t)
+            val scaledPos = (rawPos * range / 100f).toInt().coerceIn(0, 100)
 
-            return if (inverted) 100 - pos else pos
+            return if (inverted) 100 - scaledPos else scaledPos
         }
 
         /**
          * Get actions in a time range (for timeline visualization).
+         * Uses binary search since actions are sorted by timestamp.
          */
         fun actionsInRange(startMs: Long, endMs: Long): List<FunscriptAction> {
-            return actions.filter { it.atMs in startMs..endMs }
+            if (actions.isEmpty()) return emptyList()
+
+            // Binary search for start index (first action >= startMs)
+            var lo = 0
+            var hi = actions.size
+            while (lo < hi) {
+                val mid = (lo + hi) / 2
+                if (actions[mid].atMs < startMs) lo = mid + 1 else hi = mid
+            }
+            val startIdx = lo
+
+            // Binary search for end index (first action > endMs)
+            lo = startIdx
+            hi = actions.size
+            while (lo < hi) {
+                val mid = (lo + hi) / 2
+                if (actions[mid].atMs <= endMs) lo = mid + 1 else hi = mid
+            }
+            val endIdx = lo
+
+            return if (startIdx < endIdx) actions.subList(startIdx, endIdx) else emptyList()
         }
 
         /**
@@ -164,8 +186,8 @@ class FunscriptParser {
      */
     fun parse(file: File): Funscript? {
         try {
-            if (file.length() > 50 * 1024 * 1024) {
-                Log.w(TAG, "Funscript too large: ${file.length()} bytes, skipping")
+            if (file.length() > 10 * 1024 * 1024) {
+                Log.w(TAG, "Funscript too large: ${file.length()} bytes (>10MB), skipping")
                 return null
             }
             val json = file.readText()
@@ -222,7 +244,7 @@ class FunscriptParser {
             val funscript = Funscript(
                 version = root.optString("version", "1.0"),
                 inverted = root.optBoolean("inverted", false),
-                range = root.optInt("range", 100),
+                range = root.optInt("range", 100).coerceIn(1, 100),
                 actions = actions,
                 metadata = metadata,
                 source = source,
