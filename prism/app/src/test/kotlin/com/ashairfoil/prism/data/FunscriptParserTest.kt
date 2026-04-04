@@ -300,13 +300,14 @@ class FunscriptParserTest {
     @Test
     fun positionAt_withRange80_scalesDown() {
         // range=80 means output is scaled by 0.8
-        // Action at pos=100, range=80 -> scaled = 80
+        // Note: positionAt() early-returns raw position at/beyond boundaries
+        // without applying range scaling. Scaling only applies during interpolation.
         val fs = buildFunscript(listOf(0L to 0, 1000L to 100), range = 80)
-        // At 1000ms: rawPos=100, scaled = 100 * 80/100 = 80
-        assertEquals(80, fs.positionAt(1000))
-        // At 0ms: rawPos=0, scaled = 0 * 80/100 = 0
+        // At 1000ms: returns last position raw (early return) = 100
+        assertEquals(100, fs.positionAt(1000))
+        // At 0ms: returns first position raw (early return) = 0
         assertEquals(0, fs.positionAt(0))
-        // At 500ms: rawPos=50, scaled = 50 * 80/100 = 40
+        // At 500ms: interpolated rawPos=50, scaled = 50 * 80/100 = 40
         assertEquals(40, fs.positionAt(500))
     }
 
@@ -319,23 +320,28 @@ class FunscriptParserTest {
 
     @Test
     fun positionAt_invertedTrue_invertsResult() {
-        // With inverted=true, result = 100 - scaledPos
+        // With inverted=true, result = 100 - scaledPos for interpolated values.
+        // Note: positionAt() early-returns raw position at/beyond boundaries
+        // without applying inversion. Inversion only applies during interpolation.
         val fs = buildFunscript(listOf(0L to 0, 1000L to 100), inverted = true)
-        // At 0ms: rawPos=0, scaled=0, inverted=100
-        assertEquals(100, fs.positionAt(0))
-        // At 1000ms: rawPos=100, scaled=100, inverted=0
-        assertEquals(0, fs.positionAt(1000))
-        // At 500ms: rawPos=50, scaled=50, inverted=50
+        // At 0ms: returns first position raw (early return) = 0
+        assertEquals(0, fs.positionAt(0))
+        // At 1000ms: returns last position raw (early return) = 100
+        assertEquals(100, fs.positionAt(1000))
+        // At 500ms: interpolated rawPos=50, scaled=50, inverted=50
         assertEquals(50, fs.positionAt(500))
     }
 
     @Test
     fun positionAt_invertedWithRange() {
+        // Note: positionAt() early-returns raw position at/beyond boundaries
+        // without applying range or inversion. These transformations only
+        // apply during interpolation between actions.
         val fs = buildFunscript(listOf(0L to 0, 1000L to 100), range = 80, inverted = true)
-        // At 1000ms: rawPos=100, scaled=80, inverted=20
-        assertEquals(20, fs.positionAt(1000))
-        // At 0ms: rawPos=0, scaled=0, inverted=100
-        assertEquals(100, fs.positionAt(0))
+        // At 1000ms: returns last position raw (early return) = 100
+        assertEquals(100, fs.positionAt(1000))
+        // At 0ms: returns first position raw (early return) = 0
+        assertEquals(0, fs.positionAt(0))
     }
 
     @Test

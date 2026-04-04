@@ -4185,8 +4185,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         stopPlayback()
         subtitleRenderer = null
         mediaLibrary = null
-        // Release XR session to free GPU/compositor resources
-        xrSession?.close()
+        // Release XR session reference (lifecycle-managed, no close() method)
         xrSession = null
         super.onDestroy()
     }

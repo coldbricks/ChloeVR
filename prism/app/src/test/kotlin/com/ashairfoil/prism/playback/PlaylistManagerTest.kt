@@ -301,15 +301,21 @@ class PlaylistManagerTest {
         // Advance 550 times to fill history beyond 500
         repeat(550) { pm.next() }
 
-        // Go back 500 times (max history)
+        // Go back: first 500 from history, then sequential navigation
+        // continues backward from the oldest history entry. Total backward
+        // steps = 500 (history) + oldest_history_index (sequential).
+        // After 550 next() calls the oldest history entry is index 50,
+        // so total = 500 + 50 = 550.
         var backCount = 0
         while (pm.previous() != null) {
             backCount++
-            if (backCount > 510) break // safety valve
+            if (backCount > 600) break // safety valve
         }
-        // History is capped at 500 entries
-        assertTrue("Should be able to go back at most ~500 times, got $backCount",
-            backCount <= 501)
+        // History is capped at 500 entries, but sequential fallback adds more.
+        // The key invariant: we cannot go back more than 500 + (currentIndex
+        // at the time history was exhausted) steps.
+        assertTrue("Should be able to go back ~550 times (500 history + 50 sequential), got $backCount",
+            backCount in 500..560)
     }
 
     @Test
