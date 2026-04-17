@@ -82,6 +82,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     private var menuVisible = true
     private var currentFile: File? = null
 
+    // Haptic: BLE manager + script scheduler (funscript/.hsp playback).
+    // Both are created lazily the first time a video has a sidecar script and
+    // the saved script-mode is Scripted or Mixed.
+    private var hapticManager: com.ashairfoil.prism.haptics.BleDeviceManager? = null
+    private var hapticScriptPlayer: com.ashairfoil.prism.haptics.HapticScriptPlayer? = null
+
     // Cached control panel view (avoids rebuilding 50-100+ Views on every menu toggle)
     private var cachedControlPanelView: View? = null
     private var cachedControlPanelFile: File? = null
@@ -3305,6 +3311,30 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
             // Start periodic resume position saving
             startResumeSaveLoop(file)
+
+            // Attempt to load a sidecar .funscript / .hsp for this video. If
+            // a funscript exists and the saved script-mode is Scripted/Mixed,
+            // start the haptic scheduler automatically.
+            val scriptMode = SettingsManager.hapticScriptMode
+            if (scriptMode == "Scripted" || scriptMode == "Mixed") {
+                try {
+                    val player = ensureHapticScriptPlayer()
+                    player.setMode(scriptMode)
+                    val hasFs = player.loadForVideo(file)
+                    if (hasFs) {
+                        player.play()
+                        android.util.Log.i("ChloeVR-Haptic", "Funscript loaded + playing for ${file.name}")
+                    } else {
+                        android.util.Log.i("ChloeVR-Haptic", "No funscript beside ${file.name}")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("ChloeVR-Haptic", "Funscript init failed", e)
+                }
+            } else {
+                // Off / Reactive: clear any prior script so stale data doesn't linger.
+                hapticScriptPlayer?.pause()
+                hapticScriptPlayer?.clearScript()
+            }
         }
 
         isPlaying = true
@@ -3384,8 +3414,35 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         return null
     }
 
+    /**
+     * Ensure a BLE haptic manager + script scheduler exist. Creates them
+     * lazily — video sessions without a sidecar funscript shouldn't pay the
+     * BLE init cost. Returns the script player.
+     */
+    private fun ensureHapticScriptPlayer(): com.ashairfoil.prism.haptics.HapticScriptPlayer {
+        val existing = hapticScriptPlayer
+        if (existing != null) return existing
+        val bleMgr = hapticManager ?: com.ashairfoil.prism.haptics.BleDeviceManager(this).also {
+            hapticManager = it
+            if (it.hasBlePermissions()) {
+                runCatching { it.startScan() }
+            }
+        }
+        val player = com.ashairfoil.prism.haptics.HapticScriptPlayer(
+            bleDeviceManager = bleMgr,
+            positionProvider = { videoPlayer?.currentPositionMs ?: -1L },
+            isPlayingProvider = { videoPlayer?.isPlaying == true }
+        )
+        player.setMode(SettingsManager.hapticScriptMode)
+        hapticScriptPlayer = player
+        return player
+    }
+
     private fun stopPlayback() {
         cachedControlPanelView = null
+        // Halt haptic scripting before we tear the video player down.
+        hapticScriptPlayer?.pause()
+        hapticScriptPlayer?.clearScript()
         // Save resume position before releasing
         val file = currentFile
         val pos = videoPlayer?.currentPositionMs ?: 0
@@ -4166,8 +4223,10 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
 
     override fun onPause() {
         super.onPause()
-        // Pause video when going to background
+        // Pause video when going to background; halt the haptic script scheduler
+        // (will issue Vibrate:0 on its way out).
         videoPlayer?.pause()
+        hapticScriptPlayer?.pause()
     }
 
     override fun onDestroy() {
@@ -4183,6 +4242,12 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         openXRInput?.stop()
         openXRInput = null
         stopPlayback()
+        // Fully release the haptic scheduler + BLE manager (sends Vibrate:0;
+        // and closes GATT to avoid runaway motors at activity death).
+        hapticScriptPlayer?.release()
+        hapticScriptPlayer = null
+        hapticManager?.disconnect()
+        hapticManager = null
         subtitleRenderer = null
         mediaLibrary = null
         // Release XR session reference (lifecycle-managed, no close() method)

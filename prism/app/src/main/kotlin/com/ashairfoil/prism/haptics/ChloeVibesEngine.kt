@@ -33,8 +33,13 @@ class ChloeVibesEngine {
     // Trigger
     @Volatile var triggerMode = TriggerMode.Dynamic
     @Volatile var dynamicCurve = 1.0f
+    /** Soft-knee width around the threshold. Exposed so presets and UI can tune it. */
+    @Volatile var thresholdKnee = 0.22f
     @Volatile var binaryLevel = 0.8f
     @Volatile var hybridBlend = 0.5f
+
+    /** Current preset name ("", "Loose", "Medium", or "Ultimate"). */
+    @Volatile var presetName: String = ""
 
     // Envelope
     @Volatile var attackMs = 30f
@@ -125,7 +130,7 @@ class ChloeVibesEngine {
             currentTimeMs = currentTimeMs,
             triggerMode = triggerMode,
             threshold = gateThreshold,
-            thresholdKnee = 0.05f,
+            thresholdKnee = thresholdKnee,
             dynamicCurve = dynamicCurve,
             binaryLevel = binaryLevel,
             hybridBlend = hybridBlend,
@@ -191,6 +196,108 @@ class ChloeVibesEngine {
         motor2Output = 0f
         ditherError = 0f
         ditherError2 = 0f
+    }
+
+    // ── Chloe Rhythm Presets ──
+    // Ported from Chloe-Vibes src/gui.rs apply_chloe_rhythm_profile (L3700-3791).
+    // Keep these in sync with the Rust source of truth.
+
+    /** Apply shared defaults used by all three Chloe rhythm profiles. */
+    private fun applyChloeShared() {
+        autoGateAmount = 0.0f
+        gateSmoothing = 0.08f
+        triggerMode = TriggerMode.Hybrid
+        frequencyMode = FrequencyMode.LowPass
+        attackCurve = 0.42f
+        decayCurve = 1.65f
+        releaseCurve = 1.95f
+    }
+
+    /** Loose — mellow, forgiving tuning. Climax disabled. */
+    fun applyChloeLoose() {
+        applyChloeShared()
+        presetName = "Loose"
+        outputGain = 1.45f
+        targetFrequency = 175f
+        gateThreshold = 0.17f
+        thresholdKnee = 0.17f
+        dynamicCurve = 1.35f
+        binaryLevel = 0.64f
+        hybridBlend = 0.34f
+        attackMs = 4.5f
+        decayMs = 78f
+        sustainLevel = 0.50f
+        releaseMs = 95f
+        outputFloor = 0.03f
+        outputCeiling = 0.92f
+        climaxEnabled = false
+    }
+
+    /** Medium — balanced punch with slow Wave climax build. */
+    fun applyChloeMedium() {
+        applyChloeShared()
+        presetName = "Medium"
+        outputGain = 1.85f
+        targetFrequency = 150f
+        gateThreshold = 0.185f
+        thresholdKnee = 0.14f
+        dynamicCurve = 1.52f
+        binaryLevel = 0.74f
+        hybridBlend = 0.43f
+        attackMs = 2.6f
+        decayMs = 58f
+        sustainLevel = 0.42f
+        releaseMs = 78f
+        outputFloor = 0.07f
+        outputCeiling = 1.0f
+        climaxEnabled = true
+        climaxPattern = ClimaxPattern.Wave
+        climaxIntensity = 0.58f
+        climaxBuildUpMs = 75_000f
+        climaxTeaseRatio = 0.16f
+        climaxTeaseDrop = 0.18f
+        climaxSurgeBoost = 0.42f
+        climaxPulseDepth = 0.20f
+    }
+
+    /** Ultimate — sharp music-sync with Surge climax. */
+    fun applyChloeUltimate() {
+        applyChloeShared()
+        presetName = "Ultimate"
+        outputGain = 2.10f
+        targetFrequency = 125f
+        gateThreshold = 0.16f
+        thresholdKnee = 0.14f
+        dynamicCurve = 1.55f
+        binaryLevel = 0.90f
+        hybridBlend = 0.52f
+        attackMs = 1.0f
+        decayMs = 45f
+        sustainLevel = 0.48f
+        releaseMs = 65f
+        outputFloor = 0.08f
+        outputCeiling = 1.0f
+        climaxEnabled = true
+        climaxPattern = ClimaxPattern.Surge
+        climaxIntensity = 0.82f
+        climaxBuildUpMs = 60_000f
+        climaxTeaseRatio = 0.18f
+        climaxTeaseDrop = 0.30f
+        climaxSurgeBoost = 0.90f
+        climaxPulseDepth = 0.22f
+    }
+
+    /** Mark current tunings as custom (no longer matching a preset). */
+    fun markCustom() { presetName = "" }
+
+    /** Apply a preset by name. Unknown values are silently ignored. */
+    fun applyPresetByName(name: String) {
+        when (name) {
+            "Loose" -> applyChloeLoose()
+            "Medium" -> applyChloeMedium()
+            "Ultimate" -> applyChloeUltimate()
+            else -> { /* keep current */ }
+        }
     }
 
     /**
