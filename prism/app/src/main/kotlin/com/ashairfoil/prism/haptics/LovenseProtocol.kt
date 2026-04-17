@@ -38,6 +38,12 @@ object LovenseProtocol {
         return "Vibrate1:$c1;Vibrate2:$c2;"
     }
 
+    /** Set ONLY motor 1 without touching motor 2 (dual-motor devices). */
+    fun vibrate1(level: Int): String {
+        val clamped = level.coerceIn(0, 20)
+        return "Vibrate1:$clamped;"
+    }
+
     /**
      * Set rotation speed (for supported devices like Nora).
      * @param level 0-20

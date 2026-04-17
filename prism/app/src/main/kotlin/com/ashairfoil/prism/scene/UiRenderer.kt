@@ -742,6 +742,42 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 sy += 32f
             }
 
+            // ── Chloe Vibes presets + script mode (row above the main buttons) ──
+            val presetY = uiH - 145f; val presetH = 42f
+            val presetNamesRow = arrayOf("LOOSE" to "Loose", "MEDIUM" to "Medium", "ULTIMATE" to "Ultimate")
+            val presetIds = intArrayOf(140, 141, 142)
+            val currentPreset = reactor?.vibesEngine?.presetName ?: ""
+            val useVibes = reactor?.useVibesEngine == true
+            val cellW = (uiW - 70f) / 4f
+            p.textSize = 18f; p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = true
+            for (idx in presetNamesRow.indices) {
+                val (label, nameKey) = presetNamesRow[idx]
+                val isActive = useVibes && currentPreset == nameKey
+                val isHover = hoveredActionButton == presetIds[idx]
+                val xL = 30f + idx * (cellW + 10f)
+                val xR = xL + cellW - 10f
+                p.color = when {
+                    isActive -> ThemeManager.PINK_HOT
+                    isHover -> (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x80000000.toInt()
+                    else -> (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x20000000
+                }
+                canvas.drawRoundRect(xL, presetY, xR, presetY + presetH, 8f, 8f, p)
+                p.color = if (isActive || isHover) ThemeManager.TEXT_BRIGHT else ThemeManager.PINK_SOFT
+                canvas.drawText(label, (xL + xR) / 2f, presetY + 28f, p)
+            }
+            // Script mode pill (cycle Off → Reactive → Scripted → Mixed)
+            val scriptMode = com.ashairfoil.prism.settings.SettingsManager.hapticScriptMode
+            val smHover = hoveredActionButton == 143
+            val smX = 30f + 3 * (cellW + 10f)
+            val smR = uiW - 30f
+            p.color = if (smHover) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt()
+                else (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x40000000
+            canvas.drawRoundRect(smX, presetY, smR, presetY + presetH, 8f, 8f, p)
+            p.color = if (smHover) ThemeManager.TEXT_BRIGHT else ThemeManager.CYAN_ICE
+            p.textSize = 16f
+            canvas.drawText("SCRIPT: $scriptMode", (smX + smR) / 2f, presetY + 28f, p)
+            p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+
             // ── Buttons: BOOM / VIBES / SPLIT / OFF / BACK ──
             val btnY = uiH - 75f; val btnH = 50f
             val fifthW = (uiW - 130f) / 5f

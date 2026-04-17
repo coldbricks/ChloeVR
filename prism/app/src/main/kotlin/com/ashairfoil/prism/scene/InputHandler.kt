@@ -183,6 +183,26 @@ class InputHandler(private val activity: FilamentModelActivity) {
             BeatSlider("MIX", "%", 0f, 100f,
                 { activity.beatIntensity * 50f },
                 { activity.beatIntensity = it / 50f }),
+            // Chloe-Vibes engine tunings. Changing these marks the preset
+            // as "Custom" and persists to SettingsManager.
+            BeatSlider("VIBES KNEE", "%", 0f, 45f,
+                { (activity.audioReactor?.vibesEngine?.thresholdKnee ?: 0.22f) * 100f },
+                { v ->
+                    val norm = (v / 100f).coerceIn(0f, 0.45f)
+                    activity.audioReactor?.vibesEngine?.thresholdKnee = norm
+                    activity.audioReactor?.vibesEngine?.markCustom()
+                    com.ashairfoil.prism.settings.SettingsManager.vibesThresholdKnee = norm
+                    com.ashairfoil.prism.settings.SettingsManager.vibesPresetName = ""
+                }),
+            BeatSlider("VIBES CURVE", "x", 0.35f, 2.5f,
+                { activity.audioReactor?.vibesEngine?.dynamicCurve ?: 1.35f },
+                { v ->
+                    val c = v.coerceIn(0.35f, 2.5f)
+                    activity.audioReactor?.vibesEngine?.dynamicCurve = c
+                    activity.audioReactor?.vibesEngine?.markCustom()
+                    com.ashairfoil.prism.settings.SettingsManager.vibesDynamicCurve = c
+                    com.ashairfoil.prism.settings.SettingsManager.vibesPresetName = ""
+                }),
         )
     }
 
@@ -470,6 +490,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     else if (bx < 50f + fifth * 3f + 5f) hoveredActionButton = 129 // SPLIT (dual motor toggle)
                                     else if (bx < 60f + fifth * 4f + 5f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
+                                } else if (by in 1133f..1180f) {
+                                    // Chloe presets row: LOOSE / MEDIUM / ULTIMATE / SCRIPT
+                                    val cellW = (1024f - 70f) / 4f
+                                    hoveredActionButton = when {
+                                        bx < 30f + cellW -> 140
+                                        bx < 30f + 2f * cellW + 10f -> 141
+                                        bx < 30f + 3f * cellW + 20f -> 142
+                                        else -> 143
+                                    }
                                 } else if (by in 108f..135f) {
                                     // Rolloff mode buttons
                                     if (bx in 300f..420f) hoveredActionButton = 113
@@ -1053,6 +1082,43 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 // SPLIT: toggle dual motor independent bass/treble
                 activity.hapticDualMotorSplit = !activity.hapticDualMotorSplit
                 Log.i(TAG, "Dual motor split: ${activity.hapticDualMotorSplit}")
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton in 140..142) {
+                // Chloe Vibes preset selection (LOOSE / MEDIUM / ULTIMATE).
+                // Enables the vibes engine, applies the preset, and persists it.
+                val engine = activity.audioReactor?.vibesEngine
+                if (engine != null) {
+                    val name = when (hoveredActionButton) {
+                        140 -> "Loose"
+                        141 -> "Medium"
+                        else -> "Ultimate"
+                    }
+                    engine.applyPresetByName(name)
+                    activity.audioReactor?.useVibesEngine = true
+                    val sm = com.ashairfoil.prism.settings.SettingsManager
+                    sm.vibesEngineEnabled = true
+                    sm.vibesPresetName = name
+                    sm.vibesThresholdKnee = engine.thresholdKnee
+                    sm.vibesDynamicCurve = engine.dynamicCurve
+                    sm.vibesGateThreshold = engine.gateThreshold
+                    sm.vibesAttackMs = engine.attackMs
+                    sm.vibesReleaseMs = engine.releaseMs
+                    sm.vibesOutputGain = engine.outputGain
+                    Log.i(TAG, "Applied Chloe $name preset")
+                }
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 143) {
+                // Cycle haptic script mode: Off → Reactive → Scripted → Mixed → Off.
+                val sm = com.ashairfoil.prism.settings.SettingsManager
+                val next = when (sm.hapticScriptMode) {
+                    "Off" -> "Reactive"
+                    "Reactive" -> "Scripted"
+                    "Scripted" -> "Mixed"
+                    else -> "Off"
+                }
+                sm.hapticScriptMode = next
+                activity.hapticScriptPlayer?.setMode(next)
+                Log.i(TAG, "Haptic script mode: $next")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.lightingPresetMode && hoveredLightingPresetIndex >= 0) {
                 val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()

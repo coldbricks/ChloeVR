@@ -76,6 +76,19 @@ object SettingsManager {
     // Zoom
     private const val KEY_ZOOM_LEVEL = "zoom_level"
 
+    // Chloe Vibes haptic engine (see ChloeVibesEngine.kt)
+    private const val KEY_VIBES_ENABLED = "vibes_engine_enabled"
+    private const val KEY_VIBES_PRESET = "vibes_preset_name"
+    private const val KEY_VIBES_KNEE = "vibes_threshold_knee"
+    private const val KEY_VIBES_DYN_CURVE = "vibes_dynamic_curve"
+    private const val KEY_VIBES_GATE_THRESH = "vibes_gate_threshold"
+    private const val KEY_VIBES_ATTACK_MS = "vibes_attack_ms"
+    private const val KEY_VIBES_RELEASE_MS = "vibes_release_ms"
+    private const val KEY_VIBES_OUTPUT_GAIN = "vibes_output_gain"
+
+    // Haptic scripting (funscript/HSP playback) — values: Off|Reactive|Scripted|Mixed
+    private const val KEY_HAPTIC_SCRIPT_MODE = "haptic_script_mode"
+
     // ── Defaults ────────────────────────────────────────────────────────
     private const val DEFAULT_PLAYBACK_SPEED = 1.0f
     private const val DEFAULT_SEEK_INCREMENT_MS = 10_000L
@@ -425,6 +438,47 @@ object SettingsManager {
     }
 
     fun isFavoriteFolder(path: String): Boolean = path in getFavoriteFolders()
+
+    // ── Chloe Vibes haptic engine ───────────────────────────────────────
+
+    var vibesEngineEnabled: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_VIBES_ENABLED, false) }
+        set(v) { ensureInit(); prefs.edit().putBoolean(KEY_VIBES_ENABLED, v).apply() }
+
+    /** Preset name: "", "Loose", "Medium", or "Ultimate". Empty = custom tuning. */
+    var vibesPresetName: String
+        get() { ensureInit(); return prefs.getString(KEY_VIBES_PRESET, "Medium") ?: "Medium" }
+        set(v) { ensureInit(); prefs.edit().putString(KEY_VIBES_PRESET, v).apply() }
+
+    var vibesThresholdKnee: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_KNEE, 0.22f).coerceIn(0f, 0.45f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_KNEE, v.coerceIn(0f, 0.45f)).apply() }
+
+    var vibesDynamicCurve: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_DYN_CURVE, 1.35f).coerceIn(0.35f, 2.5f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_DYN_CURVE, v.coerceIn(0.35f, 2.5f)).apply() }
+
+    var vibesGateThreshold: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_GATE_THRESH, 0.17f).coerceIn(0f, 1f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_GATE_THRESH, v.coerceIn(0f, 1f)).apply() }
+
+    var vibesAttackMs: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_ATTACK_MS, 4.5f).coerceIn(0.5f, 200f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_ATTACK_MS, v.coerceIn(0.5f, 200f)).apply() }
+
+    var vibesReleaseMs: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_RELEASE_MS, 95f).coerceIn(10f, 2000f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_RELEASE_MS, v.coerceIn(10f, 2000f)).apply() }
+
+    var vibesOutputGain: Float
+        get() { ensureInit(); return prefs.getFloat(KEY_VIBES_OUTPUT_GAIN, 1.45f).coerceIn(0.1f, 4f) }
+        set(v) { ensureInit(); prefs.edit().putFloat(KEY_VIBES_OUTPUT_GAIN, v.coerceIn(0.1f, 4f)).apply() }
+
+    // ── Haptic script playback mode ─────────────────────────────────────
+
+    var hapticScriptMode: String
+        get() { ensureInit(); return prefs.getString(KEY_HAPTIC_SCRIPT_MODE, "Reactive") ?: "Reactive" }
+        set(v) { ensureInit(); prefs.edit().putString(KEY_HAPTIC_SCRIPT_MODE, v).apply() }
 
     // ── Color grading presets ───────────────────────────────────────────
     // Each preset stored as: "name|brightness|contrast|saturation|sharpening|gamma|hueShift|toneMapMode"

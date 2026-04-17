@@ -233,6 +233,9 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var hapticConnected = false
     @Volatile internal var hapticEnabled = false
     @Volatile internal var hapticDualMotorSplit = false  // true = independent bass/treble motors
+    // Script playback scheduler — not used in the 3D model viewer (no video),
+    // but declared here so InputHandler can reference it uniformly.
+    internal var hapticScriptPlayer: com.ashairfoil.prism.haptics.HapticScriptPlayer? = null
 
     // Floor detection: snap grid once at startup, track floor Y for model placement
     @Volatile private var floorSnappedOnce = false  // true after first grid snap to detected floor
@@ -262,8 +265,27 @@ class FilamentModelActivity : ComponentActivity() {
 
         // Light sensor now handled by SensorHub — read via sensorHub?.lightLux
 
-        // Initialize audio reactor (BeatReactor-style)
-        audioReactor = AudioReactor()
+        // Ensure settings are initialized (idempotent — safe if MainActivity already did it).
+        com.ashairfoil.prism.settings.SettingsManager.init(this)
+
+        // Initialize audio reactor (BeatReactor-style) and restore persisted
+        // Chloe-Vibes engine state (preset name or custom tunings).
+        audioReactor = AudioReactor().also { ar ->
+            val sm = com.ashairfoil.prism.settings.SettingsManager
+            ar.useVibesEngine = sm.vibesEngineEnabled
+            val preset = sm.vibesPresetName
+            if (preset == "Loose" || preset == "Medium" || preset == "Ultimate") {
+                ar.vibesEngine.applyPresetByName(preset)
+            } else {
+                ar.vibesEngine.thresholdKnee = sm.vibesThresholdKnee
+                ar.vibesEngine.dynamicCurve = sm.vibesDynamicCurve
+                ar.vibesEngine.gateThreshold = sm.vibesGateThreshold
+                ar.vibesEngine.attackMs = sm.vibesAttackMs
+                ar.vibesEngine.releaseMs = sm.vibesReleaseMs
+                ar.vibesEngine.outputGain = sm.vibesOutputGain
+                ar.vibesEngine.markCustom()
+            }
+        }
 
         // Load cached GLB file list, then rescan in background
         val cacheFile = File(cacheDir, "glb_cache.txt")
