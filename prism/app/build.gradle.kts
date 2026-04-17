@@ -90,9 +90,9 @@ dependencies {
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.49")
 
     // Filament (direct 3D rendering for UNMANAGED mode model viewer)
-    implementation("com.google.android.filament:filament-android:1.69.5")
-    implementation("com.google.android.filament:gltfio-android:1.69.5")
-    implementation("com.google.android.filament:filament-utils-android:1.69.5")
+    implementation("com.google.android.filament:filament-android:1.71.0")
+    implementation("com.google.android.filament:gltfio-android:1.71.0")
+    implementation("com.google.android.filament:filament-utils-android:1.71.0")
 
     // Media3 (ExoPlayer)
     implementation("androidx.media3:media3-exoplayer:1.9.3")
