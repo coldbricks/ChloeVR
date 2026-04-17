@@ -140,7 +140,15 @@ class SceneManager(
         // Beat-event tracking for impact kicks
         var lastBeatSeen: Long = 0L,
         var impactKickStartMs: Long = 0L,
-        var impactKickAxis: Int = 0   // 0 = pitch, 1 = yaw, 2 = roll-ish via yaw twist
+        var impactKickAxis: Int = 0,  // 0 = pitch, 1 = yaw, 2 = roll-ish via yaw twist
+        // Damped harmonic "jiggle" spring state — flesh rings after squash.
+        var jiggleX: Float = 0f, var jiggleVelX: Float = 0f,
+        var jiggleY: Float = 0f, var jiggleVelY: Float = 0f,
+        var jiggleZ: Float = 0f, var jiggleVelZ: Float = 0f,
+        var lastDanceNanos: Long = 0L,
+        // Per-model fBm seed so the "slow random amplitude drift" is uncorrelated
+        // between axes (prevents them all breathing in unison).
+        var fbmSeed: Float = 0f
     )
 
     /** Easing curves available for dance motion — mirrors ShapesXR's options. */

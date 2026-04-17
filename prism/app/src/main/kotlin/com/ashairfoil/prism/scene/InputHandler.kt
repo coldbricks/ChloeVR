@@ -38,6 +38,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private var lastBeatCursorX = -1f
     private var lastBeatCursorY = -1f
 
+    // Double-tap detection for A button → deselect (right-hand shortcut so you
+    // don't have to reach for Y when using one controller).
+    private var lastATapMs: Long = 0L
+    private val DOUBLE_TAP_WINDOW_MS = 400L
+
     // Whip-to-delete: ring buffer of recent grab-hand positions with timestamps.
     // On grip release we compute average velocity over this window; if the user
     // flicked fast enough (ShapesXR-style), yeet the model instead of dropping it.
@@ -205,32 +210,32 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     if (m != null) m.animResponse = (v / 100f).coerceIn(0f, 1f)
                 }),
-            BeatSlider("YAW", "\u00B0", 0f, 60f,
+            BeatSlider("YAW", "\u00B0", 0f, 30f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     m?.danceYawDeg ?: 0f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.danceYawDeg = v.coerceIn(0f, 60f)
+                    if (m != null) m.danceYawDeg = v.coerceIn(0f, 30f)
                 }),
-            BeatSlider("PITCH", "\u00B0", 0f, 45f,
+            BeatSlider("PITCH", "\u00B0", 0f, 20f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     m?.dancePitchDeg ?: 0f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.dancePitchDeg = v.coerceIn(0f, 45f)
+                    if (m != null) m.dancePitchDeg = v.coerceIn(0f, 20f)
                 }),
-            BeatSlider("BOB", "cm", 0f, 15f,
+            BeatSlider("BOB", "cm", 0f, 8f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.danceYMeters ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.danceYMeters = (v / 100f).coerceIn(0f, 0.15f)
+                    if (m != null) m.danceYMeters = (v / 100f).coerceIn(0f, 0.08f)
                 }),
             BeatSlider("PHYSICS", "%", 0f, 100f,
                 {
@@ -1141,7 +1146,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
                         m.animHasBase = true
                         if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-                            m.danceYawDeg = 20f  // sensible default booty shake
+                            m.danceYawDeg = 10f  // gentle default booty shake — user can dial up
                         }
                         Log.i(TAG, "Dance armed on ${m.file.name} (yaw=${m.danceYawDeg}° pitch=${m.dancePitchDeg}° bob=${m.danceYMeters}m)")
                     } else {
@@ -2201,6 +2206,37 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else {
                     // Normal release — commit spatial anchor so placement survives app close.
                     activity.commitAnchorForGrip(model)
+                    // Re-anchor beat animations at the current pose so dance/shake
+                    // continues at the new location without snapping back.
+                    if (model.animHasBase) {
+                        model.animBasePose[0] = model.posX; model.animBasePose[1] = model.posY; model.animBasePose[2] = model.posZ
+                        model.animBasePose[3] = model.rotX; model.animBasePose[4] = model.rotY
+                        model.animBasePose[5] = model.rotZ; model.animBasePose[6] = model.rotW
+                    }
+                    if (model.animHasA && model.animHasB) {
+                        // Shift both A and B by the delta between old A-anchor and new pose so
+                        // the shake arc moves with the model.
+                        val dx = model.posX - model.animPoseA[0]
+                        val dy = model.posY - model.animPoseA[1]
+                        val dz = model.posZ - model.animPoseA[2]
+                        model.animPoseA[0] += dx; model.animPoseA[1] += dy; model.animPoseA[2] += dz
+                        model.animPoseB[0] += dx; model.animPoseB[1] += dy; model.animPoseB[2] += dz
+                        // Rotation: snap A to current rot; keep B's relative rotation against A.
+                        val oldAX = model.animPoseA[3]; val oldAY = model.animPoseA[4]
+                        val oldAZ = model.animPoseA[5]; val oldAW = model.animPoseA[6]
+                        // Compute relative: bRel = B * conj(A)
+                        val bRelX = model.animPoseB[3] * oldAW - model.animPoseB[6] * oldAX - model.animPoseB[4] * oldAZ + model.animPoseB[5] * oldAY
+                        val bRelY = model.animPoseB[4] * oldAW - model.animPoseB[6] * oldAY - model.animPoseB[5] * oldAX + model.animPoseB[3] * oldAZ
+                        val bRelZ = model.animPoseB[5] * oldAW - model.animPoseB[6] * oldAZ - model.animPoseB[3] * oldAY + model.animPoseB[4] * oldAX
+                        val bRelW = model.animPoseB[6] * oldAW + model.animPoseB[3] * oldAX + model.animPoseB[4] * oldAY + model.animPoseB[5] * oldAZ
+                        model.animPoseA[3] = model.rotX; model.animPoseA[4] = model.rotY
+                        model.animPoseA[5] = model.rotZ; model.animPoseA[6] = model.rotW
+                        // B = bRel * newA
+                        model.animPoseB[3] = bRelW * model.rotX + bRelX * model.rotW + bRelY * model.rotZ - bRelZ * model.rotY
+                        model.animPoseB[4] = bRelW * model.rotY - bRelX * model.rotZ + bRelY * model.rotW + bRelZ * model.rotX
+                        model.animPoseB[5] = bRelW * model.rotZ + bRelX * model.rotY - bRelY * model.rotX + bRelZ * model.rotW
+                        model.animPoseB[6] = bRelW * model.rotW - bRelX * model.rotX - bRelY * model.rotY - bRelZ * model.rotZ
+                    }
                 }
             }
             grabbing = false
@@ -2248,14 +2284,29 @@ class InputHandler(private val activity: FilamentModelActivity) {
         lastLeftStickClick = leftStickClick
 
         // Y = cycle selected model
-        if (yButton && !lastYState && models.size > 1) {
-            selectedModelIndex = (selectedModelIndex + 1) % models.size
+        // Y cycles through models — and for the last step includes "no selection"
+        // so the user can deselect. Cycle: 0 → 1 → … → size-1 → -1 (cleared) → 0 …
+        if (yButton && !lastYState && models.isNotEmpty()) {
+            val next = selectedModelIndex + 1
+            selectedModelIndex = if (next >= models.size) -1 else next
+            activity.autoSelectSuspended = (selectedModelIndex < 0)
             if (activity.menuVisible) activity.uiNeedsRefresh = true
         }
         lastYState = yButton
 
         if (aButton && !lastAState && !activity.menuVisible) {
-            // Snap selected model to nearest detected surface (or grid floor)
+            // Double-tap A → deselect current model (right-hand-only shortcut).
+            val nowA = android.os.SystemClock.uptimeMillis()
+            if (nowA - lastATapMs < DOUBLE_TAP_WINDOW_MS && selectedModelIndex >= 0) {
+                selectedModelIndex = -1
+                activity.autoSelectSuspended = true
+                lastATapMs = 0L
+                Log.i(TAG, "Model deselected via A double-tap")
+                lastAState = aButton
+                return
+            }
+            lastATapMs = nowA
+            // ── Single A tap (below) = snap selected model to surface ──
             val model = models.getOrNull(selectedModelIndex)
             val gr = activity.glesRenderer
             if (model != null && gr != null) {

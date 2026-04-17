@@ -160,6 +160,13 @@ class FilamentModelActivity : ComponentActivity() {
     internal var previewRotY: Float = 0f
     private var lastPreviewNanos: Long = 0L
 
+    // When the user explicitly deselects (Y past the last model), we suspend the
+    // "auto-select solo model" fallback so it doesn't immediately re-grab. Reset
+    // to false whenever the model count changes (new load, delete) so fresh state
+    // is still convenient.
+    @Volatile internal var autoSelectSuspended: Boolean = false
+    private var lastSeenModelCount: Int = -1
+
     // Scene save/load
     @Volatile internal var scenePickerMode = false  // true = showing load scene list
     private var scenePickerIsSave = false
@@ -552,12 +559,12 @@ class FilamentModelActivity : ComponentActivity() {
         val rng = java.util.concurrent.ThreadLocalRandom.current()
         val rates = intArrayOf(2, 4, 8, 16)
         val eases = SceneManager.DanceEase.entries.toTypedArray()
-        m.danceYawDeg = if (rng.nextFloat() < 0.75f) (10f + rng.nextFloat() * 35f) else 0f
-        m.dancePitchDeg = if (rng.nextFloat() < 0.45f) (5f + rng.nextFloat() * 20f) else 0f
-        m.danceYMeters = if (rng.nextFloat() < 0.4f) (0.02f + rng.nextFloat() * 0.07f) else 0f
+        m.danceYawDeg = if (rng.nextFloat() < 0.75f) (5f + rng.nextFloat() * 20f) else 0f
+        m.dancePitchDeg = if (rng.nextFloat() < 0.45f) (3f + rng.nextFloat() * 12f) else 0f
+        m.danceYMeters = if (rng.nextFloat() < 0.4f) (0.01f + rng.nextFloat() * 0.04f) else 0f
         // Guarantee at least one axis is active so something keeps dancing.
         if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-            m.danceYawDeg = 15f + rng.nextFloat() * 25f
+            m.danceYawDeg = 8f + rng.nextFloat() * 15f
         }
         m.danceYawRate = rates[rng.nextInt(rates.size)]
         m.dancePitchRate = rates[rng.nextInt(rates.size)]
@@ -1345,9 +1352,13 @@ class FilamentModelActivity : ComponentActivity() {
                                 }
                             }
 
-                            // Auto-select the only model if the user hasn't picked one.
-                            // "If there's one model, that's the one you're trying to adjust."
-                            if (models.size == 1 && selectedModelIndex != 0 && !models[0].isPreview) {
+                            // Auto-select the only model if the user hasn't picked one
+                            // and hasn't explicitly deselected (Y-button cycle past last).
+                            if (models.size != lastSeenModelCount) {
+                                lastSeenModelCount = models.size
+                                autoSelectSuspended = false   // fresh model count = fresh auto-select
+                            }
+                            if (models.size == 1 && selectedModelIndex < 0 && !autoSelectSuspended && !models[0].isPreview) {
                                 selectedModelIndex = 0
                             }
 
@@ -1378,17 +1389,19 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
 
                                         // ── CHOREO: accent / mood / fill ──
+                                        // Gated on IMPROV so the user can pick: predictable steady
+                                        // dance (IMPROV off) vs auto-musical chaos (IMPROV on).
                                         val hasTempo = ar.autoBpm && ar.detectedBpm > 0f
-                                        val accentGain = if (hasTempo) {
-                                            // 4 beats/bar, peak on beat 1 (barPos near 0 or 1)
+                                        val choreoActive = hasTempo && m.danceImprov
+                                        val accentGain = if (choreoActive) {
                                             val bp = ar.phaseInBars(1)
                                             1f + 0.22f * kotlin.math.cos(2.0 * Math.PI * bp).toFloat().coerceAtLeast(0f)
                                         } else 1f
-                                        val moodGain = if (hasTempo) {
+                                        val moodGain = if (choreoActive) {
                                             val mp = ar.phaseInBars(16)
                                             0.8f + 0.45f * (0.5f - 0.5f * kotlin.math.cos(2.0 * Math.PI * mp).toFloat())
                                         } else 1f
-                                        val fillActive = hasTempo && ar.phaseInBars(4) > 0.75f
+                                        val fillActive = choreoActive && ar.phaseInBars(4) > 0.75f
                                         val ampGain = accentGain * moodGain
                                         val yawRate = if (fillActive) 16 else m.danceYawRate
                                         val pitchRate = if (fillActive) 16 else m.dancePitchRate
@@ -1398,24 +1411,59 @@ class FilamentModelActivity : ComponentActivity() {
                                         var px = b[0]; var py = b[1]; var pz = b[2]
                                         var qx = b[3]; var qy = b[4]; var qz = b[5]; var qw = b[6]
 
+                                        // fBm amplitude modulation — slow pseudo-random scalar per axis
+                                        // so the same loop never has identical magnitudes. Kills loop-feel.
+                                        val tSec = System.currentTimeMillis() / 1000f
+                                        val seed = if (m.fbmSeed == 0f) { m.fbmSeed = (m.gpuModelId * 0.37f + 1.13f); m.fbmSeed } else m.fbmSeed
+                                        fun fbmMod(phaseOff: Float): Float {
+                                            val s = (kotlin.math.sin((tSec * 0.11f + seed + phaseOff).toDouble()).toFloat()
+                                                + 0.5f * kotlin.math.sin((tSec * 0.19f + seed * 1.7f + phaseOff).toDouble()).toFloat()
+                                                + 0.33f * kotlin.math.sin((tSec * 0.37f + seed * 2.3f + phaseOff).toDouble()).toFloat()) / 1.83f
+                                            return 0.75f + 0.35f * s  // ~0.4..1.1
+                                        }
+                                        val fbmYaw = fbmMod(0f)
+                                        val fbmPitch = fbmMod(1.7f)
+                                        val fbmBob = fbmMod(3.1f)
+
+                                        // Anticipation: lead yaw phase by ~45ms so motion feels "danced"
+                                        // instead of "on the grid". Scales with physicsAmount so clean
+                                        // motion at 0 and full swagger at 1.
+                                        val yawCycleMs = if (hasTempo) (60000f / ar.detectedBpm) * 4f / yawRate.coerceAtLeast(1) else 500f
+                                        val leadPh = -(45f * m.physicsAmount) / yawCycleMs
+
                                         var yawSig = 0f
                                         // YAW around world Y
                                         if (m.danceYawDeg != 0f) {
-                                            val ph = (ar.phaseAt(yawRate) + m.danceYawPhase) % 1f
-                                            yawSig = SceneManager.waveAt(ph, m.danceEase)
-                                            val half = Math.toRadians((m.danceYawDeg * ampGain * yawSig).toDouble()).toFloat() * 0.5f
+                                            val ph = (ar.phaseAt(yawRate) + m.danceYawPhase + leadPh) % 1f
+                                            yawSig = SceneManager.waveAt(((ph + 1f) % 1f), m.danceEase)
+                                            val half = Math.toRadians((m.danceYawDeg * ampGain * fbmYaw * yawSig).toDouble()).toFloat() * 0.5f
                                             val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
                                             val nx = cy * qx + sy * qz
                                             val ny = cy * qy + sy * qw
                                             val nz = cy * qz - sy * qx
                                             val nw = cy * qw - sy * qy
                                             qx = nx; qy = ny; qz = nz; qw = nw
+
+                                            // Counter-roll ribcage proxy: antiphase Z-roll at 35% amp reads
+                                            // as shoulders tilting opposite the hips — simulates torso/hip
+                                            // separation even though the mesh is one rigid body.
+                                            if (m.physicsAmount > 0.001f) {
+                                                val rollDeg = -0.35f * m.danceYawDeg * yawSig * m.physicsAmount
+                                                val rh = Math.toRadians(rollDeg.toDouble()).toFloat() * 0.5f
+                                                val sr = kotlin.math.sin(rh); val cr = kotlin.math.cos(rh)
+                                                // qZ * qcur
+                                                val nnx = cr * qx - sr * qy
+                                                val nny = cr * qy + sr * qx
+                                                val nnz = cr * qz + sr * qw
+                                                val nnw = cr * qw - sr * qz
+                                                qx = nnx; qy = nny; qz = nnz; qw = nnw
+                                            }
                                         }
                                         // PITCH around world X
                                         if (m.dancePitchDeg != 0f) {
                                             val ph = (ar.phaseAt(pitchRate) + m.dancePitchPhase) % 1f
                                             val sig = SceneManager.waveAt(ph, m.danceEase)
-                                            val half = Math.toRadians((m.dancePitchDeg * ampGain * sig).toDouble()).toFloat() * 0.5f
+                                            val half = Math.toRadians((m.dancePitchDeg * ampGain * fbmPitch * sig).toDouble()).toFloat() * 0.5f
                                             val sp = kotlin.math.sin(half); val cp = kotlin.math.cos(half)
                                             val nx = cp * qx + sp * qw
                                             val ny = cp * qy - sp * qz
@@ -1423,11 +1471,26 @@ class FilamentModelActivity : ComponentActivity() {
                                             val nw = cp * qw - sp * qx
                                             qx = nx; qy = ny; qz = nz; qw = nw
                                         }
-                                        // BOB on world Y (positive only = pushes up from rest)
+                                        // BOB on world Y — asymmetric fast-down/slow-up envelope gives
+                                        // the "body drops into the beat" gravity feel.
                                         if (m.danceYMeters != 0f) {
                                             val ph = (ar.phaseAt(yRate) + m.danceYPhase) % 1f
-                                            val bob = 0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * ph).toFloat())
-                                            py += m.danceYMeters * ampGain * bob
+                                            val kSkew = 0.5f - 0.2f * m.physicsAmount  // 0.5 = symmetric, 0.3 = fast-down
+                                            val phase01 = if (ph < kSkew) ph / kSkew else 1f - (ph - kSkew) / (1f - kSkew)
+                                            val bob = phase01 * phase01 * (3f - 2f * phase01)
+                                            py += m.danceYMeters * ampGain * fbmBob * bob
+                                        }
+
+                                        // Lissajous hip-8: figure-8 COM arc in the frontal plane — the
+                                        // literal kinematic signature of belly-dance/winding. Horizontal
+                                        // at 1x yaw rate, vertical at 2x → ∞-shape COM trajectory.
+                                        if (m.physicsAmount > 0.001f && hasTempo) {
+                                            val lissAmp = 0.018f * m.physicsAmount * ampGain
+                                            val hp = ar.phaseAt(yawRate)
+                                            val hCos = kotlin.math.cos(2.0 * Math.PI * hp).toFloat()
+                                            val hSin2 = kotlin.math.sin(4.0 * Math.PI * hp).toFloat()
+                                            px += lissAmp * hCos
+                                            py += lissAmp * 0.45f * hSin2
                                         }
 
                                         // ── ALIVE: subtle additive layers ──
@@ -1515,6 +1578,32 @@ class FilamentModelActivity : ComponentActivity() {
                                             } else {
                                                 m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
                                             }
+
+                                            // Trailing damped-spring "jiggle" — flesh rings after the
+                                            // body moves. 2nd-order spring at ~2.5x beat freq, ζ≈0.18
+                                            // (underdamped = fleshy, not gelatinous). Multiplies into
+                                            // scale so you see 1-2 lingering ring cycles.
+                                            val nowNsJ = System.nanoTime()
+                                            val dtJ = if (m.lastDanceNanos == 0L) 1f / 72f else (nowNsJ - m.lastDanceNanos) / 1_000_000_000f
+                                            m.lastDanceNanos = nowNsJ
+                                            val safeDtJ = dtJ.coerceIn(0.001f, 0.05f)
+                                            val bpmHz = if (hasTempo) ar.detectedBpm / 60f else 2f
+                                            val omegaJ = 2f * Math.PI.toFloat() * (2.5f * bpmHz)
+                                            val zetaJ = 0.18f
+                                            // Drive each axis's spring toward its current squash target
+                                            val tgtY = m.scaleMulY - 1f
+                                            val tgtX = m.scaleMulX - 1f
+                                            val tgtZ = m.scaleMulZ - 1f
+                                            val aY = omegaJ * omegaJ * (tgtY - m.jiggleY) - 2f * zetaJ * omegaJ * m.jiggleVelY
+                                            val aX = omegaJ * omegaJ * (tgtX - m.jiggleX) - 2f * zetaJ * omegaJ * m.jiggleVelX
+                                            val aZ = omegaJ * omegaJ * (tgtZ - m.jiggleZ) - 2f * zetaJ * omegaJ * m.jiggleVelZ
+                                            m.jiggleVelY += aY * safeDtJ; m.jiggleY += m.jiggleVelY * safeDtJ
+                                            m.jiggleVelX += aX * safeDtJ; m.jiggleX += m.jiggleVelX * safeDtJ
+                                            m.jiggleVelZ += aZ * safeDtJ; m.jiggleZ += m.jiggleVelZ * safeDtJ
+                                            val jiggleGain = 0.5f * m.physicsAmount
+                                            m.scaleMulY *= 1f + jiggleGain * m.jiggleY
+                                            m.scaleMulX *= 1f + jiggleGain * m.jiggleX
+                                            m.scaleMulZ *= 1f + jiggleGain * m.jiggleZ
                                         } else {
                                             m.posX = px; m.posY = py; m.posZ = pz
                                             m.rotX = tqx; m.rotY = tqy; m.rotZ = tqz; m.rotW = tqw
