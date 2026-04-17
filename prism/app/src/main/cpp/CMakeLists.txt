@@ -8,6 +8,7 @@ add_library(openxr_input SHARED
     jni_bridge.cpp
     xr_renderer.cpp
     renderer_jni_bridge.cpp
+    xr_scene_occlusion.cpp
 )
 
 target_link_libraries(openxr_input

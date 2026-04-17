@@ -8,6 +8,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.ashairfoil.prism.scene.InputHandler
 import com.ashairfoil.prism.scene.SceneManager
+import com.ashairfoil.prism.scene.SceneOcclusionManager
 import com.ashairfoil.prism.scene.UiRenderer
 import com.ashairfoil.prism.scene.XrSensorPoller
 import java.io.File
@@ -86,6 +87,9 @@ class FilamentModelActivity : ComponentActivity() {
 
     // ── XR Sensor Poller (hand/eye/face tracking, planes, perf, passthrough) ──
     internal lateinit var sensorPoller: XrSensorPoller
+
+    // ── Real-world scene occlusion (placed 3D models blocked by furniture) ──
+    internal val sceneOcclusion = SceneOcclusionManager()
 
     // Sensor debug HUD
     @Volatile internal var sensorHudVisible = false
@@ -369,6 +373,26 @@ class FilamentModelActivity : ComponentActivity() {
                     }
                 }
             }
+            // Feed the raw plane buffer (with polygon vertices) into the
+            // real-world scene-occlusion manager so placed 3D models get
+            // visually blocked by detected furniture/walls.
+            sensorPoller.onRawPlaneBufferUpdated = { buffer, count ->
+                val gr = glesRenderer
+                val gridY = gr?.gridHeight ?: 0f
+                sceneOcclusion.onPlanesUpdated(buffer, count, gridY)
+            }
+            // Scene-occlusion extension availability: bit 3 of sensor caps
+            // (XR_ANDROID_trackables). Drives the "Real-world occlusion"
+            // menu checkbox greyed-out state.
+            val caps = nativeGetSensorCapabilities()
+            sceneOcclusion.isExtensionSupported = (caps and (1 shl 3)) != 0
+            sceneOcclusion.enabled = sceneOcclusion.isExtensionSupported &&
+                com.ashairfoil.prism.settings.SettingsManager.occlusionEnabled
+            // Occlusion piggy-backs on plane detection: when the user toggles
+            // "Room Track" in the menu (PARAM index 17), InputHandler flips
+            // sensorPoller.planeDetectionEnabled, which drives onRawPlaneBufferUpdated,
+            // which feeds sceneOcclusion. No auto-enable here — respect the
+            // user's room-tracking choice.
 
             foveationAvailable = nativeHasFoveation()
             foveationLevel = 0
@@ -416,6 +440,24 @@ class FilamentModelActivity : ComponentActivity() {
             }
             glesRenderer = renderer
             Log.i(TAG, "GLES renderer initialized")
+
+            // Install the depth-only scene occlusion hook so placed models are
+            // z-tested against detected real-world surfaces during renderEye().
+            // The native module is compiled/linked on first call below.
+            renderer.sceneOcclusionHook = { proj, view ->
+                sceneOcclusion.renderDepthOnly(proj, view)
+            }
+            if (sceneOcclusion.isExtensionSupported) {
+                if (sceneOcclusion.ensureInitialized()) {
+                    Log.i(TAG, "Scene occlusion: plane-polygon tier active (enabled=${sceneOcclusion.enabled})")
+                } else {
+                    Log.w(TAG, "Scene occlusion: native init failed; feature disabled")
+                    sceneOcclusion.enabled = false
+                }
+            } else {
+                Log.i(TAG, "Scene occlusion: extension unsupported — feature silently disabled")
+                sceneOcclusion.enabled = false
+            }
 
             // Initialize SceneManager now that the renderer is ready
             sceneManager = SceneManager(this@FilamentModelActivity, renderer).also { sm ->
@@ -1318,6 +1360,9 @@ class FilamentModelActivity : ComponentActivity() {
             renderThread?.interrupt()
             renderThread?.join(1000)
         }
+        // Release the scene-occlusion GL resources before tearing down the
+        // EGL context (native shader + VBO live in this context).
+        sceneOcclusion.shutdown()
         glesRenderer?.destroy()
         glesRenderer = null
         nativeRendererShutdown()

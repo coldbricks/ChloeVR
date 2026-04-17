@@ -1,4 +1,5 @@
 #include "xr_renderer.h"
+#include "xr_scene_occlusion.h"
 #include <jni.h>
 #include <mutex>
 
@@ -593,6 +594,109 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetRenderScale(
         JNIEnv* env, jobject thiz, jfloat scale) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_renderer) g_renderer->setRenderScale(scale);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Scene occlusion JNI — real-world surfaces block virtual models.
+// Hosts a separate module (chloe_vr::SceneOcclusion) so xr_renderer.cpp
+// stays focused on session/frame lifecycle. All methods are no-ops when
+// the module was never init'd or when enabled=false.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Call once from the render thread (after EGL is current) to compile the
+// shader and allocate buffers. Safe to call multiple times.
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionInit(
+        JNIEnv* env, jobject thiz) {
+    return chloe_vr::getSceneOcclusion().init() ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionShutdown(
+        JNIEnv* env, jobject thiz) {
+    chloe_vr::getSceneOcclusion().shutdown();
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionSetEnabled(
+        JNIEnv* env, jobject thiz, jboolean enabled) {
+    chloe_vr::getSceneOcclusion().setEnabled(enabled == JNI_TRUE);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionIsReady(
+        JNIEnv* env, jobject thiz) {
+    return chloe_vr::getSceneOcclusion().isReady() ? JNI_TRUE : JNI_FALSE;
+}
+
+// Upload plane-polygon geometry. `packedPlanes` is laid out exactly as
+// `CHLOE_OCC_FLOATS_PER_PLANE`-per-plane rows (75 floats each).
+// `planeCount` is the number of populated rows (0..MAX_PLANES).
+// `gridHeight` is the detected floor Y (used as a secondary safety filter).
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionUpdateGeometry(
+        JNIEnv* env, jobject thiz, jfloatArray packedPlanes, jint planeCount, jfloat gridHeight) {
+    if (packedPlanes == nullptr) {
+        chloe_vr::getSceneOcclusion().updateGeometry(nullptr, 0, gridHeight);
+        return;
+    }
+    jsize len = env->GetArrayLength(packedPlanes);
+    int maxRows = len / CHLOE_OCC_FLOATS_PER_PLANE;
+    int rows = planeCount;
+    if (rows < 0) rows = 0;
+    if (rows > maxRows) rows = maxRows;
+    if (rows > chloe_vr::SceneOcclusion::MAX_PLANES) {
+        rows = chloe_vr::SceneOcclusion::MAX_PLANES;
+    }
+    if (rows == 0) {
+        chloe_vr::getSceneOcclusion().updateGeometry(nullptr, 0, gridHeight);
+        return;
+    }
+
+    // Pin the Java array once to avoid per-element JNI overhead.
+    jfloat* data = env->GetFloatArrayElements(packedPlanes, nullptr);
+    if (data == nullptr) return;
+    chloe_vr::getSceneOcclusion().updateGeometry(data, rows, gridHeight);
+    env->ReleaseFloatArrayElements(packedPlanes, data, JNI_ABORT);
+}
+
+// Render the depth-only pass. Projection + view are column-major 4×4.
+// Must be called on the render thread with the target FBO already bound.
+// Returns true if the pass drew anything.
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionRenderDepth(
+        JNIEnv* env, jobject thiz, jfloatArray projection, jfloatArray viewMatrix) {
+    if (projection == nullptr || viewMatrix == nullptr) return JNI_FALSE;
+    jsize pLen = env->GetArrayLength(projection);
+    jsize vLen = env->GetArrayLength(viewMatrix);
+    if (pLen < 16 || vLen < 16) return JNI_FALSE;
+
+    float proj[16];
+    float view[16];
+    env->GetFloatArrayRegion(projection, 0, 16, proj);
+    env->GetFloatArrayRegion(viewMatrix, 0, 16, view);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
+    return chloe_vr::getSceneOcclusion().renderDepthOnly(proj, view) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Diagnostics (frame count, plane count, triangle count) for logging.
+JNIEXPORT jintArray JNICALL
+Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionDiagnostics(
+        JNIEnv* env, jobject thiz) {
+    jintArray out = env->NewIntArray(4);
+    if (out == nullptr) return nullptr;
+    auto& occ = chloe_vr::getSceneOcclusion();
+    jint values[4] = {
+        occ.isReady() ? 1 : 0,
+        (jint)occ.uploadedPlaneCount(),
+        (jint)occ.totalUploadedTriangles(),
+        (jint)occ.frameRenderCount(),
+    };
+    env->SetIntArrayRegion(out, 0, 4, values);
+    return out;
 }
 
 } // extern "C"
