@@ -210,7 +210,14 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         extensions.push_back("XR_FB_swapchain_update_state");
         foveationSupported_ = true;
         XR_LOGI("  + Foveated rendering (FB)");
-        // Don't request eye-tracked for now — may cause issues
+        // XR_META_foveation_eye_tracked depends on both the base FB foveation
+        // chain AND XR_ANDROID_eye_tracking. Both present → opt-in; the runtime
+        // will report supportsFoveationEyeTracked via system properties.
+        if (eyeTrackingSupported_ && hasExt(XR_META_FOVEATION_EYE_TRACKED_EXTENSION_NAME)) {
+            extensions.push_back(XR_META_FOVEATION_EYE_TRACKED_EXTENSION_NAME);
+            eyeTrackedFoveationExtEnabled_ = true;
+            XR_LOGI("  + Eye-tracked foveation (META)");
+        }
     }
 
     // Passthrough camera state
@@ -218,6 +225,15 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         passthroughStateSupported_ = true;
         extensions.push_back(XR_ANDROID_PASSTHROUGH_CAMERA_STATE_EXTENSION_NAME);
         XR_LOGI("  + Passthrough camera state");
+    }
+
+    // Performance settings — carries the thermal/CPU/GPU notification events we
+    // need for auto-downgrade. No function pointers required beyond what events
+    // deliver; the setPerformanceLevel call is optional and not used here.
+    if (hasExt(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME)) {
+        extensions.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
+        perfSettingsSupported_ = true;
+        XR_LOGI("  + Performance settings (thermal notifications)");
     }
 
     // Create instance
@@ -263,6 +279,15 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         }
     }
 
+    // Load the optional eye-tracked foveation state query. The chain structure
+    // (XrFoveationEyeTrackedProfileCreateInfoMETA) is all the runtime needs to
+    // enable gaze-driven foveation, but the state query lets us log whether it
+    // is actually active per frame for debugging. Missing is not fatal.
+    if (eyeTrackedFoveationExtEnabled_) {
+        xrGetInstanceProcAddr(instance_, "xrGetFoveationEyeTrackedStateMETA",
+            (PFN_xrVoidFunction*)&xrGetFoveationEyeTrackedState_);
+    }
+
     XR_LOGI("OpenXR rendering instance created");
     return true;
 }
@@ -272,6 +297,26 @@ bool XrRenderer::getSystem() {
     systemInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     XR_CHK(xrGetSystem(instance_, &systemInfo, &systemId_));
     XR_LOGI("OpenXR system acquired: %llu", (unsigned long long)systemId_);
+
+    // Probe the system for eye-tracked foveation support. If the extension was
+    // enabled but the underlying runtime / hardware does not actually support
+    // it, `supportsFoveationEyeTracked` will be XR_FALSE and we fall back to
+    // the static 30° cone via the FB foveation level profile only.
+    if (eyeTrackedFoveationExtEnabled_) {
+        XrSystemFoveationEyeTrackedPropertiesMETA eyeFovProps{
+            XR_TYPE_SYSTEM_FOVEATION_EYE_TRACKED_PROPERTIES_META};
+        XrSystemProperties sysProps{XR_TYPE_SYSTEM_PROPERTIES};
+        sysProps.next = &eyeFovProps;
+        XrResult spr = xrGetSystemProperties(instance_, systemId_, &sysProps);
+        if (XR_SUCCEEDED(spr)) {
+            eyeTrackedFoveationSupported_ =
+                (eyeFovProps.supportsFoveationEyeTracked == XR_TRUE);
+            XR_LOGI("Eye-tracked foveation supported by system: %d",
+                eyeTrackedFoveationSupported_ ? 1 : 0);
+        } else {
+            XR_LOGE("xrGetSystemProperties(eye-tracked fov) failed: %d — falling back to static cone", (int)spr);
+        }
+    }
 
     // Check environment blend modes
     uint32_t blendCount = 0;
@@ -657,6 +702,10 @@ void XrRenderer::handleSessionStateChange(XrSessionState newState) {
             XR_LOGI("xrBeginSession result: %d", (int)r);
             sessionReady_ = true;
             running_ = true;
+            // Lock the display refresh rate as early as possible — video
+            // playback judders if frames land outside the display window, and
+            // the runtime starts at the compositor's default until we request.
+            primeDisplayRefreshRate();
             XR_LOGI("Session begun and ready for frames");
             break;
         }
@@ -702,14 +751,47 @@ bool XrRenderer::waitFrame(FrameData& frame) {
 
     memset(&frame, 0, sizeof(frame));
 
-    // Process events
+    // Process events. We only log per-event type at most once each session
+    // transition; the refresh-rate and perf-settings events can fire on every
+    // thermal change and would otherwise spam logcat in thermal hot-loops.
     XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
     while (xrPollEvent(instance_, &event) == XR_SUCCESS) {
-        XR_LOGI("Event type: %d", (int)event.type);
-        if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
-            auto* stateEvent = (XrEventDataSessionStateChanged*)&event;
-            XR_LOGI("Session state changed to: %d", (int)stateEvent->state);
-            handleSessionStateChange(stateEvent->state);
+        switch (event.type) {
+            case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
+                auto* stateEvent = (XrEventDataSessionStateChanged*)&event;
+                XR_LOGI("Session state changed to: %d", (int)stateEvent->state);
+                handleSessionStateChange(stateEvent->state);
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB: {
+                auto* rr = (XrEventDataDisplayRefreshRateChangedFB*)&event;
+                XR_LOGI("Display refresh rate changed: %.2fHz -> %.2fHz",
+                    rr->fromDisplayRefreshRate, rr->toDisplayRefreshRate);
+                // Runtime may switch us to a lower rate under thermal load;
+                // remember the actual rate so Kotlin can reflect it in UI.
+                requestedRefreshRate_ = rr->toDisplayRefreshRate;
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT: {
+                auto* ps = (XrEventDataPerfSettingsEXT*)&event;
+                int dom = (ps->domain == XR_PERF_SETTINGS_DOMAIN_GPU_EXT) ? 1 : 0;
+                thermalLevel_[dom] = (int)ps->toLevel;
+                thermalEvent_.domain = dom;
+                thermalEvent_.fromLevel = (int)ps->fromLevel;
+                thermalEvent_.toLevel = (int)ps->toLevel;
+                XR_LOGI("Perf settings: domain=%s sub=%d level %d->%d",
+                    dom == 1 ? "GPU" : "CPU", (int)ps->subDomain,
+                    (int)ps->fromLevel, (int)ps->toLevel);
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_EVENTS_LOST: {
+                auto* el = (XrEventDataEventsLost*)&event;
+                XR_LOGE("Event queue overflow: %u events lost", el->lostEventCount);
+                break;
+            }
+            default:
+                XR_LOGI("Event type: %d", (int)event.type);
+                break;
         }
         event = {XR_TYPE_EVENT_DATA_BUFFER};
     }
@@ -792,8 +874,15 @@ bool XrRenderer::waitFrame(FrameData& frame) {
         frame.eyes[eye].imageIndex = imageIndex;
         frame.eyes[eye].pose = views[eye].pose;
         frame.eyes[eye].fov = views[eye].fov;
-        frame.eyes[eye].width = swapchainWidth_;
-        frame.eyes[eye].height = swapchainHeight_;
+        // Thermal auto-downgrade shrinks the viewport so the app renders to
+        // only the top-left sub-rect of the swapchain. renderScale_ stays
+        // exactly 1.0 outside the downgrade path, so non-thermal builds are
+        // unaffected. Kotlin reads these values for its glViewport call.
+        uint32_t effW = (uint32_t)(swapchainWidth_ * renderScale_);
+        uint32_t effH = (uint32_t)(swapchainHeight_ * renderScale_);
+        if (effW < 16) effW = 16; if (effH < 16) effH = 16;
+        frame.eyes[eye].width = effW;
+        frame.eyes[eye].height = effH;
 
         // Convert XR pose/fov to matrices
         xrPoseToViewMatrix(views[eye].pose, frame.eyes[eye].viewMatrix);
@@ -825,8 +914,12 @@ void XrRenderer::submitFrame(const FrameData& frame) {
             projViews[eye].fov = frame.eyes[eye].fov;
             projViews[eye].subImage.swapchain = swapchains_[eye];
             projViews[eye].subImage.imageRect.offset = {0, 0};
+            // Report the *rendered* sub-rect to the compositor. Under thermal
+            // downgrade this is smaller than the swapchain; the compositor
+            // will upscale the sub-rect to fill the display.
             projViews[eye].subImage.imageRect.extent = {
-                (int32_t)swapchainWidth_, (int32_t)swapchainHeight_};
+                (int32_t)frame.eyes[eye].width,
+                (int32_t)frame.eyes[eye].height};
             projViews[eye].subImage.imageArrayIndex = 0;
         }
 
@@ -1807,6 +1900,113 @@ int XrRenderer::getAvailableRefreshRates(float* out, int maxCount) {
     return (int)count;
 }
 
+void XrRenderer::primeDisplayRefreshRate() {
+    if (refreshRatePrimed_) return;
+    if (!refreshRateSupported_ || !xrEnumRefreshRates_ || !session_) return;
+
+    // Enumerate into our fixed-size cache (zero heap allocations).
+    uint32_t count = 0;
+    XrResult er = xrEnumRefreshRates_(session_, 0, &count, nullptr);
+    if (XR_FAILED(er) || count == 0) {
+        XR_LOGE("Display refresh rate enumeration returned 0 — leaving runtime default");
+        return;
+    }
+    uint32_t get = (count > (uint32_t)MAX_REFRESH_RATES) ? MAX_REFRESH_RATES : count;
+    er = xrEnumRefreshRates_(session_, get, &count, availableRefreshRates_);
+    if (XR_FAILED(er)) {
+        XR_LOGE("xrEnumerateDisplayRefreshRatesFB fill failed: %d", (int)er);
+        return;
+    }
+    availableRefreshRateCount_ = (int)get;
+
+    // Pick the target: preferred if supported, else the highest.
+    float target = 0.0f;
+    if (preferredRefreshRate_ > 0.0f) {
+        for (int i = 0; i < availableRefreshRateCount_; i++) {
+            // Match within 0.5Hz — runtimes sometimes report 89.97, 119.88, etc.
+            if (fabsf(availableRefreshRates_[i] - preferredRefreshRate_) < 0.5f) {
+                target = availableRefreshRates_[i];
+                break;
+            }
+        }
+    }
+    if (target == 0.0f) {
+        for (int i = 0; i < availableRefreshRateCount_; i++) {
+            if (availableRefreshRates_[i] > target) target = availableRefreshRates_[i];
+        }
+    }
+
+    char rateList[256];
+    int off = 0;
+    for (int i = 0; i < availableRefreshRateCount_ && off < (int)sizeof(rateList) - 8; i++) {
+        off += snprintf(rateList + off, sizeof(rateList) - off, "%.1f ",
+            availableRefreshRates_[i]);
+    }
+    XR_LOGI("Supported refresh rates (%d): %s — targeting %.2fHz",
+        availableRefreshRateCount_, rateList, target);
+
+    if (target > 0.0f && xrRequestRefreshRate_) {
+        XrResult rr = xrRequestRefreshRate_(session_, target);
+        if (XR_SUCCEEDED(rr)) {
+            requestedRefreshRate_ = target;
+            XR_LOGI("xrRequestDisplayRefreshRateFB(%.2f) OK", target);
+        } else {
+            // Samsung runtime sometimes returns ERROR_FEATURE_UNSUPPORTED for
+            // specific rates despite advertising them; don't abort, just log.
+            XR_LOGE("xrRequestDisplayRefreshRateFB(%.2f) failed: %d — keeping default",
+                target, (int)rr);
+        }
+    }
+    refreshRatePrimed_ = true;
+}
+
+bool XrRenderer::requestDisplayRefreshRate(float rate) {
+    // Store the preference so a subsequent primeDisplayRefreshRate() (e.g. if
+    // the session is torn down and re-READY'd) picks it up.
+    preferredRefreshRate_ = rate;
+
+    if (!refreshRateSupported_ || !xrRequestRefreshRate_ || !session_ || !sessionReady_) {
+        // Can't apply yet — stored preference will take effect once session is READY.
+        return false;
+    }
+
+    float target = rate;
+    if (target <= 0.0f) {
+        // Auto mode: highest available.
+        for (int i = 0; i < availableRefreshRateCount_; i++) {
+            if (availableRefreshRates_[i] > target) target = availableRefreshRates_[i];
+        }
+        if (target <= 0.0f) {
+            // Cache not populated yet — try a live enumeration once.
+            primeDisplayRefreshRate();
+            return requestedRefreshRate_ > 0.0f;
+        }
+    } else if (availableRefreshRateCount_ > 0) {
+        // Snap to a supported rate; otherwise the runtime will reject the call.
+        bool found = false;
+        for (int i = 0; i < availableRefreshRateCount_; i++) {
+            if (fabsf(availableRefreshRates_[i] - target) < 0.5f) {
+                target = availableRefreshRates_[i];
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            XR_LOGE("Requested rate %.1fHz not in supported set; ignoring", rate);
+            return false;
+        }
+    }
+
+    XrResult rr = xrRequestRefreshRate_(session_, target);
+    if (XR_SUCCEEDED(rr)) {
+        requestedRefreshRate_ = target;
+        XR_LOGI("requestDisplayRefreshRate(%.2f) OK", target);
+        return true;
+    }
+    XR_LOGE("requestDisplayRefreshRate(%.2f) failed: %d", target, (int)rr);
+    return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // ── Performance Metrics ──
 // ═══════════════════════════════════════════════════════════════════════
@@ -2037,4 +2237,72 @@ void XrRenderer::setFoveationLevel(int level) {
     foveationLevel_ = level;
 
     XR_LOGI("Foveation set to level %d%s", level, eyeTrackedFoveation_ ? " (eye-tracked)" : "");
+
+    // Best-effort: log whether the runtime is actually driving the profile
+    // from gaze. Non-allocating; state struct is on the stack.
+    if (eyeTrackedFoveation_ && xrGetFoveationEyeTrackedState_) {
+        XrFoveationEyeTrackedStateMETA st{XR_TYPE_FOVEATION_EYE_TRACKED_STATE_META};
+        XrResult sr = xrGetFoveationEyeTrackedState_(session_, &st);
+        if (XR_SUCCEEDED(sr)) {
+            bool valid = (st.flags & XR_FOVEATION_EYE_TRACKED_STATE_VALID_BIT_META) != 0;
+            XR_LOGI("Eye-tracked foveation state: valid=%d center[0]=(%.2f,%.2f)",
+                valid ? 1 : 0, st.foveationCenter[0].x, st.foveationCenter[0].y);
+        }
+    }
+}
+
+bool XrRenderer::setEyeTrackedFoveation(bool enabled) {
+    // Capability gate: must have the extension enabled, the system must have
+    // reported support, and eye tracking itself must be available. Any missing
+    // link → silently force false; the caller reads back state from the return.
+    bool effective = enabled &&
+                     eyeTrackedFoveationExtEnabled_ &&
+                     eyeTrackedFoveationSupported_ &&
+                     eyeTrackingSupported_;
+
+    if (effective == eyeTrackedFoveation_) return effective;
+
+    eyeTrackedFoveation_ = effective;
+    XR_LOGI("Eye-tracked foveation preference: %d (effective=%d)", enabled ? 1 : 0, effective ? 1 : 0);
+
+    // If a profile is already active, rebuild it so the new setting takes
+    // effect. Force rebuild by temporarily clearing foveationLevel_ then
+    // re-applying the same level (setFoveationLevel early-outs if unchanged).
+    if (foveationLevel_ > 0) {
+        int lvl = foveationLevel_;
+        foveationLevel_ = -1; // force rebuild
+        setFoveationLevel(lvl);
+    }
+    return effective;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ── Thermal / perf-settings consumers ──
+// ═══════════════════════════════════════════════════════════════════════
+
+int XrRenderer::getThermalNotificationLevel(int domain) const {
+    if (domain < 0 || domain > 1) return 0;
+    return thermalLevel_[domain];
+}
+
+bool XrRenderer::consumeThermalEvent(int* outDomain, int* outFromLevel, int* outToLevel) {
+    if (thermalEvent_.domain < 0) return false;
+    if (outDomain) *outDomain = thermalEvent_.domain;
+    if (outFromLevel) *outFromLevel = thermalEvent_.fromLevel;
+    if (outToLevel) *outToLevel = thermalEvent_.toLevel;
+    thermalEvent_.domain = -1; // mark consumed
+    return true;
+}
+
+void XrRenderer::setRenderScale(float scale) {
+    // Clamp to a safe band — below 0.5 the bilinear upscale looks blurry even
+    // on a VR headset, above 1.0 would overflow swapchain dimensions.
+    if (scale < 0.5f) scale = 0.5f;
+    if (scale > 1.0f) scale = 1.0f;
+    if (scale == renderScale_) return;
+    renderScale_ = scale;
+    XR_LOGI("Render scale set to %.2f (%dx%d effective)",
+        scale,
+        (int)(swapchainWidth_ * scale),
+        (int)(swapchainHeight_ * scale));
 }

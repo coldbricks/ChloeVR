@@ -169,6 +169,22 @@ class FilamentModelActivity : ComponentActivity() {
     private var beatWashAlpha = 0f
     @Volatile internal var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     @Volatile internal var foveationAvailable = false
+    @Volatile internal var eyeTrackedFoveationAvailable = false
+    @Volatile internal var perfSettingsAvailable = false
+
+    // ── Thermal auto-downgrade state ───────────────────────────────────
+    // Stages: 0=normal, 1=effects-disabled, 2=refresh-reduced, 3=resolution-reduced
+    @Volatile internal var thermalStage = 0
+    @Volatile internal var thermalNotificationLevel = 0  // latest XrPerfSettingsNotificationLevelEXT (max across domains)
+    // Per-frame recovery cooldown: stay in downgraded state for at least N
+    // frames after dropping to a stage, so we don't oscillate when thermal
+    // state hovers right at the threshold.
+    private var thermalCooldownFrames = 0
+    // Saved values so we can restore on recovery
+    private var savedRefreshRatePref = 0
+    private var savedFoveationLevel = 0
+    /** Optional UI callback — Activity can set this to update a thermometer icon. */
+    @Volatile internal var onThermalStageChanged: ((stage: Int, level: Int) -> Unit)? = null
     internal var beatToggleLatch = false
     internal var foveationToggleLatch = false
     internal var planeVisToggleLatch = false
@@ -336,6 +352,40 @@ class FilamentModelActivity : ComponentActivity() {
             foveationLevel = 0
             Log.i(TAG, "Foveation available: $foveationAvailable")
 
+            // ── Frame-pacing lock (A) ─────────────────────────────────
+            // Apply the user's preferred refresh rate (0 = auto = highest).
+            // primeDisplayRefreshRate() in the native layer fires on session
+            // READY regardless; this call re-applies once Kotlin settings are
+            // available so e.g. a user-selected 90Hz sticks on resume.
+            runCatching {
+                val rates = nativeGetAvailableRefreshRates()
+                if (rates.isNotEmpty()) {
+                    Log.i(TAG, "Supported refresh rates: ${rates.joinToString()}")
+                    val pref = com.ashairfoil.prism.settings.SettingsManager.displayRefreshRate
+                    val ok = nativeRequestDisplayRefreshRate(pref.toFloat())
+                    Log.i(TAG, "Requested refresh rate ${if (pref == 0) "auto" else pref.toString()}Hz: $ok (active=${nativeGetDisplayRefreshRate()})")
+                } else {
+                    Log.w(TAG, "No display refresh rate control available on this runtime")
+                }
+            }.onFailure { Log.w(TAG, "Refresh-rate setup failed: ${it.message}") }
+
+            // ── Eye-tracked foveation (B) ─────────────────────────────
+            // The runtime chains gaze data into the foveation profile when
+            // XR_META_foveation_eye_tracked + XR_ANDROID_eye_tracking are both
+            // active. We just flip the preference flag; setFoveationLevelSafe()
+            // rebuilds the profile with the new chain on the next call.
+            runCatching {
+                val hasEyeFov = nativeHasEyeTrackedFoveation()
+                eyeTrackedFoveationAvailable = hasEyeFov
+                val pref = com.ashairfoil.prism.settings.SettingsManager.eyeTrackedFoveation
+                val effective = nativeSetEyeTrackedFoveation(pref && hasEyeFov)
+                Log.i(TAG, "Eye-tracked foveation: supported=$hasEyeFov pref=$pref effective=$effective")
+            }
+
+            // ── Thermal / perf-settings (C) ───────────────────────────
+            perfSettingsAvailable = runCatching { nativeHasPerfSettings() }.getOrDefault(false)
+            Log.i(TAG, "Perf-settings extension: $perfSettingsAvailable")
+
             val renderer = GlesModelRenderer()
             if (!renderer.init()) {
                 Log.e(TAG, "Failed to initialize GLES renderer")
@@ -425,6 +475,122 @@ class FilamentModelActivity : ComponentActivity() {
             return false
         }
         return true
+    }
+
+    /**
+     * Drain any pending thermal events from the native layer and step the
+     * auto-downgrade state machine. Call at most once per render frame.
+     *
+     * Stages:
+     *  1. disable bloom (the only expensive effect in this activity)
+     *  2. drop refresh rate one tier
+     *  3. reduce swapchain render scale to 0.75x
+     *
+     * On recovery (level NORMAL sustained for ~600 frames) we step back up.
+     */
+    internal fun updateThermalDowngrade() {
+        if (!perfSettingsAvailable) return
+        if (!com.ashairfoil.prism.settings.SettingsManager.thermalAutoDowngrade) return
+
+        // Consume events — int packing: -1 = no event, else (domain<<16 | from<<8 | to)
+        var newLevel = thermalNotificationLevel
+        while (true) {
+            val ev = nativeConsumeThermalEvent()
+            if (ev < 0) break
+            val to = ev and 0xFF
+            val dom = (ev shr 16) and 0xFF
+            if (to > newLevel) newLevel = to
+            // Continuous poll of current level ensures recovery logic sees drops too
+            val cur = nativeGetThermalLevel(dom)
+            if (cur > newLevel) newLevel = cur
+        }
+        // Also sample current levels even when no event arrived (runtimes
+        // sometimes fire once and we rely on polling thereafter)
+        val cpu = nativeGetThermalLevel(0)
+        val gpu = nativeGetThermalLevel(1)
+        val currentMax = maxOf(cpu, gpu)
+        if (currentMax > newLevel) newLevel = currentMax
+
+        if (newLevel != thermalNotificationLevel) {
+            thermalNotificationLevel = newLevel
+            Log.i(TAG, "Thermal level: $newLevel (CPU=$cpu GPU=$gpu)")
+        }
+
+        val warn = newLevel >= 25 // WARNING_EXT
+        val impaired = newLevel >= 75 // IMPAIRED_EXT
+
+        // Decide target stage. IMPAIRED → stage 3; WARNING → stage 1; NORMAL → 0.
+        // We never jump more than one stage per call to avoid visual shock.
+        val targetStage = when {
+            impaired -> 3
+            warn -> 1
+            else -> 0
+        }
+
+        if (targetStage > thermalStage) {
+            // Step up by one
+            val next = (thermalStage + 1).coerceAtMost(targetStage)
+            applyThermalStage(next)
+            thermalCooldownFrames = 600 // ~5s at 120Hz, ~8s at 72Hz
+        } else if (targetStage < thermalStage) {
+            // Only recover after cooldown
+            if (thermalCooldownFrames > 0) {
+                thermalCooldownFrames--
+            } else {
+                val next = (thermalStage - 1).coerceAtLeast(targetStage)
+                applyThermalStage(next)
+                thermalCooldownFrames = 300
+            }
+        } else if (thermalCooldownFrames > 0) {
+            thermalCooldownFrames--
+        }
+    }
+
+    private fun applyThermalStage(stage: Int) {
+        if (stage == thermalStage) return
+        val prev = thermalStage
+        thermalStage = stage
+        Log.i(TAG, "Thermal downgrade stage: $prev -> $stage (notif=$thermalNotificationLevel)")
+        val gr = glesRenderer
+        when (stage) {
+            0 -> {
+                // Recovery — restore everything in reverse order.
+                // Restore resolution
+                nativeSetRenderScale(1.0f)
+                // Restore refresh rate
+                nativeRequestDisplayRefreshRate(savedRefreshRatePref.toFloat())
+                // Restore effects
+                gr?.bloomEnabled = true
+                // Restore foveation to user-selected level
+                if (savedFoveationLevel != foveationLevel) setFoveationLevelSafe(savedFoveationLevel)
+            }
+            1 -> {
+                // Stage 1: disable effects (here: bloom) and bump foveation up
+                // to high so GPU is freed immediately.
+                savedFoveationLevel = foveationLevel
+                gr?.bloomEnabled = false
+                if (foveationLevel < 3) setFoveationLevelSafe(3)
+            }
+            2 -> {
+                // Stage 2: drop refresh rate one tier.
+                val rates = nativeGetAvailableRefreshRates().sortedArray()
+                if (rates.isNotEmpty()) {
+                    savedRefreshRatePref =
+                        com.ashairfoil.prism.settings.SettingsManager.displayRefreshRate
+                    val current = nativeGetDisplayRefreshRate()
+                    // Next lower rate from current, or the lowest if current not found.
+                    val lower = rates.filter { it < current - 0.5f }.maxOrNull() ?: rates.first()
+                    if (lower > 0f && lower < current - 0.5f) {
+                        nativeRequestDisplayRefreshRate(lower)
+                    }
+                }
+            }
+            3 -> {
+                // Stage 3: reduce swapchain resolution.
+                nativeSetRenderScale(0.75f)
+            }
+        }
+        onThermalStageChanged?.invoke(stage, thermalNotificationLevel)
     }
 
     private fun getScenesDir(): File = sceneManager.getScenesDir()
@@ -921,6 +1087,13 @@ class FilamentModelActivity : ComponentActivity() {
                 if (sensorPollFrame % 3 == 0) {
                     sensorPoller.poll(sensorPollFrame)
                 }
+                // Thermal auto-downgrade check (every 60 frames ≈ 0.5s @120Hz).
+                // We only need to drain events on this cadence — events are
+                // coalesced inside the native event loop and the latest levels
+                // remain queryable between checks.
+                if (sensorPollFrame % 60 == 0) {
+                    updateThermalDowngrade()
+                }
                 // Build debug string (every 10 frames when HUD visible)
                 if (sensorHudVisible && sensorPollFrame % 10 == 0) {
                     sensorDebugStr = sensorPoller.buildDebugString(sensorHub, xrLightEstimateAvailable, xrLightDebugStr)
@@ -1164,4 +1337,34 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeGetFoveationLevel(): Int
     private external fun nativeIsFocused(): Boolean
     private external fun nativeIsUsingStageSpace(): Boolean
+
+    // Display refresh rate (frame-pacing lock)
+    private external fun nativeGetAvailableRefreshRates(): FloatArray
+    private external fun nativeGetDisplayRefreshRate(): Float
+    private external fun nativeRequestDisplayRefreshRate(rateHz: Float): Boolean
+
+    // Eye-tracked foveation
+    private external fun nativeHasEyeTrackedFoveation(): Boolean
+    private external fun nativeSetEyeTrackedFoveation(enabled: Boolean): Boolean
+    private external fun nativeIsEyeTrackedFoveationEnabled(): Boolean
+
+    // Thermal / perf-settings
+    private external fun nativeHasPerfSettings(): Boolean
+    private external fun nativeConsumeThermalEvent(): Int
+    private external fun nativeGetThermalLevel(domain: Int): Int
+    private external fun nativeGetRenderScale(): Float
+    private external fun nativeSetRenderScale(scale: Float)
+
+    // Public wrappers (internal) so other classes can invoke without triggering
+    // Kotlin's `$app_debug` mangling on private external JNI symbols.
+    internal fun jniGetAvailableRefreshRates(): FloatArray = nativeGetAvailableRefreshRates()
+    internal fun jniGetDisplayRefreshRate(): Float = nativeGetDisplayRefreshRate()
+    internal fun jniRequestDisplayRefreshRate(rate: Float): Boolean = nativeRequestDisplayRefreshRate(rate)
+    internal fun jniHasEyeTrackedFoveation(): Boolean = nativeHasEyeTrackedFoveation()
+    internal fun jniSetEyeTrackedFoveation(enabled: Boolean): Boolean = nativeSetEyeTrackedFoveation(enabled)
+    internal fun jniHasPerfSettings(): Boolean = nativeHasPerfSettings()
+    internal fun jniConsumeThermalEvent(): Int = nativeConsumeThermalEvent()
+    internal fun jniGetThermalLevel(domain: Int): Int = nativeGetThermalLevel(domain)
+    internal fun jniGetRenderScale(): Float = nativeGetRenderScale()
+    internal fun jniSetRenderScale(scale: Float) = nativeSetRenderScale(scale)
 }

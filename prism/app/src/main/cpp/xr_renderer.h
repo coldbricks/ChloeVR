@@ -129,6 +129,11 @@ public:
     // ── Display refresh rate ──
     float getDisplayRefreshRate();
     int getAvailableRefreshRates(float* out, int maxCount);
+    // Request a specific refresh rate (Hz). Passing 0 selects the highest supported
+    // rate automatically. Called after session is READY; safe to call any time
+    // thereafter (a no-op if unsupported or session not yet running).
+    bool requestDisplayRefreshRate(float rate);
+    float getRequestedDisplayRefreshRate() const { return requestedRefreshRate_; }
 
     // ── Performance metrics ──
     struct PerfMetrics {
@@ -144,6 +149,19 @@ public:
     // ── Passthrough state ──
     int getPassthroughState(); // 0=disabled, 1=initializing, 2=enabled
 
+    // ── Thermal / perf-settings notifications ──
+    // Highest thermal notification level seen for each domain (CPU=0, GPU=1).
+    // Value matches XrPerfSettingsNotificationLevelEXT (0=normal, 25=warning, 75=impaired).
+    int getThermalNotificationLevel(int domain) const;
+    // Consume the latest perf-settings event; returns true if one was available
+    // and fills out domain + level. Non-allocating: one event per call.
+    bool consumeThermalEvent(int* outDomain, int* outFromLevel, int* outToLevel);
+    bool hasPerfSettings() const { return perfSettingsSupported_; }
+    // Effective render scale (1.0 = full resolution). Thermal auto-downgrade may
+    // reduce this via setRenderScale; Kotlin reads it per-frame to set viewport.
+    float getRenderScale() const { return renderScale_; }
+    void setRenderScale(float scale);
+
     // ── Extension availability ──
     bool hasHandTracking() const { return handTrackingSupported_; }
     bool hasEyeTracking() const { return eyeTrackingSupported_; }
@@ -153,8 +171,13 @@ public:
     bool hasPerfMetrics() const { return perfMetricsSupported_; }
     bool hasPassthroughState() const { return passthroughStateSupported_; }
     bool hasFoveation() const { return foveationSupported_; }
+    bool hasEyeTrackedFoveation() const { return eyeTrackedFoveationSupported_; }
     void setFoveationLevel(int level); // 0=off, 1=low, 2=medium, 3=high
     int getFoveationLevel() const { return foveationLevel_; }
+    // Toggle eye-tracked foveation on subsequent setFoveationLevel calls.
+    // Returns the actual state (may be forced false if system lacks support).
+    bool setEyeTrackedFoveation(bool enabled);
+    bool isEyeTrackedFoveationEnabled() const { return eyeTrackedFoveation_; }
 
     // UI quad
     bool initUiQuad(uint32_t width, uint32_t height);
@@ -291,6 +314,15 @@ private:
     PFN_xrEnumerateDisplayRefreshRatesFB xrEnumRefreshRates_ = nullptr;
     PFN_xrGetDisplayRefreshRateFB xrGetRefreshRate_ = nullptr;
     PFN_xrRequestDisplayRefreshRateFB xrRequestRefreshRate_ = nullptr;
+    // Cached list of supported rates populated once the session is running.
+    // Fixed-size to avoid per-frame allocations.
+    static constexpr int MAX_REFRESH_RATES = 16;
+    float availableRefreshRates_[MAX_REFRESH_RATES] = {};
+    int availableRefreshRateCount_ = 0;
+    float requestedRefreshRate_ = 0.0f; // last value passed to xrRequestDisplayRefreshRateFB
+    float preferredRefreshRate_ = 0.0f; // 0 = auto/highest
+    bool refreshRatePrimed_ = false;    // true after first xrRequest at session start
+    void primeDisplayRefreshRate();     // called once session enters READY
 
     // ── Performance metrics ──
     bool perfMetricsSupported_ = false;
@@ -304,19 +336,40 @@ private:
 
     // ── Foveated rendering ──
     bool foveationSupported_ = false;
-    bool eyeTrackedFoveation_ = false;
+    bool eyeTrackedFoveation_ = false;             // user preference (may be off even if supported)
+    bool eyeTrackedFoveationSupported_ = false;    // system-capability flag (runtime + eye tracking available)
+    bool eyeTrackedFoveationExtEnabled_ = false;   // XR_META_foveation_eye_tracked successfully enabled
     bool foveationSwapchainConfigured_ = false;
     int foveationLevel_ = 0; // 0=off, 1=low, 2=med, 3=high
     XrFoveationProfileFB foveationProfile_ = XR_NULL_HANDLE;
     PFN_xrCreateFoveationProfileFB xrCreateFoveationProfileFB_ = nullptr;
     PFN_xrDestroyFoveationProfileFB xrDestroyFoveationProfileFB_ = nullptr;
     PFN_xrUpdateSwapchainFB xrUpdateSwapchainFB_ = nullptr;
+    PFN_xrGetFoveationEyeTrackedStateMETA xrGetFoveationEyeTrackedState_ = nullptr;
 
     // ── Performance metrics state ──
     bool metricsEnabled_ = false;
 
     // ── Passthrough camera state ──
     bool passthroughStateSupported_ = false;
+
+    // ── Thermal notifications via XR_EXT_performance_settings ──
+    bool perfSettingsSupported_ = false;
+    // Latest notification level by domain (0=CPU, 1=GPU). Uses the
+    // XrPerfSettingsNotificationLevelEXT enum values directly.
+    int thermalLevel_[2] = {0, 0};
+    // Single-slot ring so Kotlin can consume one perf-settings event per call
+    // without allocating. Populated in waitFrame() event drain.
+    struct ThermalEventSlot {
+        int domain = -1;   // -1 = empty
+        int fromLevel = 0;
+        int toLevel = 0;
+    } thermalEvent_;
+
+    // ── Render-scale factor (for thermal downgrade stage 3) ──
+    // 1.0 = full swapchain resolution, < 1.0 = smaller viewport (renders to a
+    // sub-rect of the swapchain; composition layer rect is reported accordingly).
+    float renderScale_ = 1.0f;
 
     // Actions (controller input) — same structure as OpenXRInput
     XrActionSet actionSet_ = XR_NULL_HANDLE;
