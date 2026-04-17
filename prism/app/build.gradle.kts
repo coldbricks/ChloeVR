@@ -90,30 +90,30 @@ dependencies {
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.49")
 
     // Filament (direct 3D rendering for UNMANAGED mode model viewer)
-    implementation("com.google.android.filament:filament-android:1.69.5")
-    implementation("com.google.android.filament:gltfio-android:1.69.5")
-    implementation("com.google.android.filament:filament-utils-android:1.69.5")
+    implementation("com.google.android.filament:filament-android:1.71.0")
+    implementation("com.google.android.filament:gltfio-android:1.71.0")
+    implementation("com.google.android.filament:filament-utils-android:1.71.0")
 
     // Media3 (ExoPlayer)
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-common:1.5.1")
-    implementation("androidx.media3:media3-effect:1.5.1")
+    implementation("androidx.media3:media3-exoplayer:1.9.3")
+    implementation("androidx.media3:media3-common:1.9.3")
+    implementation("androidx.media3:media3-effect:1.9.3")
 
     // AndroidX core
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 
     // Security (encrypted shared preferences for auth tokens)
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // alpha06 required for MasterKey.Builder; pin to this version
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("io.mockk:mockk:1.13.10")
     testImplementation("org.robolectric:robolectric:4.12")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     testImplementation("org.json:json:20231013")
 }
