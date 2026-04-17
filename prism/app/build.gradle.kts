@@ -95,9 +95,9 @@ dependencies {
     implementation("com.google.android.filament:filament-utils-android:1.69.5")
 
     // Media3 (ExoPlayer)
-    implementation("androidx.media3:media3-exoplayer:1.5.1")
-    implementation("androidx.media3:media3-common:1.5.1")
-    implementation("androidx.media3:media3-effect:1.5.1")
+    implementation("androidx.media3:media3-exoplayer:1.9.3")
+    implementation("androidx.media3:media3-common:1.9.3")
+    implementation("androidx.media3:media3-effect:1.9.3")
 
     // AndroidX core
     implementation("androidx.core:core-ktx:1.16.0")
