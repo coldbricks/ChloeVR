@@ -100,9 +100,9 @@ dependencies {
     implementation("androidx.media3:media3-effect:1.5.1")
 
     // AndroidX core
-    implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.4")
 
     // Security (encrypted shared preferences for auth tokens)
     implementation("androidx.security:security-crypto:1.1.0-alpha06") // alpha06 required for MasterKey.Builder; pin to this version
