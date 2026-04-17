@@ -102,6 +102,14 @@ class GlesModelRenderer {
     var shadowPlanes: List<ShadowPlane> = emptyList()
     var occlusionEnabled = true  // room planes above floor block model rendering
 
+    /**
+     * Optional hook invoked from [renderEye] right before the model color
+     * pass, with the current eye's projection and view matrices. Intended
+     * for the real-world scene-occlusion manager to issue its depth-only
+     * pre-pass using the same FBO / depth attachment. Set by the activity.
+     */
+    var sceneOcclusionHook: ((projection: FloatArray, viewMatrix: FloatArray) -> Unit)? = null
+
     // Laser resources
     private var laserProgramId = 0
     private var laserVao = 0
@@ -1176,6 +1184,11 @@ class GlesModelRenderer {
         // Room occlusion: write detected planes to depth buffer (no color)
         // so real-world surfaces (walls, tables) block model rendering
         renderOcclusionPlanes(projection, viewMatrix)
+
+        // Real-world scene-mesh occlusion (native polygon-plane depth pass).
+        // Runs alongside the coarse rectangular occlusion above; the native
+        // path uses polygon vertices for better-fitting occluders.
+        sceneOcclusionHook?.invoke(projection, viewMatrix)
 
         if (models.isEmpty()) { frameCount++; return }
 

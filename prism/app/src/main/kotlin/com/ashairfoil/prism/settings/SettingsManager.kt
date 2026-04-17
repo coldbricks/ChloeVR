@@ -70,6 +70,9 @@ object SettingsManager {
     private const val KEY_DEPTH_SIM_ENABLED = "depth_sim_enabled"
     private const val KEY_SPATIAL_AUDIO_ENABLED = "spatial_audio_enabled"
 
+    // Real-world scene occlusion (placed 3D models get culled by furniture)
+    private const val KEY_OCCLUSION_ENABLED = "occlusion_enabled"
+
     // Screen curvature — stored per projection type
     private const val KEY_SCREEN_CURVATURE = "screen_curvature_"
 
@@ -392,6 +395,15 @@ object SettingsManager {
     var spatialAudioEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_SPATIAL_AUDIO_ENABLED, false) }
         set(v) { ensureInit(); prefs.edit().putBoolean(KEY_SPATIAL_AUDIO_ENABLED, v).apply() }
+
+    // ── Real-world scene occlusion ───────────────────────────────────────
+    // When enabled, detected room planes (walls/furniture) write into the
+    // depth buffer before placed 3D models render, so the passthrough
+    // camera shows through parts of the model that are behind real surfaces.
+
+    var occlusionEnabled: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_OCCLUSION_ENABLED, true) }
+        set(v) { ensureInit(); prefs.edit().putBoolean(KEY_OCCLUSION_ENABLED, v).apply() }
 
     // ── Favorite folders ────────────────────────────────────────────────
     // Stored as newline-separated paths

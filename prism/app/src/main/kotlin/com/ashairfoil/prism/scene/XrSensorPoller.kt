@@ -67,6 +67,18 @@ class XrSensorPoller(
     var onPlanesUpdated: ((planes: List<GlesModelRenderer.ShadowPlane>, lowestHorizY: Float) -> Unit)? = null
 
     /**
+     * Secondary callback that exposes the raw [planeBuffer] and the count
+     * of populated plane entries. Consumers can read polygon vertex data
+     * directly from the buffer (per-plane stride = 76 floats, layout matches
+     * `XrRenderer::PlaneData` in C++). Used by the real-world scene-occlusion
+     * manager which needs the full polygon contour, not just the rectangle.
+     *
+     * Fires on the same cadence as [onPlanesUpdated] (every 10 frames when
+     * plane detection is enabled).
+     */
+    var onRawPlaneBufferUpdated: ((buffer: FloatArray, planeCount: Int) -> Unit)? = null
+
+    /**
      * Poll all XR sensors. Call from the render loop (typically every few frames).
      * [frameCount] is the monotonically increasing sensor-poll frame counter.
      */
@@ -147,6 +159,7 @@ class XrSensorPoller(
                     }
 
                     onPlanesUpdated?.invoke(ArrayList(reusablePlanes), lowestHorizY)
+                    onRawPlaneBufferUpdated?.invoke(planeBuffer, detectedPlaneCount)
                 }
             }
         }
