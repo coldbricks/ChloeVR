@@ -16,6 +16,47 @@ class SceneManager(
 ) {
     companion object {
         private const val TAG = "ChloeVR-SceneManager"
+
+        /** Apply an easing curve to t in [0, 1]. Returns eased value in [0, 1]
+         *  (or slightly beyond for BACK, which intentionally overshoots). */
+        fun applyEase(t: Float, ease: DanceEase): Float {
+            val tt = t.coerceIn(0f, 1f)
+            return when (ease) {
+                DanceEase.SINE -> 0.5f - 0.5f * kotlin.math.cos(Math.PI * tt).toFloat()
+                DanceEase.LINEAR -> tt
+                DanceEase.CUBIC -> tt * tt * (3f - 2f * tt)  // smoothstep
+                DanceEase.EXPO -> {
+                    // Ease-in-out expo: near-flat middle, sharp peaks
+                    if (tt < 0.5f) Math.pow(2.0, 20.0 * tt - 10.0).toFloat() / 2f
+                    else (2f - Math.pow(2.0, -20.0 * tt + 10.0).toFloat()) / 2f
+                }
+                DanceEase.CIRC -> {
+                    if (tt < 0.5f) (1f - kotlin.math.sqrt(1f - (2f * tt) * (2f * tt))) / 2f
+                    else (kotlin.math.sqrt(1f - (-2f * tt + 2f).let { it * it }) + 1f) / 2f
+                }
+                DanceEase.BACK -> {
+                    val c1 = 1.70158f
+                    val c2 = c1 * 1.525f
+                    if (tt < 0.5f) (2f * tt).let { it * it * ((c2 + 1f) * 2f * it - c2) } / 2f
+                    else ((2f * tt - 2f).let { it * it * ((c2 + 1f) * it + c2) } + 2f) / 2f
+                }
+            }
+        }
+
+        /** Evaluate the dance waveform at phase (0..1). Returns signed amplitude
+         *  in ~[-1, +1]. Swing: 0 → +1 → 0 → -1 → 0 per cycle, eased per quarter. */
+        fun waveAt(phase: Float, ease: DanceEase): Float {
+            val p = ((phase % 1f) + 1f) % 1f
+            val q = (p * 4f).toInt().coerceIn(0, 3)
+            val t = (p * 4f) - q
+            val eased = applyEase(t, ease)
+            return when (q) {
+                0 -> eased
+                1 -> 1f - eased
+                2 -> -eased
+                else -> -1f + eased
+            }
+        }
     }
 
     // ── PlacedModel ──
@@ -25,7 +66,7 @@ class SceneManager(
         val asset: Any?,
         var gpuModelId: Int = -1,
         var scale: Float = 1f,
-        val baseScale: Float = 1f,
+        var baseScale: Float = 1f,
         var posX: Float = 0f,
         var posY: Float = 0f,
         var posZ: Float = -1f,
@@ -45,8 +86,65 @@ class SceneManager(
         var anchorUuid: ByteArray? = null,
         // Pending client handle from submitCreate — matches against CreateEvent later.
         // Not persisted; reset each session.
-        var pendingAnchorHandle: Int = -1
+        var pendingAnchorHandle: Int = -1,
+        // Preview-only models float above the menu panel for inspection before the
+        // user commits them to the scene. Skipped by hover/grab/gizmo and never
+        // anchored. Flipped off by "Add to scene" in the GLB picker.
+        var isPreview: Boolean = false,
+        // Beat-driven pose animation: lerp between poseA and poseB each frame,
+        // driven by audioReactor.boxFillPct. When both anchors are set, the model
+        // oscillates in time with the beat. `animResponse` scales the amplitude.
+        var animHasA: Boolean = false,
+        var animHasB: Boolean = false,
+        var animResponse: Float = 1f,
+        val animPoseA: FloatArray = FloatArray(7),   // px,py,pz,rx,ry,rz,rw
+        val animPoseB: FloatArray = FloatArray(7),
+        // ── Multi-axis DANCE mode ──
+        // Captures a single base pose and layers sinusoidal oscillation on top
+        // of it along independent axes. Each axis can run at its own tempo
+        // subdivision (set via danceYawRate etc.) so booty shakes at 1/16 while
+        // the bend happens at 1/4. When any amplitude is non-zero + animHasBase
+        // is true, dance takes priority over the A/B shake above.
+        var animHasBase: Boolean = false,
+        val animBasePose: FloatArray = FloatArray(7),
+        var danceYawDeg: Float = 0f,
+        var danceYawRate: Int = 8,
+        var dancePitchDeg: Float = 0f,
+        var dancePitchRate: Int = 4,
+        var danceYMeters: Float = 0f,
+        var danceYRate: Int = 2,
+        // Per-axis phase offsets (0..1). Shuffle randomises these so moves
+        // don't all peak at the exact same instant.
+        var danceYawPhase: Float = 0f,
+        var dancePitchPhase: Float = 0.25f,
+        var danceYPhase: Float = 0f,
+        // Easing curve applied to each quarter of the oscillation. Default SINE
+        // is the smoothest / most neutral; BACK adds an overshoot for attitude,
+        // EXPO for a punchy "whip then hold" snap, LINEAR for robotic metronome.
+        var danceEase: DanceEase = DanceEase.SINE,
+        // IMPROV: when on, the dance auto-shuffles every `improvBars` bars of
+        // the locked BPM — so the model spontaneously swaps between booty shake,
+        // ass bend, jump, etc. without manual intervention. Feels like jamming.
+        var danceImprov: Boolean = false,
+        var improvBars: Int = 4,
+        var lastImprovMs: Long = 0L,
+        // Physics feel — gives the unrigged wax model mass + weight cues:
+        //  * inertia lag: body chases the dance target instead of snapping
+        //  * squash & stretch on bob: Y-scale expands on the way up, compresses
+        //    on landing, with compensatory X/Z so volume is preserved
+        // 0 = off (original crisp motion), 1 = full wobble jelly.
+        var physicsAmount: Float = 0.35f,
+        var scaleMulX: Float = 1f,
+        var scaleMulY: Float = 1f,
+        var scaleMulZ: Float = 1f,
+        // Beat-event tracking for impact kicks
+        var lastBeatSeen: Long = 0L,
+        var impactKickStartMs: Long = 0L,
+        var impactKickAxis: Int = 0   // 0 = pitch, 1 = yaw, 2 = roll-ish via yaw twist
     )
+
+    /** Easing curves available for dance motion — mirrors ShapesXR's options. */
+    enum class DanceEase { SINE, LINEAR, CUBIC, EXPO, CIRC, BACK }
 
     // ── Yeet animation ──
 
@@ -63,7 +161,7 @@ class SceneManager(
 
     val models: MutableList<PlacedModel> = java.util.concurrent.CopyOnWriteArrayList()
     var selectedModelIndex = -1
-    val yeetingModels = java.util.concurrent.CopyOnWriteArrayList<YeetingModel>()
+    val yeetingModels = ArrayList<YeetingModel>()
     val yeetingModelsLock = Object()
 
     /** Callback for posting work to the UI thread (set by the activity). */
@@ -88,37 +186,54 @@ class SceneManager(
     fun loadModel(
         file: File, offsetIndex: Int = 0, detectedFloorY: Float = Float.MIN_VALUE,
         camPosX: Float = 0f, camPosY: Float = 1.6f, camPosZ: Float = 0f,
-        camFwdX: Float = 0f, camFwdY: Float = 0f, camFwdZ: Float = -1f
-    ) {
+        camFwdX: Float = 0f, camFwdY: Float = 0f, camFwdZ: Float = -1f,
+        asPreview: Boolean = false,
+        previewAnchorX: Float = 0f, previewAnchorY: Float = 1.9f, previewAnchorZ: Float = -1f
+    ): Int {
         try {
             val bytes = file.readBytes()
-            Log.i(TAG, "Loading GLB: ${file.name} (${bytes.size} bytes)")
+            Log.i(TAG, "Loading GLB: ${file.name} (${bytes.size} bytes)${if (asPreview) " [preview]" else ""}")
 
             val gpuId = renderer.loadGlb(bytes)
             if (gpuId < 0) {
                 Log.e(TAG, "Failed to load GLB: ${file.name}")
                 runOnUiThread(Runnable { showMessage("Failed to load 3D model: ${file.name}") })
-                return
+                return -1
             }
 
-            val gpuModel = renderer.getModel(gpuId) ?: return
+            val gpuModel = renderer.getModel(gpuId) ?: return -1
 
             // Auto-scale: normalize very large/small models to ~0.5m, keep meter-scale models near original
             val diameter = (gpuModel.boundsRadius * 2f).coerceAtLeast(0.001f)
-            val autoScale = when {
+            val baseAutoScale = when {
                 diameter < 0.05f -> 0.5f / diameter  // tiny model (probably cm/mm units), scale up
                 diameter > 5f -> 1f / diameter        // huge model, scale down to ~1m
                 else -> 0.75f                          // already meter-scale, use proven default
             }.coerceIn(0.1f, 5f)
+            // Previews shrink a bit so the whole bounding box fits comfortably above the panel.
+            val autoScale = if (asPreview) {
+                val previewTargetDiam = 0.28f
+                (previewTargetDiam / diameter).coerceIn(0.05f, 2f)
+            } else baseAutoScale
 
-            // Place in front of camera on the horizontal plane
-            val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
-            val hFwdX = camFwdX / hLen
-            val hFwdZ = camFwdZ / hLen
-            val placeDistance = 1.5f
-            val offsetX = if (models.isEmpty()) 0f else offsetIndex * 1.0f
-            val placePosX = camPosX + hFwdX * placeDistance + hFwdZ * offsetX
-            val placePosZ = camPosZ + hFwdZ * placeDistance - hFwdX * offsetX
+            val placePosX: Float
+            val placePosY: Float
+            val placePosZ: Float
+            if (asPreview) {
+                placePosX = previewAnchorX
+                placePosY = previewAnchorY
+                placePosZ = previewAnchorZ
+            } else {
+                // Place in front of camera on the horizontal plane
+                val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
+                val hFwdX = camFwdX / hLen
+                val hFwdZ = camFwdZ / hLen
+                val placeDistance = 1.5f
+                val offsetX = if (models.isEmpty()) 0f else offsetIndex * 1.0f
+                placePosX = camPosX + hFwdX * placeDistance + hFwdZ * offsetX
+                placePosY = 0f
+                placePosZ = camPosZ + hFwdZ * placeDistance - hFwdX * offsetX
+            }
 
             val placed = PlacedModel(
                 file = file,
@@ -127,29 +242,39 @@ class SceneManager(
                 scale = autoScale,
                 baseScale = autoScale,
                 posX = placePosX,
+                posY = placePosY,
                 posZ = placePosZ,
                 metallic = gpuModel.metallic,
-                roughness = gpuModel.roughness
+                roughness = gpuModel.roughness,
+                isPreview = asPreview
             )
             models.add(placed)
-            selectedModelIndex = models.size - 1
+            if (!asPreview) {
+                selectedModelIndex = models.size - 1
 
-            // Auto-snap to detected floor if available
-            if (detectedFloorY != Float.MIN_VALUE) {
-                val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
-                placed.posY += (detectedFloorY - worldMinY)
-            } else if (renderer.gridHeight != 0f) {
-                val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
-                placed.posY += (renderer.gridHeight - worldMinY)
+                // Auto-snap to detected floor if available
+                if (detectedFloorY != Float.MIN_VALUE) {
+                    val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
+                    placed.posY += (detectedFloorY - worldMinY)
+                } else if (renderer.gridHeight != 0f) {
+                    val worldMinY = placed.posY + gpuModel.boundsMinY * placed.scale
+                    placed.posY += (renderer.gridHeight - worldMinY)
+                }
+            } else {
+                // Center the preview vertically on the anchor point rather than snapping
+                // to floor — the panel-relative anchor is already at the correct height.
+                placed.posY -= gpuModel.boundsCenterY * placed.scale
             }
 
             updateModelTransform(placed)
 
             Log.i(TAG, "Model loaded: ${file.name}, rawDiameter=%.3f, autoScale=%.3f, pos=(%.2f,%.2f,%.2f), gpuId=$gpuId"
-                .format(diameter, autoScale, placePosX, placed.posY, placePosZ))
+                .format(diameter, autoScale, placed.posX, placed.posY, placed.posZ))
+            return models.size - 1
         } catch (e: Exception) {
             Log.e(TAG, "Exception loading model: ${file.name}", e)
             runOnUiThread(Runnable { showMessage("Error: ${e.message}") })
+            return -1
         }
     }
 
@@ -158,7 +283,9 @@ class SceneManager(
     fun updateModelTransform(model: PlacedModel) {
         val gpuModel = renderer.getModel(model.gpuModelId) ?: return
 
-        val s = model.scale
+        val sxF = model.scale * model.scaleMulX
+        val syF = model.scale * model.scaleMulY
+        val szF = model.scale * model.scaleMulZ
         val x = model.rotX; val y = model.rotY; val z = model.rotZ; val w = model.rotW
 
         val x2 = x + x; val y2 = y + y; val z2 = z + z
@@ -167,9 +294,9 @@ class SceneManager(
         val wx = w * x2; val wy = w * y2; val wz = w * z2
 
         gpuModel.modelMatrix = floatArrayOf(
-            (1f - (yy + zz)) * s, (xy + wz) * s, (xz - wy) * s, 0f,
-            (xy - wz) * s, (1f - (xx + zz)) * s, (yz + wx) * s, 0f,
-            (xz + wy) * s, (yz - wx) * s, (1f - (xx + yy)) * s, 0f,
+            (1f - (yy + zz)) * sxF, (xy + wz) * sxF, (xz - wy) * sxF, 0f,
+            (xy - wz) * syF, (1f - (xx + zz)) * syF, (yz + wx) * syF, 0f,
+            (xz + wy) * szF, (yz - wx) * szF, (1f - (xx + yy)) * szF, 0f,
             model.posX, model.posY, model.posZ, 1f
         )
     }

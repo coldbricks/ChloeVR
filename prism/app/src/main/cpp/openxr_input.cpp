@@ -32,6 +32,10 @@ static bool createAction(XrActionSet actionSet, XrAction& action,
 }
 
 bool OpenXRInput::init(JNIEnv* env, jobject activity) {
+    if (instance_ != XR_NULL_HANDLE) {
+        LOGI("OpenXR input already initialized, reusing existing instance");
+        return true;
+    }
     if (!createInstance(env, activity)) return false;
     if (!getSystem()) return false;
     if (!createSession()) return false;

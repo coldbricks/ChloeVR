@@ -23,11 +23,53 @@ class AudioPlayer(private val context: Context) {
     private var playerListener: Player.Listener? = null
     private var equalizer: Equalizer? = null
 
-    val isPlaying: Boolean get() = player?.isPlaying == true
-    val isPaused: Boolean get() = player?.playWhenReady == false && player?.playbackState == Player.STATE_READY
-    val currentPositionMs: Long get() = player?.currentPosition ?: 0
-    val durationMs: Long get() = player?.duration?.let { if (it > 0) it else 0 } ?: 0
-    val audioSessionId: Int get() = player?.audioSessionId ?: 0
+    // ExoPlayer enforces application-thread access (main thread here), but the
+    // menu bitmap now renders on a background thread. Cache position/duration
+    // on a 30 Hz main-thread ticker so UI reads can't cross the thread boundary.
+    @Volatile private var cachedPositionMs: Long = 0L
+    @Volatile private var cachedDurationMs: Long = 0L
+    @Volatile private var cachedIsPlaying: Boolean = false
+    @Volatile private var cachedIsPaused: Boolean = false
+    @Volatile private var cachedAudioSessionId: Int = 0
+    private val cacheHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val cacheTicker = object : Runnable {
+        override fun run() {
+            val p = player
+            if (p != null) {
+                cachedPositionMs = p.currentPosition
+                val d = p.duration
+                cachedDurationMs = if (d > 0) d else 0
+                cachedIsPlaying = p.isPlaying
+                cachedIsPaused = !p.playWhenReady && p.playbackState == Player.STATE_READY
+                cachedAudioSessionId = p.audioSessionId
+                cacheHandler.postDelayed(this, 33L)  // ~30 Hz — smooth enough for a progress bar
+            }
+        }
+    }
+    private fun startCacheTicker() {
+        cacheHandler.removeCallbacks(cacheTicker)
+        cacheHandler.post(cacheTicker)
+    }
+    private fun stopCacheTicker() {
+        cacheHandler.removeCallbacks(cacheTicker)
+        cachedPositionMs = 0L; cachedDurationMs = 0L
+        cachedIsPlaying = false; cachedIsPaused = false
+        cachedAudioSessionId = 0
+    }
+
+    /** ExoPlayer is bound to the main thread — any call that touches [player] or
+     *  its listeners must run there. This helper lets callers on any thread
+     *  (render loop, background worker, etc.) invoke mutations safely. */
+    private inline fun onMain(crossinline action: () -> Unit) {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) action()
+        else cacheHandler.post { action() }
+    }
+
+    val isPlaying: Boolean get() = cachedIsPlaying
+    val isPaused: Boolean get() = cachedIsPaused
+    val currentPositionMs: Long get() = cachedPositionMs
+    val durationMs: Long get() = cachedDurationMs
+    val audioSessionId: Int get() = cachedAudioSessionId
     var currentFile: File? = null; private set
 
     // Playlist
@@ -72,11 +114,11 @@ class AudioPlayer(private val context: Context) {
         play(files[playlistIndex])
     }
 
-    fun play(file: File) {
+    fun play(file: File) = onMain {
         if (!file.exists()) {
             Log.e(TAG, "File not found: ${file.absolutePath}")
             onError?.invoke("Audio file not found: ${file.name}")
-            return
+            return@onMain
         }
         // Remove listener BEFORE release to prevent stale STATE_ENDED cascade
         // (releasing ExoPlayer fires STATE_ENDED, which would queue playNext())
@@ -136,6 +178,17 @@ class AudioPlayer(private val context: Context) {
         player?.playbackParameters = PlaybackParameters(SPEED_OPTIONS[speedIndex])
         // Init EQ
         initEq()
+        // Seed cache synchronously so readers on non-main threads see a valid
+        // session id / duration / etc immediately after play() returns on main.
+        val p = player
+        if (p != null) {
+            cachedAudioSessionId = p.audioSessionId
+            cachedPositionMs = p.currentPosition
+            val d = p.duration; cachedDurationMs = if (d > 0) d else 0
+            cachedIsPlaying = p.isPlaying
+            cachedIsPaused = !p.playWhenReady && p.playbackState == Player.STATE_READY
+        }
+        startCacheTicker()
     }
 
     /** Advance to next track in playlist. Wraps around in ALL mode. */
@@ -161,13 +214,13 @@ class AudioPlayer(private val context: Context) {
         return true
     }
 
-    fun togglePlayPause() {
+    fun togglePlayPause() = onMain {
         val p = player
         if (p == null) {
             // Player released (after stop) — restart current track
-            val file = currentFile ?: return
+            val file = currentFile ?: return@onMain
             play(file)
-            return
+            return@onMain
         }
         when {
             p.isPlaying -> p.pause()
@@ -176,10 +229,11 @@ class AudioPlayer(private val context: Context) {
         }
     }
 
-    fun pause() { player?.pause() }
-    fun resume() { player?.play() }
+    fun pause() = onMain { player?.pause() }
+    fun resume() = onMain { player?.play() }
 
-    fun stop() {
+    fun stop() = onMain {
+        stopCacheTicker()
         playerListener?.let { player?.removeListener(it) }
         playerListener = null
         player?.stop()
@@ -187,7 +241,7 @@ class AudioPlayer(private val context: Context) {
         player = null
     }
 
-    fun seekTo(posMs: Long) {
+    fun seekTo(posMs: Long) = onMain {
         player?.seekTo(posMs.coerceIn(0, durationMs))
     }
 
@@ -198,13 +252,13 @@ class AudioPlayer(private val context: Context) {
     // Volume control
     fun setVolume(vol: Float) {
         volume = vol.coerceIn(0f, 1f)
-        player?.volume = volume
+        onMain { player?.volume = volume }
     }
 
     // Speed control
     fun setSpeedIndex(idx: Int) {
         speedIndex = idx.coerceIn(0, SPEED_OPTIONS.size - 1)
-        player?.playbackParameters = PlaybackParameters(SPEED_OPTIONS[speedIndex])
+        onMain { player?.playbackParameters = PlaybackParameters(SPEED_OPTIONS[speedIndex]) }
     }
 
     fun cycleSpeed(forward: Boolean = true) {
@@ -223,7 +277,7 @@ class AudioPlayer(private val context: Context) {
     fun hasLoop(): Boolean = loopA >= 0 && loopB > loopA
 
     /** Call from UI-thread Handler to enforce A/B loop. */
-    fun updateLoop() {
+    fun updateLoop() = onMain {
         if (hasLoop() && isPlaying && !loopSeekPending && currentPositionMs >= loopB) {
             loopSeekPending = true
             player?.seekTo(loopA)
@@ -238,9 +292,11 @@ class AudioPlayer(private val context: Context) {
             RepeatMode.ALL -> RepeatMode.OFF
         }
         // ONE = ExoPlayer loops internally. ALL = we handle via STATE_ENDED callback.
-        player?.repeatMode = when (repeatMode) {
-            RepeatMode.ONE -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+        onMain {
+            player?.repeatMode = when (repeatMode) {
+                RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
         }
     }
 
@@ -302,7 +358,8 @@ class AudioPlayer(private val context: Context) {
         }
     }
 
-    fun release() {
+    fun release() = onMain {
+        stopCacheTicker()
         playerListener?.let { player?.removeListener(it) }
         playerListener = null
         equalizer?.release(); equalizer = null

@@ -1061,7 +1061,9 @@ class GlesModelRenderer {
         lightDir = floatArrayOf(dx/len, dy/len, dz/len)
         updateFillLightDirFromMainLight()
         lightElevDeg = Math.toDegrees(kotlin.math.asin((dy/len).toDouble())).toFloat()
-        lightAngleDeg = Math.toDegrees(kotlin.math.atan2(dx.toDouble(), dz.toDouble())).toFloat()
+        var az = Math.toDegrees(kotlin.math.atan2(dx.toDouble(), dz.toDouble())).toFloat()
+        if (az < 0f) az += 360f
+        lightAngleDeg = az
     }
 
     // ── Room Occlusion ──

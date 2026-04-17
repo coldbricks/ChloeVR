@@ -127,6 +127,15 @@ class FilamentModelActivity : ComponentActivity() {
     private var lastBCloseTime = 0L
     @Volatile private var uiRenderQueued = false
     private val loopHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    // Dedicated thread for menu bitmap rendering. Keeps Canvas work off the main
+    // thread so cursor moves redraw at full display rate instead of fighting the
+    // system event loop for time slices.
+    private val uiRenderThread = android.os.HandlerThread("ChloeVR-UiRender").apply {
+        priority = Thread.NORM_PRIORITY + 1
+        start()
+    }
+    private val uiRenderHandler = android.os.Handler(uiRenderThread.looper)
     @Volatile private var loopRunning = false
 
     // Draggable panel state
@@ -141,6 +150,15 @@ class FilamentModelActivity : ComponentActivity() {
     internal var availableGlbFiles: List<File> = emptyList()
     internal var glbPickerScrollOffset = 0
     @Volatile internal var pendingModelLoad: File? = null  // queued for render thread (needs GL context)
+
+    // Preview-before-add: tap a GLB and inspect it floating above the panel before
+    // committing to the scene. Render thread picks up pendingPreviewLoad and routes
+    // through SceneManager.loadModel(asPreview=true). previewModelIndex points into
+    // sceneManager.models (or -1 when no active preview).
+    @Volatile internal var pendingPreviewLoad: File? = null
+    @Volatile internal var previewModelIndex: Int = -1
+    internal var previewRotY: Float = 0f
+    private var lastPreviewNanos: Long = 0L
 
     // Scene save/load
     @Volatile internal var scenePickerMode = false  // true = showing load scene list
@@ -528,6 +546,94 @@ class FilamentModelActivity : ComponentActivity() {
             camPosX, camPosY, camPosZ, camFwdX, camFwdY, camFwdZ)
     }
 
+    /** Shuffle a model's dance parameters — amplitudes, rates, phases, ease.
+     *  Used by both the manual SHUFFLE button and IMPROV auto-resume. */
+    internal fun shuffleDance(m: SceneManager.PlacedModel) {
+        val rng = java.util.concurrent.ThreadLocalRandom.current()
+        val rates = intArrayOf(2, 4, 8, 16)
+        val eases = SceneManager.DanceEase.entries.toTypedArray()
+        m.danceYawDeg = if (rng.nextFloat() < 0.75f) (10f + rng.nextFloat() * 35f) else 0f
+        m.dancePitchDeg = if (rng.nextFloat() < 0.45f) (5f + rng.nextFloat() * 20f) else 0f
+        m.danceYMeters = if (rng.nextFloat() < 0.4f) (0.02f + rng.nextFloat() * 0.07f) else 0f
+        // Guarantee at least one axis is active so something keeps dancing.
+        if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
+            m.danceYawDeg = 15f + rng.nextFloat() * 25f
+        }
+        m.danceYawRate = rates[rng.nextInt(rates.size)]
+        m.dancePitchRate = rates[rng.nextInt(rates.size)]
+        m.danceYRate = rates[rng.nextInt(rates.size)]
+        m.danceYawPhase = rng.nextFloat()
+        m.dancePitchPhase = rng.nextFloat()
+        m.danceYPhase = rng.nextFloat()
+        // Bias toward smooth eases; occasional BACK/EXPO for attitude.
+        val easeRoll = rng.nextFloat()
+        m.danceEase = when {
+            easeRoll < 0.40f -> SceneManager.DanceEase.SINE
+            easeRoll < 0.60f -> SceneManager.DanceEase.CUBIC
+            easeRoll < 0.75f -> SceneManager.DanceEase.CIRC
+            easeRoll < 0.85f -> SceneManager.DanceEase.EXPO
+            easeRoll < 0.95f -> SceneManager.DanceEase.BACK
+            else -> SceneManager.DanceEase.LINEAR
+        }
+    }
+
+    /** Drop any active preview model from the scene. Safe to call at any time. */
+    internal fun disposePreviewIfAny() {
+        val idx = previewModelIndex
+        if (idx in models.indices && models[idx].isPreview) {
+            val gpuId = models[idx].gpuModelId
+            models.removeAt(idx)
+            glesRenderer?.removeModel(gpuId)
+            if (selectedModelIndex == idx) selectedModelIndex = if (models.isNotEmpty()) 0 else -1
+            else if (selectedModelIndex > idx) selectedModelIndex--
+        }
+        previewModelIndex = -1
+        lastPreviewNanos = 0L
+    }
+
+    /** Commit the preview to the scene: clear preview flag, reposition at arm's length,
+     *  snap to floor if known. Called from the GLB picker's "Add to scene" button. */
+    internal fun commitPreview() {
+        val idx = previewModelIndex
+        if (idx !in models.indices) { previewModelIndex = -1; return }
+        val placed = models[idx]
+        if (!placed.isPreview) { previewModelIndex = -1; return }
+        val gr = glesRenderer
+        // Re-place in front of the user at arm's length, same logic as a normal load.
+        val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
+        val hFwdX = camFwdX / hLen
+        val hFwdZ = camFwdZ / hLen
+        placed.posX = camPosX + hFwdX * 1.5f
+        placed.posZ = camPosZ + hFwdZ * 1.5f
+        // Upright — clear the auto-rotate spin.
+        placed.rotX = 0f; placed.rotY = 0f; placed.rotZ = 0f; placed.rotW = 1f
+        // Bump scale back up to the normal "0.75 of meter-scale" default the preview shrank from.
+        val gpuModel = gr?.getModel(placed.gpuModelId)
+        if (gpuModel != null) {
+            val diameter = (gpuModel.boundsRadius * 2f).coerceAtLeast(0.001f)
+            val normalScale = when {
+                diameter < 0.05f -> 0.5f / diameter
+                diameter > 5f -> 1f / diameter
+                else -> 0.75f
+            }.coerceIn(0.1f, 5f)
+            placed.scale = normalScale
+            placed.baseScale = normalScale
+        }
+        placed.posY = 0f
+        if (gpuModel != null) {
+            if (detectedFloorY != Float.MIN_VALUE) {
+                placed.posY += (detectedFloorY - (placed.posY + gpuModel.boundsMinY * placed.scale))
+            } else if (gr != null && gr.gridHeight != 0f) {
+                placed.posY += (gr.gridHeight - (placed.posY + gpuModel.boundsMinY * placed.scale))
+            }
+        }
+        placed.isPreview = false
+        sceneManager.updateModelTransform(placed)
+        selectedModelIndex = idx
+        previewModelIndex = -1
+        lastPreviewNanos = 0L
+    }
+
     internal fun updateModelTransform(model: SceneManager.PlacedModel) {
         sceneManager.updateModelTransform(model)
     }
@@ -880,6 +986,29 @@ class FilamentModelActivity : ComponentActivity() {
                             uiNeedsRefresh = true
                             requestUiRender()
                         }
+                        // Process pending preview loads (inspect a GLB before committing)
+                        val pendingPreviewFile = pendingPreviewLoad
+                        if (pendingPreviewFile != null) {
+                            pendingPreviewLoad = null
+                            disposePreviewIfAny()
+                            val anchorX = gr.panelX
+                            val anchorY = gr.panelY + gr.panelH * 0.5f + 0.18f
+                            val anchorZ = gr.panelZ
+                            val idx = sceneManager.loadModel(
+                                pendingPreviewFile,
+                                asPreview = true,
+                                previewAnchorX = anchorX,
+                                previewAnchorY = anchorY,
+                                previewAnchorZ = anchorZ
+                            )
+                            if (idx >= 0) {
+                                previewModelIndex = idx
+                                previewRotY = 0f
+                                lastPreviewNanos = 0L
+                            }
+                            uiNeedsRefresh = true
+                            requestUiRender()
+                        }
                         // Process pending scene loads
                         val pendingScene = pendingSceneLoad
                         if (pendingScene != null) {
@@ -887,6 +1016,34 @@ class FilamentModelActivity : ComponentActivity() {
                             loadScene(pendingScene)
                             uiNeedsRefresh = true
                             requestUiRender()
+                        }
+
+                        // Animate preview: slow auto-rotation + re-anchor above panel every frame
+                        val pIdx = previewModelIndex
+                        if (pIdx in models.indices) {
+                            val preview = models[pIdx]
+                            if (preview.isPreview) {
+                                val nowNs = System.nanoTime()
+                                val dt = if (lastPreviewNanos == 0L) 1f / 72f else (nowNs - lastPreviewNanos) / 1_000_000_000f
+                                lastPreviewNanos = nowNs
+                                previewRotY += dt * 0.6f  // radians/sec — 0.6 rad/s ≈ 34°/s
+                                val half = previewRotY * 0.5f
+                                preview.rotX = 0f
+                                preview.rotY = kotlin.math.sin(half)
+                                preview.rotZ = 0f
+                                preview.rotW = kotlin.math.cos(half)
+                                // Track panel: keep preview floating above wherever the user dragged the panel to.
+                                preview.posX = gr.panelX
+                                preview.posZ = gr.panelZ
+                                val gpuModel = gr.getModel(preview.gpuModelId)
+                                val bboxCenterY = gpuModel?.boundsCenterY ?: 0f
+                                preview.posY = gr.panelY + gr.panelH * 0.5f + 0.18f - bboxCenterY * preview.scale
+                                updateModelTransform(preview)
+                            } else {
+                                previewModelIndex = -1
+                            }
+                        } else if (pIdx >= 0) {
+                            previewModelIndex = -1
                         }
 
                         try {
@@ -1053,10 +1210,33 @@ class FilamentModelActivity : ComponentActivity() {
                                     (intensity * 0.4f).coerceAtMost(0.85f)
                                 } else 0f
 
-                                // Haptic output: drives vibrator from audio signal
+                                // Haptic output: drives vibrator from audio signal.
+                                // DANCE: vibrator tracks the BPM oscillator (reactor.boxFillPct)
+                                // so you feel each beat sync'd to the motion.
+                                // SHAKE (legacy A/B): smoothstep of boxFillPct * animResponse.
+                                val shakeMdl = models.getOrNull(selectedModelIndex)
+                                val shakeAmp = when {
+                                    shakeMdl == null || shakeMdl.isPreview -> -1f
+                                    shakeMdl.animHasBase && (shakeMdl.danceYawDeg != 0f ||
+                                        shakeMdl.dancePitchDeg != 0f || shakeMdl.danceYMeters != 0f) ->
+                                        reactor.boxFillPct
+                                    shakeMdl.animHasA && shakeMdl.animHasB -> {
+                                        val tS = (reactor.boxFillPct * shakeMdl.animResponse).coerceIn(0f, 1f)
+                                        tS * tS * (3f - 2f * tS)
+                                    }
+                                    else -> -1f
+                                }
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
-                                    if (hm != null && reactor.useVibesEngine) {
+                                    if (hm != null && shakeAmp >= 0f) {
+                                        val hIntensity = (shakeAmp * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        if (hIntensity != lastHapticIntensity) {
+                                            lastHapticIntensity = hIntensity
+                                            if (hm.isDualMotor) hm.setDualIntensity(hIntensity, hIntensity)
+                                            else hm.setIntensity(hIntensity)
+                                            lastHapticMotor1 = hIntensity; lastHapticMotor2 = hIntensity
+                                        }
+                                    } else if (hm != null && reactor.useVibesEngine) {
                                         // ── Chloe-Vibes engine: dithered output + dual motor phasing ──
                                         val engine = reactor.vibesEngine
                                         val m1 = engine.getDitheredLevel()
@@ -1162,6 +1342,201 @@ class FilamentModelActivity : ComponentActivity() {
                                     }
                                     // Always release swapchain image even if we skipped the upload
                                     nativeReleaseUiImage()
+                                }
+                            }
+
+                            // Auto-select the only model if the user hasn't picked one.
+                            // "If there's one model, that's the one you're trying to adjust."
+                            if (models.size == 1 && selectedModelIndex != 0 && !models[0].isPreview) {
+                                selectedModelIndex = 0
+                            }
+
+                            // ── Beat-driven model animation ──
+                            // Priority: multi-axis DANCE (absolute-time phase per axis)
+                            // > legacy A/B SHAKE > static. Grab wins — if the user is
+                            // holding the selected model, anim yields to them.
+                            val ar = audioReactor
+                            if (ar != null) {
+                                val rawFill = ar.boxFillPct
+                                for (i in models.indices) {
+                                    val m = models[i]
+                                    if (m.isPreview) continue
+                                    if (inputHandler.grabbing && i == selectedModelIndex) continue
+
+                                    val dancing = m.animHasBase && (m.danceYawDeg != 0f ||
+                                        m.dancePitchDeg != 0f || m.danceYMeters != 0f)
+                                    if (dancing) {
+                                        // Improv re-shuffle every N bars of locked BPM.
+                                        if (m.danceImprov && ar.autoBpm && ar.detectedBpm > 0f) {
+                                            val barMs = (60000f / ar.detectedBpm) * 4f
+                                            val intervalMs = barMs * m.improvBars.coerceAtLeast(1)
+                                            val nowMs = System.currentTimeMillis()
+                                            if (m.lastImprovMs == 0L || nowMs - m.lastImprovMs >= intervalMs) {
+                                                m.lastImprovMs = nowMs
+                                                shuffleDance(m)
+                                            }
+                                        }
+
+                                        // ── CHOREO: accent / mood / fill ──
+                                        val hasTempo = ar.autoBpm && ar.detectedBpm > 0f
+                                        val accentGain = if (hasTempo) {
+                                            // 4 beats/bar, peak on beat 1 (barPos near 0 or 1)
+                                            val bp = ar.phaseInBars(1)
+                                            1f + 0.22f * kotlin.math.cos(2.0 * Math.PI * bp).toFloat().coerceAtLeast(0f)
+                                        } else 1f
+                                        val moodGain = if (hasTempo) {
+                                            val mp = ar.phaseInBars(16)
+                                            0.8f + 0.45f * (0.5f - 0.5f * kotlin.math.cos(2.0 * Math.PI * mp).toFloat())
+                                        } else 1f
+                                        val fillActive = hasTempo && ar.phaseInBars(4) > 0.75f
+                                        val ampGain = accentGain * moodGain
+                                        val yawRate = if (fillActive) 16 else m.danceYawRate
+                                        val pitchRate = if (fillActive) 16 else m.dancePitchRate
+                                        val yRate = if (fillActive) 8 else m.danceYRate
+
+                                        val b = m.animBasePose
+                                        var px = b[0]; var py = b[1]; var pz = b[2]
+                                        var qx = b[3]; var qy = b[4]; var qz = b[5]; var qw = b[6]
+
+                                        var yawSig = 0f
+                                        // YAW around world Y
+                                        if (m.danceYawDeg != 0f) {
+                                            val ph = (ar.phaseAt(yawRate) + m.danceYawPhase) % 1f
+                                            yawSig = SceneManager.waveAt(ph, m.danceEase)
+                                            val half = Math.toRadians((m.danceYawDeg * ampGain * yawSig).toDouble()).toFloat() * 0.5f
+                                            val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
+                                            val nx = cy * qx + sy * qz
+                                            val ny = cy * qy + sy * qw
+                                            val nz = cy * qz - sy * qx
+                                            val nw = cy * qw - sy * qy
+                                            qx = nx; qy = ny; qz = nz; qw = nw
+                                        }
+                                        // PITCH around world X
+                                        if (m.dancePitchDeg != 0f) {
+                                            val ph = (ar.phaseAt(pitchRate) + m.dancePitchPhase) % 1f
+                                            val sig = SceneManager.waveAt(ph, m.danceEase)
+                                            val half = Math.toRadians((m.dancePitchDeg * ampGain * sig).toDouble()).toFloat() * 0.5f
+                                            val sp = kotlin.math.sin(half); val cp = kotlin.math.cos(half)
+                                            val nx = cp * qx + sp * qw
+                                            val ny = cp * qy - sp * qz
+                                            val nz = cp * qz + sp * qy
+                                            val nw = cp * qw - sp * qx
+                                            qx = nx; qy = ny; qz = nz; qw = nw
+                                        }
+                                        // BOB on world Y (positive only = pushes up from rest)
+                                        if (m.danceYMeters != 0f) {
+                                            val ph = (ar.phaseAt(yRate) + m.danceYPhase) % 1f
+                                            val bob = 0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * ph).toFloat())
+                                            py += m.danceYMeters * ampGain * bob
+                                        }
+
+                                        // ── ALIVE: subtle additive layers ──
+                                        if (m.physicsAmount > 0.001f) {
+                                            // Yaw→bob coupling: micro hip-pop at yaw extremes
+                                            py += 0.015f * m.physicsAmount * kotlin.math.abs(yawSig)
+                                            // Idle breath: ~0.25 Hz Y-oscillation, always alive
+                                            val breathPh = (System.currentTimeMillis() % 4000L) / 4000f
+                                            py += 0.006f * kotlin.math.sin(2.0 * Math.PI * breathPh).toFloat()
+                                            // Warmth jitter: incommensurable sines = pseudo-random warmth
+                                            val tSec = System.currentTimeMillis() / 1000f
+                                            val jAmp = 0.002f * m.physicsAmount
+                                            px += jAmp * (kotlin.math.sin(tSec * 0.73f).toFloat()
+                                                + 0.5f * kotlin.math.sin(tSec * 1.41f + 0.3f).toFloat())
+                                            py += jAmp * (kotlin.math.sin(tSec * 1.19f + 0.8f).toFloat()
+                                                + 0.5f * kotlin.math.sin(tSec * 0.61f).toFloat())
+                                            pz += jAmp * (kotlin.math.sin(tSec * 0.89f + 1.2f).toFloat()
+                                                + 0.5f * kotlin.math.sin(tSec * 1.57f + 2f).toFloat())
+                                        }
+
+                                        // ── ALIVE: impact kick on each detected beat ──
+                                        if (ar.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f) {
+                                            m.lastBeatSeen = ar.beatCounter
+                                            m.impactKickStartMs = System.currentTimeMillis()
+                                            m.impactKickAxis = (ar.beatCounter % 3).toInt()
+                                        }
+                                        if (m.impactKickStartMs > 0L) {
+                                            val el = (System.currentTimeMillis() - m.impactKickStartMs).toFloat()
+                                            if (el < 200f) {
+                                                val kp = el / 200f
+                                                val ks = kotlin.math.sin(Math.PI * kp).toFloat() * (1f - kp)
+                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * ks).toFloat()
+                                                val half = kickRad * 0.5f
+                                                val sh = kotlin.math.sin(half); val ch = kotlin.math.cos(half)
+                                                when (m.impactKickAxis) {
+                                                    0 -> {  // pitch
+                                                        val nx = ch * qx + sh * qw
+                                                        val ny = ch * qy - sh * qz
+                                                        val nz = ch * qz + sh * qy
+                                                        val nw = ch * qw - sh * qx
+                                                        qx = nx; qy = ny; qz = nz; qw = nw
+                                                    }
+                                                    1 -> {  // yaw
+                                                        val nx = ch * qx + sh * qz
+                                                        val ny = ch * qy + sh * qw
+                                                        val nz = ch * qz - sh * qx
+                                                        val nw = ch * qw - sh * qy
+                                                        qx = nx; qy = ny; qz = nz; qw = nw
+                                                    }
+                                                    else -> {  // roll
+                                                        val nx = ch * qx - sh * qy
+                                                        val ny = ch * qy + sh * qx
+                                                        val nz = ch * qz + sh * qw
+                                                        val nw = ch * qw - sh * qz
+                                                        qx = nx; qy = ny; qz = nz; qw = nw
+                                                    }
+                                                }
+                                            } else {
+                                                m.impactKickStartMs = 0L
+                                            }
+                                        }
+                                        val ql = kotlin.math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw).coerceAtLeast(1e-5f)
+                                        val tqx = qx / ql; val tqy = qy / ql; val tqz = qz / ql; val tqw = qw / ql
+                                        if (m.physicsAmount > 0.001f) {
+                                            // Inertia lag — body chases target rather than snapping.
+                                            // physicsAmount 0..1 maps to follow rate 1..0.25 per frame.
+                                            val follow = (1f - m.physicsAmount * 0.75f).coerceIn(0.1f, 1f)
+                                            m.posX += (px - m.posX) * follow
+                                            m.posY += (py - m.posY) * follow
+                                            m.posZ += (pz - m.posZ) * follow
+                                            m.rotX += (tqx - m.rotX) * follow
+                                            m.rotY += (tqy - m.rotY) * follow
+                                            m.rotZ += (tqz - m.rotZ) * follow
+                                            m.rotW += (tqw - m.rotW) * follow
+                                            val nl = kotlin.math.sqrt(m.rotX*m.rotX + m.rotY*m.rotY + m.rotZ*m.rotZ + m.rotW*m.rotW).coerceAtLeast(1e-5f)
+                                            m.rotX /= nl; m.rotY /= nl; m.rotZ /= nl; m.rotW /= nl
+                                            // Squash & stretch tied to bob phase.
+                                            if (m.danceYMeters > 0f) {
+                                                val ph = (ar.phaseAt(m.danceYRate) + m.danceYPhase) % 1f
+                                                val bobSig = -kotlin.math.cos(2.0 * Math.PI * ph).toFloat()
+                                                val k = 0.1f * m.physicsAmount
+                                                m.scaleMulY = 1f + k * bobSig
+                                                m.scaleMulX = 1f - k * bobSig * 0.5f
+                                                m.scaleMulZ = 1f - k * bobSig * 0.5f
+                                            } else {
+                                                m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
+                                            }
+                                        } else {
+                                            m.posX = px; m.posY = py; m.posZ = pz
+                                            m.rotX = tqx; m.rotY = tqy; m.rotZ = tqz; m.rotW = tqw
+                                            m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
+                                        }
+                                        sceneManager.updateModelTransform(m)
+                                    } else if (m.animHasA && m.animHasB) {
+                                        val t = (rawFill * m.animResponse).coerceIn(0f, 1f)
+                                        val s = t * t * (3f - 2f * t)  // smoothstep
+                                        val a = m.animPoseA; val b = m.animPoseB
+                                        m.posX = a[0] + (b[0] - a[0]) * s
+                                        m.posY = a[1] + (b[1] - a[1]) * s
+                                        m.posZ = a[2] + (b[2] - a[2]) * s
+                                        val qx = a[3] + (b[3] - a[3]) * s
+                                        val qy = a[4] + (b[4] - a[4]) * s
+                                        val qz = a[5] + (b[5] - a[5]) * s
+                                        val qw = a[6] + (b[6] - a[6]) * s
+                                        val ql = kotlin.math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw).coerceAtLeast(1e-5f)
+                                        m.rotX = qx / ql; m.rotY = qy / ql
+                                        m.rotZ = qz / ql; m.rotW = qw / ql
+                                        sceneManager.updateModelTransform(m)
+                                    }
                                 }
                             }
 
@@ -1336,7 +1711,7 @@ class FilamentModelActivity : ComponentActivity() {
     internal fun requestUiRender() {
         if (uiRenderQueued) return
         uiRenderQueued = true
-        runOnUiThread {
+        uiRenderHandler.post {
             try {
                 renderUiToBitmap()
             } finally {
@@ -1523,6 +1898,8 @@ class FilamentModelActivity : ComponentActivity() {
         glesRenderer?.destroy()
         glesRenderer = null
         nativeRendererShutdown()
+        uiRenderHandler.removeCallbacksAndMessages(null)
+        uiRenderThread.quitSafely()
         super.onDestroy()
     }
 

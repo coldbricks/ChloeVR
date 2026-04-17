@@ -34,8 +34,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private var lastRightStickClick = false
     private var lastLeftStickClick = false
 
+    // Track cursor motion so the menu bitmap is re-rendered every frame the crosshair moves
+    private var lastBeatCursorX = -1f
+    private var lastBeatCursorY = -1f
+
+    // Whip-to-delete: ring buffer of recent grab-hand positions with timestamps.
+    // On grip release we compute average velocity over this window; if the user
+    // flicked fast enough (ShapesXR-style), yeet the model instead of dropping it.
+    private val whipSampleN = 6
+    private val whipSampleX = FloatArray(whipSampleN)
+    private val whipSampleY = FloatArray(whipSampleN)
+    private val whipSampleZ = FloatArray(whipSampleN)
+    private val whipSampleT = LongArray(whipSampleN)
+    private var whipSampleIdx = 0
+    private var whipSamplesFilled = 0
+    private val WHIP_SPEED_THRESHOLD = 4f  // m/s — tuned for wrist flick
+
     // Grab state
-    private var grabbing = false
+    internal var grabbing = false
     private var grabDistance = 2f
     private var grabOffset = floatArrayOf(0f, 0f, 0f)
     private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
@@ -180,6 +196,51 @@ class InputHandler(private val activity: FilamentModelActivity) {
             BeatSlider("COLOR", "\u00B0", 0f, 360f,
                 { activity.audioReactor?.beatHue ?: 330f },
                 { activity.audioReactor?.beatHue = it }),
+            BeatSlider("SHAKE", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.animResponse ?: 1f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.animResponse = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("YAW", "\u00B0", 0f, 60f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    m?.danceYawDeg ?: 0f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.danceYawDeg = v.coerceIn(0f, 60f)
+                }),
+            BeatSlider("PITCH", "\u00B0", 0f, 45f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    m?.dancePitchDeg ?: 0f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.dancePitchDeg = v.coerceIn(0f, 45f)
+                }),
+            BeatSlider("BOB", "cm", 0f, 15f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.danceYMeters ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.danceYMeters = (v / 100f).coerceIn(0f, 0.15f)
+                }),
+            BeatSlider("PHYSICS", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.physicsAmount ?: 0.35f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.physicsAmount = (v / 100f).coerceIn(0f, 1f)
+                }),
             BeatSlider("MIX", "%", 0f, 100f,
                 { activity.beatIntensity * 50f },
                 { activity.beatIntensity = it / 50f }),
@@ -480,7 +541,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 val specTopHit = 155f; val specBotHit = 435f
                                 val specLeftHit = 40f; val specRightHit = 984f
                                 val sliderAreaTopHit = 465f
-                                val sliderRowH = 32f
+                                val sliderRowH = 28f
 
                                 if (by > 1205f) {
                                     // Match UiRenderer: fifthW = (1024-130)/5, buttons at 30,40+fw,50+fw*2,...
@@ -490,6 +551,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     else if (bx < 50f + fifth * 3f + 5f) hoveredActionButton = 129 // SPLIT (dual motor toggle)
                                     else if (bx < 60f + fifth * 4f + 5f) hoveredActionButton = 112 // OFF
                                     else hoveredActionButton = 111 // BACK
+                                } else if (by in 1030f..1065f) {
+                                    // Row A: YAW / PITCH / BOB rate cycles + SHUFFLE
+                                    hoveredActionButton = when {
+                                        bx in 30f..270f -> 135 // YAW rate
+                                        bx in 280f..520f -> 136 // PITCH rate
+                                        bx in 530f..770f -> 137 // BOB rate
+                                        bx in 780f..994f -> 134 // SHUFFLE
+                                        else -> -1
+                                    }
+                                } else if (by in 1070f..1115f) {
+                                    // Row B: SHAKE | DANCE | EASE | IMPROV
+                                    hoveredActionButton = when {
+                                        bx in 30f..240f -> 130 // SHAKE
+                                        bx in 246f..555f -> 133 // DANCE
+                                        bx in 561f..770f -> 138 // EASE
+                                        bx in 776f..994f -> 139 // IMPROV
+                                        else -> -1
+                                    }
                                 } else if (by in 1133f..1180f) {
                                     // Chloe presets row: LOOSE / MEDIUM / ULTIMATE / SCRIPT
                                     val cellW = (1024f - 70f) / 4f
@@ -500,11 +579,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         else -> 143
                                     }
                                 } else if (by in 108f..135f) {
-                                    // Rolloff mode buttons
+                                    // Rolloff mode buttons + BPM LOCK
                                     if (bx in 300f..420f) hoveredActionButton = 113
                                     else if (bx in 430f..550f) hoveredActionButton = 114
                                     else if (bx in 560f..680f) hoveredActionButton = 115
                                     else if (bx in 690f..810f) hoveredActionButton = 116
+                                    else if (bx in 820f..984f) hoveredActionButton = 131 // LOCK BPM
+                                } else if (by in 137f..158f && bx in 820f..984f) {
+                                    hoveredActionButton = 132 // RATE cycle (1/4, 1/8, 1/16, ...)
                                 } else if (by in 130f..150f) {
                                     // Color mode buttons (left)
                                     if (bx in 50f..135f) hoveredActionButton = 117
@@ -829,8 +911,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 }
             }
 
-            // Test model intersection (only if not hovering gizmo/emitter and menu is closed)
-            if (!activity.menuVisible && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE && !emitterHovered && !emitterGrabbed) {
+            // Test model intersection — allowed while menu is open as long as
+            // the laser isn't targeting the panel itself. Lets the user pick a
+            // model to adjust via the dance controls without closing the menu.
+            if ((!activity.menuVisible || !laserOnPanel) && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE && !emitterHovered && !emitterGrabbed) {
                 var nearestDist = Float.MAX_VALUE
                 var nearestIdx = -1
                 for ((i, placed) in models.withIndex()) {
@@ -1021,6 +1105,132 @@ class InputHandler(private val activity: FilamentModelActivity) {
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 111) {
                 activity.beatSettingsMode = false
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 131) {
+                val r = activity.audioReactor
+                if (r != null) {
+                    r.autoBpm = !r.autoBpm
+                    // Clear detection either way so next lock starts fresh (prevents
+                    // stale BPM from a previous song leaking into a new one).
+                    r.resetBpmDetection()
+                    Log.i(TAG, "BPM lock: ${if (r.autoBpm) "ON — detecting..." else "off"}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 132) {
+                val r = activity.audioReactor
+                if (r != null) {
+                    // Cycle through musical subdivisions
+                    r.bpmRate = when (r.bpmRate) {
+                        2 -> 4
+                        4 -> 8
+                        8 -> 16
+                        16 -> 2
+                        else -> 4
+                    }
+                    Log.i(TAG, "BPM rate: 1/${r.bpmRate}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 133) {
+                // DANCE: first tap captures current pose as base with a default yaw shake;
+                // second tap clears everything back to static.
+                val mIdx = activity.sceneManager.selectedModelIndex
+                val m = activity.sceneManager.models.getOrNull(mIdx)
+                if (m != null) {
+                    if (!m.animHasBase) {
+                        m.animBasePose[0] = m.posX; m.animBasePose[1] = m.posY; m.animBasePose[2] = m.posZ
+                        m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
+                        m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
+                        m.animHasBase = true
+                        if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
+                            m.danceYawDeg = 20f  // sensible default booty shake
+                        }
+                        Log.i(TAG, "Dance armed on ${m.file.name} (yaw=${m.danceYawDeg}° pitch=${m.dancePitchDeg}° bob=${m.danceYMeters}m)")
+                    } else {
+                        m.animHasBase = false
+                        m.danceYawDeg = 0f; m.dancePitchDeg = 0f; m.danceYMeters = 0f
+                        Log.i(TAG, "Dance cleared on ${m.file.name}")
+                    }
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 134) {
+                // SHUFFLE: one-shot randomise for the selected model.
+                val mIdx = activity.sceneManager.selectedModelIndex
+                val m = activity.sceneManager.models.getOrNull(mIdx)
+                if (m != null) {
+                    if (!m.animHasBase) {
+                        m.animBasePose[0] = m.posX; m.animBasePose[1] = m.posY; m.animBasePose[2] = m.posZ
+                        m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
+                        m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
+                        m.animHasBase = true
+                    }
+                    activity.shuffleDance(m)
+                    Log.i(TAG, "Dance shuffled: yaw=${m.danceYawDeg.toInt()}°@1/${m.danceYawRate} pitch=${m.dancePitchDeg.toInt()}°@1/${m.dancePitchRate} bob=${"%.2f".format(m.danceYMeters)}m@1/${m.danceYRate} ease=${m.danceEase}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 138) {
+                // EASE cycle for the selected model
+                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                if (m != null) {
+                    val eases = SceneManager.DanceEase.entries.toTypedArray()
+                    m.danceEase = eases[(m.danceEase.ordinal + 1) % eases.size]
+                    Log.i(TAG, "Dance ease: ${m.danceEase}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 139) {
+                // IMPROV toggle — auto-shuffle every improvBars bars
+                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                if (m != null) {
+                    m.danceImprov = !m.danceImprov
+                    m.lastImprovMs = if (m.danceImprov) 0L else 0L  // 0 = fire on next frame
+                    if (m.danceImprov && !m.animHasBase) {
+                        m.animBasePose[0] = m.posX; m.animBasePose[1] = m.posY; m.animBasePose[2] = m.posZ
+                        m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
+                        m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
+                        m.animHasBase = true
+                    }
+                    Log.i(TAG, "IMPROV: ${if (m.danceImprov) "ON (every ${m.improvBars} bars)" else "OFF"}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode &&
+                (hoveredActionButton == 135 || hoveredActionButton == 136 || hoveredActionButton == 137)) {
+                // Per-axis rate cycle (1/2 -> 1/4 -> 1/8 -> 1/16 -> 1/2).
+                val mIdx = activity.sceneManager.selectedModelIndex
+                val m = activity.sceneManager.models.getOrNull(mIdx)
+                if (m != null) {
+                    fun next(r: Int) = when (r) { 2 -> 4; 4 -> 8; 8 -> 16; 16 -> 2; else -> 4 }
+                    when (hoveredActionButton) {
+                        135 -> m.danceYawRate = next(m.danceYawRate)
+                        136 -> m.dancePitchRate = next(m.dancePitchRate)
+                        137 -> m.danceYRate = next(m.danceYRate)
+                    }
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 130) {
+                // SHAKE (legacy): cycle through pose-anchor states for the selected model.
+                val mIdx = activity.sceneManager.selectedModelIndex
+                val m = activity.sceneManager.models.getOrNull(mIdx)
+                if (m != null) {
+                    when {
+                        !m.animHasA -> {
+                            m.animPoseA[0] = m.posX; m.animPoseA[1] = m.posY; m.animPoseA[2] = m.posZ
+                            m.animPoseA[3] = m.rotX; m.animPoseA[4] = m.rotY
+                            m.animPoseA[5] = m.rotZ; m.animPoseA[6] = m.rotW
+                            m.animHasA = true
+                            Log.i(TAG, "Shake anchor A set on ${m.file.name}")
+                        }
+                        !m.animHasB -> {
+                            m.animPoseB[0] = m.posX; m.animPoseB[1] = m.posY; m.animPoseB[2] = m.posZ
+                            m.animPoseB[3] = m.rotX; m.animPoseB[4] = m.rotY
+                            m.animPoseB[5] = m.rotZ; m.animPoseB[6] = m.rotW
+                            m.animHasB = true
+                            Log.i(TAG, "Shake anchor B set on ${m.file.name} — armed")
+                        }
+                        else -> {
+                            m.animHasA = false; m.animHasB = false
+                            Log.i(TAG, "Shake anchors cleared on ${m.file.name}")
+                        }
+                    }
+                    activity.uiNeedsRefresh = true
+                }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 112) {
                 activity.beatReactorEnabled = false
                 activity.audioReactor?.enabled = false
@@ -1876,6 +2086,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
         if (isGrabbing && grabHandPos != null && grabAimRot != null) {
             if (!grabbing) {
                 grabbing = true
+                whipSampleIdx = 0
+                whipSamplesFilled = 0
                 val fwdInit = activity.glesRenderer?.quatForward(grabAimRot)
                 if (fwdInit == null) { scratchGrabFwd[0] = 0f; scratchGrabFwd[1] = 0f; scratchGrabFwd[2] = -1f }
                 val fi = fwdInit ?: scratchGrabFwd
@@ -1947,15 +2159,53 @@ class InputHandler(private val activity: FilamentModelActivity) {
             }
 
             activity.updateModelTransform(selected)
+
+            // Record hand pose sample for whip-detection (each frame while grabbing).
+            whipSampleX[whipSampleIdx] = grabHandPos[0]
+            whipSampleY[whipSampleIdx] = grabHandPos[1]
+            whipSampleZ[whipSampleIdx] = grabHandPos[2]
+            whipSampleT[whipSampleIdx] = android.os.SystemClock.uptimeMillis()
+            whipSampleIdx = (whipSampleIdx + 1) % whipSampleN
+            if (whipSamplesFilled < whipSampleN) whipSamplesFilled++
         } else {
             // Edge-trigger: grip was held last frame, released this frame.
-            // Commit a spatial anchor at the model's final pose so the placement
-            // survives app close. `commitAnchorForGrip` no-ops gracefully if anchors
-            // are disabled or the runtime doesn't support the extension.
             if (grabbing && selectedModelIndex in models.indices) {
-                activity.commitAnchorForGrip(models[selectedModelIndex])
+                val model = models[selectedModelIndex]
+                var whipVelX = 0f; var whipVelY = 0f; var whipVelZ = 0f
+                var whipSpeed = 0f
+                if (whipSamplesFilled >= 3) {
+                    val newestIdx = (whipSampleIdx - 1 + whipSampleN) % whipSampleN
+                    val oldestIdx = if (whipSamplesFilled >= whipSampleN) whipSampleIdx else 0
+                    val dtMs = whipSampleT[newestIdx] - whipSampleT[oldestIdx]
+                    if (dtMs > 5L) {
+                        val dt = dtMs / 1000f
+                        whipVelX = (whipSampleX[newestIdx] - whipSampleX[oldestIdx]) / dt
+                        whipVelY = (whipSampleY[newestIdx] - whipSampleY[oldestIdx]) / dt
+                        whipVelZ = (whipSampleZ[newestIdx] - whipSampleZ[oldestIdx]) / dt
+                        whipSpeed = kotlin.math.sqrt(whipVelX*whipVelX + whipVelY*whipVelY + whipVelZ*whipVelZ)
+                    }
+                }
+                if (whipSpeed >= WHIP_SPEED_THRESHOLD) {
+                    Log.i(TAG, "Whip delete: ${model.file.name} at ${"%.1f".format(whipSpeed)} m/s")
+                    synchronized(activity.sceneManager.yeetingModelsLock) {
+                        activity.sceneManager.yeetingModels.add(SceneManager.YeetingModel(
+                            gpuModelId = model.gpuModelId,
+                            posX = model.posX, posY = model.posY, posZ = model.posZ,
+                            velX = whipVelX, velY = whipVelY + 2f, velZ = whipVelZ,
+                            scale = model.scale
+                        ))
+                    }
+                    models.removeAt(selectedModelIndex)
+                    selectedModelIndex = if (models.isNotEmpty()) 0 else -1
+                    activity.uiNeedsRefresh = true
+                } else {
+                    // Normal release — commit spatial anchor so placement survives app close.
+                    activity.commitAnchorForGrip(model)
+                }
             }
             grabbing = false
+            whipSamplesFilled = 0
+            whipSampleIdx = 0
         }
 
         // Free thumbstick = rotate/height
@@ -2034,6 +2284,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
             }
         }
         lastAState = aButton
+
+        if (activity.menuVisible &&
+            (activity.beatCursorX != lastBeatCursorX || activity.beatCursorY != lastBeatCursorY)) {
+            activity.uiNeedsRefresh = true
+        }
+        lastBeatCursorX = activity.beatCursorX
+        lastBeatCursorY = activity.beatCursorY
 
         if (activity.uiNeedsRefresh) {
             activity.uiNeedsRefresh = false

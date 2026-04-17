@@ -364,6 +364,38 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText("FILL: ${(fillPct * 100).toInt()}%", 550f, 105f, p)
             p.isFakeBoldText = false
 
+            // ── BPM LOCK + quantization rate (right of mode buttons) ──
+            val bpmLocked = reactor?.autoBpm ?: false
+            val bpmVal = reactor?.detectedBpm?.toInt() ?: 0
+            val bpmRate = reactor?.bpmRate ?: 4
+            val rateLabel = "1/$bpmRate"
+            val lockHover = hoveredActionButton == 131
+            val rateHover = hoveredActionButton == 132
+            // LOCK button (top row)
+            p.color = when {
+                lockHover -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
+                bpmLocked -> ThemeManager.GREEN
+                else -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x25000000
+            }
+            canvas.drawRoundRect(820f, 108f, 984f, 133f, 6f, 6f, p)
+            p.textAlign = Paint.Align.CENTER
+            p.color = if (bpmLocked) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.textSize = 18f; p.isFakeBoldText = bpmLocked
+            val lockText = if (bpmLocked && bpmVal > 0) "LOCK $bpmVal" else "LOCK BPM"
+            canvas.drawText(lockText, 902f, 126f, p)
+            p.isFakeBoldText = false
+            // RATE cycle button (second row)
+            p.color = when {
+                rateHover -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
+                bpmLocked -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x60000000
+                else -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x20000000
+            }
+            canvas.drawRoundRect(820f, 137f, 984f, 157f, 6f, 6f, p)
+            p.color = if (rateHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.textSize = 14f; p.isFakeBoldText = false
+            canvas.drawText("RATE $rateLabel", 902f, 152f, p)
+            p.textAlign = Paint.Align.LEFT
+
             // Roll-off mode buttons
             val curMode = reactor?.rolloff ?: AudioReactor.Rolloff.SOFT_KNEE
             val modes = arrayOf("INSTANT" to AudioReactor.Rolloff.INSTANT, "HARD" to AudioReactor.Rolloff.HARD_KNEE, "SOFT" to AudioReactor.Rolloff.SOFT_KNEE, "THROB" to AudioReactor.Rolloff.THROB)
@@ -739,7 +771,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
                 }
 
-                sy += 32f
+                sy += 28f
             }
 
             // ── Chloe Vibes presets + script mode (row above the main buttons) ──
@@ -777,6 +809,95 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.textSize = 16f
             canvas.drawText("SCRIPT: $scriptMode", (smX + smR) / 2f, presetY + 28f, p)
             p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+
+            // ── Beat-driven motion controls (two rows) ──
+            //  Row A (y 1030-1065): YAW | PITCH | BOB rate cycles | SHUFFLE
+            //  Row B (y 1070-1120): SHAKE (legacy A/B) | DANCE (multi-axis)
+            //  Moved lower to clear the last slider's thumb glow.
+            val selIdx = activity.sceneManager.selectedModelIndex
+            val selModel = activity.sceneManager.models.getOrNull(selIdx)
+
+            // ── Row A: per-axis rates + SHUFFLE ──
+            fun drawRateCell(x0: Float, x1: Float, label: String, rate: Int, hoverId: Int) {
+                val hov = hoveredActionButton == hoverId
+                p.color = if (hov) (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
+                    else (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x30000000
+                canvas.drawRoundRect(x0, 1030f, x1, 1065f, 8f, 8f, p)
+                p.textAlign = Paint.Align.CENTER; p.textSize = 16f
+                p.color = if (hov) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+                canvas.drawText("$label 1/$rate", (x0 + x1) / 2f, 1053f, p)
+            }
+            drawRateCell(30f, 270f, "YAW", selModel?.danceYawRate ?: 8, 135)
+            drawRateCell(280f, 520f, "PITCH", selModel?.dancePitchRate ?: 4, 136)
+            drawRateCell(530f, 770f, "BOB", selModel?.danceYRate ?: 2, 137)
+            val shufHov = hoveredActionButton == 134
+            p.color = if (shufHov) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x80000000.toInt()
+                else (ThemeManager.ORANGE and 0x00FFFFFF) or 0x35000000
+            canvas.drawRoundRect(780f, 1030f, 994f, 1065f, 8f, 8f, p)
+            p.color = if (shufHov) ThemeManager.TEXT_BRIGHT else ThemeManager.ORANGE
+            p.isFakeBoldText = shufHov
+            canvas.drawText("SHUFFLE", 887f, 1053f, p)
+            p.isFakeBoldText = false
+
+            // ── Row B: SHAKE | DANCE | EASE | IMPROV ──
+            val rowBY = 1070f; val rowBH = 45f
+            p.textAlign = Paint.Align.CENTER
+            // SHAKE
+            val shakeLabel: String
+            val shakeColor: Int
+            when {
+                selModel == null -> { shakeLabel = "SHAKE"; shakeColor = (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x20000000 }
+                !selModel.animHasA -> { shakeLabel = "SHAKE \u25B8A"; shakeColor = (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x30000000 }
+                !selModel.animHasB -> { shakeLabel = "SHAKE \u25B8B"; shakeColor = (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x50000000 }
+                else -> { shakeLabel = "SHAKE \u25CF"; shakeColor = ThemeManager.CYAN_ICE }
+            }
+            val shakeHover = hoveredActionButton == 130
+            p.color = if (shakeHover) (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt() else shakeColor
+            canvas.drawRoundRect(30f, rowBY, 240f, rowBY + rowBH, 10f, 10f, p)
+            p.textSize = 17f
+            p.color = if (shakeHover || selModel?.animHasB == true) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.isFakeBoldText = selModel?.animHasB == true
+            canvas.drawText(shakeLabel, 135f, rowBY + 29f, p)
+            p.isFakeBoldText = false
+            // DANCE (wider — primary control)
+            val danceLabel: String
+            val danceColor: Int
+            when {
+                selModel == null -> { danceLabel = "DANCE — select a model"; danceColor = (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x20000000 }
+                !selModel.animHasBase -> { danceLabel = "DANCE \u25B8 Arm"; danceColor = (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x30000000 }
+                else -> { danceLabel = "DANCE \u25CF armed"; danceColor = ThemeManager.PINK_HOT }
+            }
+            val danceHover = hoveredActionButton == 133
+            p.color = if (danceHover) (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x80000000.toInt() else danceColor
+            canvas.drawRoundRect(246f, rowBY, 555f, rowBY + rowBH, 10f, 10f, p)
+            p.color = if (danceHover || selModel?.animHasBase == true) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.isFakeBoldText = selModel?.animHasBase == true
+            canvas.drawText(danceLabel, 400f, rowBY + 29f, p)
+            p.isFakeBoldText = false
+            // EASE cycle
+            val easeLabel = selModel?.danceEase?.name ?: "SINE"
+            val easeHover = hoveredActionButton == 138
+            p.color = if (easeHover) (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
+                else (ThemeManager.GREEN and 0x00FFFFFF) or 0x30000000
+            canvas.drawRoundRect(561f, rowBY, 770f, rowBY + rowBH, 10f, 10f, p)
+            p.color = if (easeHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            canvas.drawText("EASE $easeLabel", 665f, rowBY + 29f, p)
+            // IMPROV toggle
+            val improvOn = selModel?.danceImprov == true
+            val improvHover = hoveredActionButton == 139
+            val improvColor = when {
+                improvHover -> (ThemeManager.ORANGE and 0x00FFFFFF) or 0x80000000.toInt()
+                improvOn -> ThemeManager.ORANGE
+                else -> (ThemeManager.ORANGE and 0x00FFFFFF) or 0x25000000
+            }
+            p.color = improvColor
+            canvas.drawRoundRect(776f, rowBY, uiW - 30f, rowBY + rowBH, 10f, 10f, p)
+            p.color = if (improvOn || improvHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.isFakeBoldText = improvOn
+            val improvLabel = if (improvOn) "IMPROV \u25CF ${selModel?.improvBars ?: 4}bar" else "IMPROV"
+            canvas.drawText(improvLabel, 885f, rowBY + 29f, p)
+            p.isFakeBoldText = false
+            p.textAlign = Paint.Align.LEFT
 
             // ── Buttons: BOOM / VIBES / SPLIT / OFF / BACK ──
             val btnY = uiH - 75f; val btnH = 50f
@@ -2012,12 +2133,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     // ── UI Helpers ──
 
     fun showMessage(text: String) {
-        activity.setContentView(TextView(activity).apply {
-            this.text = text
-            textSize = 20f
-            setTextColor(ThemeManager.TEXT_BRIGHT)
-            gravity = Gravity.CENTER
-        })
+        // Callers on the render loop thread must not touch Views directly.
+        activity.runOnUiThread {
+            activity.setContentView(TextView(activity).apply {
+                this.text = text
+                textSize = 20f
+                setTextColor(ThemeManager.TEXT_BRIGHT)
+                gravity = Gravity.CENTER
+            })
+        }
     }
 
     fun makeSpacer(height: Int): android.view.View {

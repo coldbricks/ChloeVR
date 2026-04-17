@@ -88,6 +88,173 @@ class AudioReactor {
     private var hardKneeTriggered = false
     private var throbLocked = false  // true = in decay cycle, cannot retrigger
 
+    // BPM detection: when enabled, releaseMs is overridden by the detected
+    // quarter-note interval (60000 / BPM). Lets the gate fall in tempo so a
+    // four-on-the-floor kick naturally triggers at the exact downbeat.
+    @Volatile var autoBpm = false
+    @Volatile var detectedBpm = 0f; private set
+    /** Quantization rate: 1 = whole, 2 = half, 4 = quarter, 8 = eighth, 16 = sixteenth.
+     *  When autoBpm is on, one full A↔B oscillation cycle = (1/bpmRate) note. */
+    @Volatile var bpmRate: Int = 4
+    // Absolute time epoch, set once when BPM is first locked. Oscillator phase
+    // is computed as (nowMs - bpmEpochMs) mod cycleMs — so it never accumulates
+    // floating-point drift no matter how long the track plays.
+    @Volatile private var bpmEpochMs: Long = 0L
+    // Once the detector has seen N consistent intervals (low std-dev), BPM is
+    // LOCKED — further triggers don't nudge it. This matches the "find the
+    // click track, then trust it" mental model and prevents fills/breakdowns
+    // from dragging the tempo around.
+    @Volatile var bpmLockedStable = false; private set
+    /** Reset the BPM epoch and detected value — call when toggling LOCK BPM
+     *  on/off so the next detection starts fresh. */
+    fun resetBpmDetection() {
+        bpmEpochMs = 0L
+        detectedBpm = 0f
+        bpmLockedStable = false
+        triggerTimesFilled = 0
+        triggerTimesIdx = 0
+        lastTriggerMs = 0L
+    }
+    /** Absolute-time phase (0..1) for an axis at the given subdivision rate.
+     *  Requires autoBpm + detectedBpm. Returns 0 when not yet locked. */
+    fun phaseAt(rate: Int): Float {
+        if (!autoBpm || detectedBpm <= 0f || bpmEpochMs == 0L) return 0f
+        val cycleMs = (60000f / detectedBpm) * 4f / rate.coerceAtLeast(1)
+        val elapsedMs = (System.currentTimeMillis() - bpmEpochMs).toFloat()
+        return ((elapsedMs / cycleMs) % 1f + 1f) % 1f
+    }
+
+    /** Absolute-time phase (0..1) over an N-bar cycle. Used for accent timing,
+     *  mood arcs, fill cycles — anything that needs a long-form musical phase. */
+    fun phaseInBars(bars: Int): Float {
+        if (!autoBpm || detectedBpm <= 0f || bpmEpochMs == 0L) return 0f
+        val barMs = (60000f / detectedBpm) * 4f
+        val cycleMs = barMs * bars.coerceAtLeast(1)
+        val elapsedMs = (System.currentTimeMillis() - bpmEpochMs).toFloat()
+        return ((elapsedMs / cycleMs) % 1f + 1f) % 1f
+    }
+
+    /** Monotonic counter of beat triggers — a model that tracks "last seen"
+     *  can detect exactly when a new beat fires (for impact kicks, fills). */
+    @Volatile var beatCounter: Long = 0L; private set
+    private val triggerTimesMs = LongArray(8)
+    private var triggerTimesIdx = 0
+    private var triggerTimesFilled = 0
+    private var lastTriggerMs = 0L
+    private fun recordTrigger() {
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        beatCounter++  // Monotonic pulse for per-model consumers (impact kicks)
+        // Once locked, stop updating — the click track is found.
+        if (bpmLockedStable) {
+            lastTriggerMs = nowMs
+            return
+        }
+        if (lastTriggerMs > 0L) {
+            val interval = nowMs - lastTriggerMs
+            // Reject intervals outside a wide musical range (180 ms = 333 BPM to
+            // 900 ms = 67 BPM raw). Anything shorter is a double-trigger from the
+            // same hit; anything longer is a drop/fill gap.
+            if (interval in 180L..900L) {
+                triggerTimesMs[triggerTimesIdx] = interval
+                triggerTimesIdx = (triggerTimesIdx + 1) % triggerTimesMs.size
+                if (triggerTimesFilled < triggerTimesMs.size) triggerTimesFilled++
+                if (triggerTimesFilled >= 3) {
+                    // Mode-like cluster: bucket intervals by nearest-50ms and
+                    // pick the bucket with the most members. Dramatically more
+                    // robust than median against songs with fills / off-beats.
+                    val buckets = HashMap<Long, MutableList<Long>>()
+                    for (i in 0 until triggerTimesFilled) {
+                        val v = triggerTimesMs[i]
+                        val key = v / 50 * 50
+                        buckets.getOrPut(key) { mutableListOf() }.add(v)
+                    }
+                    val best = buckets.values.maxByOrNull { it.size } ?: listOf()
+                    val bestMs = if (best.isNotEmpty()) best.average().toFloat() else {
+                        triggerTimesMs.copyOf(triggerTimesFilled).also { it.sort() }[triggerTimesFilled / 2].toFloat()
+                    }
+                    // Octave fold into 70-140 BPM comfort zone
+                    var bpm = 60000f / bestMs
+                    while (bpm > 140f) bpm /= 2f
+                    while (bpm < 70f) bpm *= 2f
+                    detectedBpm = bpm.coerceIn(60f, 200f)
+
+                    // Lock once we have 6+ samples tightly clustered (std-dev
+                    // under 20ms = the cluster is a real tempo, not noise).
+                    if (best.size >= 6) {
+                        val avg = best.average()
+                        var v = 0.0
+                        for (x in best) { val d = x - avg; v += d * d }
+                        val sd = kotlin.math.sqrt(v / best.size)
+                        if (sd < 20.0) {
+                            bpmLockedStable = true
+                            android.util.Log.i("AudioReactor", "BPM LOCKED at ${detectedBpm.toInt()} (sd=${"%.1f".format(sd)}ms over ${best.size} samples)")
+                        }
+                    }
+                }
+            } else if (interval > 2000L) {
+                // Long gap = song break. Reset detection.
+                triggerTimesFilled = 0
+                triggerTimesIdx = 0
+            }
+        }
+        lastTriggerMs = nowMs
+    }
+
+    /** Manual octave correction — user taps ÷2 or ×2 when the detector landed
+     *  on the wrong octave (e.g. double-tempo snare ghost notes). */
+    fun halveBpm() {
+        if (detectedBpm > 0f) {
+            detectedBpm = (detectedBpm / 2f).coerceIn(60f, 200f)
+            bpmEpochMs = System.currentTimeMillis()
+        }
+    }
+    fun doubleBpm() {
+        if (detectedBpm > 0f) {
+            detectedBpm = (detectedBpm * 2f).coerceIn(60f, 200f)
+            bpmEpochMs = System.currentTimeMillis()
+        }
+    }
+
+    // ── Tap tempo — user-provided reference, always accurate ──
+    private val tapTimes = LongArray(6)
+    private var tapIdx = 0
+    private var tapFilled = 0
+    private var lastTapMs = 0L
+    /** Tap on each beat. After 3+ taps within the last 2 s, compute BPM from
+     *  tap intervals and lock. Feels like a metronome's tap input. */
+    fun tapTempo() {
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        if (lastTapMs > 0L && nowMs - lastTapMs > 2000L) {
+            // Too long since last tap — start over.
+            tapIdx = 0; tapFilled = 0
+        }
+        if (lastTapMs > 0L && tapFilled < tapTimes.size + 1) {
+            val iv = nowMs - lastTapMs
+            if (iv in 200L..1500L) {
+                tapTimes[tapIdx] = iv
+                tapIdx = (tapIdx + 1) % tapTimes.size
+                if (tapFilled < tapTimes.size) tapFilled++
+            }
+        }
+        lastTapMs = nowMs
+        if (tapFilled >= 3) {
+            val sorted = tapTimes.copyOf(tapFilled).also { it.sort() }
+            val medianMs = sorted[tapFilled / 2].toFloat()
+            detectedBpm = (60000f / medianMs).coerceIn(60f, 200f)
+            bpmEpochMs = System.currentTimeMillis()
+            bpmLockedStable = true
+            autoBpm = true
+            android.util.Log.i("AudioReactor", "TAP TEMPO: ${detectedBpm.toInt()} BPM (from $tapFilled taps)")
+        }
+    }
+    /** ms for one note of bpmRate at detectedBpm; manual releaseMs when lock off. */
+    private fun effectiveReleaseMs(): Float {
+        return if (autoBpm && detectedBpm > 0f) {
+            val quarterMs = 60000f / detectedBpm
+            (quarterMs * 4f / bpmRate.coerceAtLeast(1)).coerceIn(50f, 4000f)
+        } else releaseMs
+    }
+
     // Anti-dropout
     @Volatile private var fftFrameStamp = 0
     @Volatile private var updateFrameCount = 0
@@ -345,19 +512,41 @@ class AudioReactor {
         val atkAlpha = (1f - kotlin.math.exp(-safeDt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
         val relAlpha = (1f - kotlin.math.exp(-safeDt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
 
-        if (rolloff == Rolloff.THROB) {
+        if (autoBpm) {
+            // "Her ass is the metronome" — once we've found the click track (BPM),
+            // the oscillator free-runs from the clock. Kicks only feed the BPM
+            // estimator; they never touch phase. That way the sweep stays smooth
+            // through breakdowns and off-beat fills and never jitters mid-cycle.
+            if (!throbLocked && rawFill > threshold) {
+                throbLocked = true
+                recordTrigger()
+            } else if (rawFill < threshold * 0.5f) {
+                throbLocked = false
+            }
+            if (detectedBpm > 0f) {
+                if (bpmEpochMs == 0L) bpmEpochMs = System.currentTimeMillis()
+                // Absolute-time phase: no accumulated drift.
+                val phaseNorm = phaseAt(bpmRate)
+                smoothedOutput = 0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * phaseNorm).toFloat())
+            } else {
+                // Still searching for a click track — hold silent rather than
+                // falling back to the envelope (keeps the UX unambiguous).
+                smoothedOutput = 0f
+            }
+        } else if (rolloff == Rolloff.THROB) {
             // THROB: one-shot burst. Trigger fires, runs FULL decay cycle,
             // cannot retrigger until cycle is complete.
             if (!throbLocked && rawFill > threshold) {
-                // Trigger! Start the burst
+                // Trigger! Start the burst — and record for BPM detection.
                 smoothedOutput = 1f
                 throbLocked = true
                 hardKneeTimer = 0f
+                recordTrigger()
             }
             if (throbLocked) {
                 // In decay cycle — count down, ignore all input
                 hardKneeTimer += safeDt
-                val releaseSec = releaseMs / 1000f
+                val releaseSec = effectiveReleaseMs() / 1000f
                 val progress = (hardKneeTimer / releaseSec).coerceIn(0f, 1f)
                 smoothedOutput = 1f - progress  // linear ramp down
                 if (progress >= 1f) {
@@ -378,13 +567,15 @@ class AudioReactor {
                 Rolloff.HARD_KNEE -> {
                     // Attack: track fill upward
                     if (rawFill > smoothedOutput) {
+                        val firstTrigger = !hardKneeTriggered
                         smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
                         hardKneeTriggered = true
                         hardKneeTimer = 0f
+                        if (firstTrigger) recordTrigger()
                     } else if (hardKneeTriggered) {
-                        // Linear decay from peak over releaseMs
+                        // Linear decay from peak over releaseMs (tempo-locked when autoBpm)
                         hardKneeTimer += safeDt
-                        val progress = (hardKneeTimer / (releaseMs / 1000f)).coerceIn(0f, 1f)
+                        val progress = (hardKneeTimer / (effectiveReleaseMs() / 1000f)).coerceIn(0f, 1f)
                         smoothedOutput = smoothedOutput * (1f - progress * 0.3f)  // gradual
                         if (progress >= 1f) { smoothedOutput = 0f; hardKneeTriggered = false }
                     }
@@ -406,8 +597,14 @@ class AudioReactor {
 
         boxFillPct = scaled.coerceIn(outputFloor, outputCeiling)
 
-        // Smoother
-        val smoothAlpha = 1f - smootherAmount * 0.9f
+        // Smoother: one-pole LPF with a time constant that scales up to ~2 s
+        // at max. That's long enough to average 4 beats @ 120 BPM — so cranking
+        // this to the right "locks" the pulse onto a four-on-the-floor rhythm
+        // instead of tracking every transient. Quadratic curve keeps the lower
+        // half of the slider subtle.
+        val smoothTauSec = smootherAmount * smootherAmount * 2.0f  // 0…2 seconds
+        val smoothAlpha = if (smoothTauSec < 0.001f) 1f
+            else (1f - kotlin.math.exp(-safeDt / smoothTauSec)).coerceIn(0.001f, 1f)
         boxFillPct = prevFillPct + (boxFillPct - prevFillPct) * smoothAlpha
         prevFillPct = boxFillPct
 

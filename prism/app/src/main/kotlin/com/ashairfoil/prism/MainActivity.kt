@@ -342,7 +342,14 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun requestBasicMediaPermissions() {
-        val permissions = arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_IMAGES)
+        // RECORD_AUDIO is required for the BeatReactor Visualizer (FFT capture of
+        // the app's own audio session). Android refuses to create the Visualizer
+        // without it, even for the app's own session id.
+        val permissions = arrayOf(
+            Manifest.permission.READ_MEDIA_VIDEO,
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.RECORD_AUDIO
+        )
 
         val allGranted = permissions.all {
             ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
@@ -454,6 +461,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
     }
 
     private fun initOpenXRInput() {
+        if (openXRInput != null) return
         try {
             openXRInput = OpenXRInput(this).also {
                 it.setListener(this)
