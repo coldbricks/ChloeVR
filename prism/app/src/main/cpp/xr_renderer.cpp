@@ -77,6 +77,18 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
         usleep(50000); // 50ms
     }
     XR_LOGI("XrRenderer fully initialized, sessionReady=%d", sessionReady_ ? 1 : 0);
+
+    // Spatial anchors: attempt init after session is ready. If the runtime doesn't
+    // expose the EXT anchor family, init() returns false and anchors are disabled —
+    // the app must gracefully fall back to session-local poses.
+    if (sessionReady_ && !spatialAnchorsInitAttempted_) {
+        spatialAnchorsInitAttempted_ = true;
+        if (spatialAnchors_.init(instance_, session_, systemId_, appSpace_)) {
+            XR_LOGI("Spatial anchor manager init requested (waiting for context futures)");
+        } else {
+            XR_LOGI("Spatial anchors unavailable on this runtime — using session-local poses");
+        }
+    }
     return true;
 }
 
@@ -733,6 +745,15 @@ bool XrRenderer::waitFrame(FrameData& frame) {
     lastPredictedTime_ = frameState.predictedDisplayTime;
     frame.shouldRender = frameState.shouldRender;
 
+    // Pump spatial anchor async operations. Safe to call unconditionally; no-ops if disabled.
+    // Also handles late-init if session became ready after XrRenderer::init() returned
+    // (handleSessionStateChange path).
+    if (sessionReady_ && !spatialAnchorsInitAttempted_) {
+        spatialAnchorsInitAttempted_ = true;
+        spatialAnchors_.init(instance_, session_, systemId_, appSpace_);
+    }
+    spatialAnchors_.tick(lastPredictedTime_);
+
     // Begin frame
     XrFrameBeginInfo beginInfo{XR_TYPE_FRAME_BEGIN_INFO};
     r = xrBeginFrame(session_, &beginInfo);
@@ -1121,6 +1142,9 @@ void XrRenderer::releaseUiImage() {
 // ── Shutdown ──
 
 void XrRenderer::shutdown() {
+    // Shut down spatial anchors BEFORE destroying the instance/session — it holds handles.
+    spatialAnchors_.shutdown();
+    spatialAnchorsInitAttempted_ = false;
     for (int i = 0; i < 2; i++) {
         if (handSpaces_[i] != XR_NULL_HANDLE) xrDestroySpace(handSpaces_[i]);
         if (aimSpaces_[i] != XR_NULL_HANDLE) xrDestroySpace(aimSpaces_[i]);

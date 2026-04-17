@@ -8,8 +8,10 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.ashairfoil.prism.scene.InputHandler
 import com.ashairfoil.prism.scene.SceneManager
+import com.ashairfoil.prism.scene.SpatialAnchorManager
 import com.ashairfoil.prism.scene.UiRenderer
 import com.ashairfoil.prism.scene.XrSensorPoller
+import com.ashairfoil.prism.settings.SettingsManager
 import java.io.File
 
 class FilamentModelActivity : ComponentActivity() {
@@ -242,10 +244,20 @@ class FilamentModelActivity : ComponentActivity() {
     internal var camPosX = 0f; internal var camPosY = 1.6f; internal var camPosZ = 0f
     internal var camFwdX = 0f; internal var camFwdY = 0f; internal var camFwdZ = -1f
 
+    // ── Spatial anchors (persistent model positions across sessions) ──
+    internal lateinit var spatialAnchors: SpatialAnchorManager
+    @Volatile private var anchorResolveRequested = false
+    @Volatile private var anchorRestoreCount = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Log.i(TAG, "onCreate: initializing Filament model viewer")
+
+        // SettingsManager is idempotent; ensure it's initialized even if this activity
+        // was launched directly (e.g. from a model-file share) without going through MainActivity.
+        SettingsManager.init(this)
+        spatialAnchors = SpatialAnchorManager(this)
 
         showMessage("Initializing 3D renderer...")
 
@@ -445,6 +457,146 @@ class FilamentModelActivity : ComponentActivity() {
             autoAmbient = result.autoAmbient
             gridVisible = result.gridVisible
         }
+    }
+
+    // ── Spatial anchor plumbing ────────────────────────────────────────
+    //
+    // Called every frame on the render thread. Submits one-shot resolve on first
+    // ready-tick, drains completed create/resolve futures, and surfaces user-visible
+    // feedback (toast on first restore, anchor-icon refresh on commit).
+    internal fun pollSpatialAnchors() {
+        if (!SettingsManager.useSpatialAnchors) return
+        if (!spatialAnchors.isSupported()) return
+
+        // One-shot: once the context + persistence contexts are ready, submit a resolve
+        // for every persisted UUID we know about. The manager dedupes internally.
+        if (!anchorResolveRequested && spatialAnchors.isReady()) {
+            anchorResolveRequested = true
+            val n = spatialAnchors.submitResolveAll()
+            if (n > 0) {
+                Log.i(TAG, "Resolving $n persisted spatial anchors on session start")
+            }
+        }
+
+        // Drain completed create+persist events (usually 0 or 1 per frame).
+        while (true) {
+            val ev = spatialAnchors.pollCreate() ?: break
+            onAnchorCreateComplete(ev)
+        }
+
+        // Drain resolved anchor poses (batched on session start).
+        val gr = glesRenderer ?: return
+        while (true) {
+            val rev = spatialAnchors.pollResolve() ?: break
+            onAnchorResolveComplete(rev, gr)
+        }
+    }
+
+    private fun onAnchorCreateComplete(ev: SpatialAnchorManager.CreateEvent) {
+        // Find the placed model whose pendingAnchorHandle matches.
+        val m = models.firstOrNull { it.pendingAnchorHandle == ev.clientHandle } ?: return
+        m.pendingAnchorHandle = -1
+        if (!ev.success) {
+            Log.w(TAG, "Anchor persist failed for ${m.file.name}")
+            return
+        }
+        m.anchorUuid = ev.uuid
+        // Capture the model's world pose at the moment the anchor was created — this
+        // becomes the "offset zero" reference. Later movement without re-anchoring will
+        // drift relative to the anchor but remains within the scene JSON.
+        val record = SpatialAnchorManager.AnchorRecord(
+            uuid = ev.uuid,
+            modelPath = m.file.absolutePath,
+            // Anchor was created at the model's pose, so offset is identity.
+            offsetPosX = 0f, offsetPosY = 0f, offsetPosZ = 0f,
+            offsetRotX = 0f, offsetRotY = 0f, offsetRotZ = 0f, offsetRotW = 1f,
+            scale = m.scale,
+            metallic = m.metallic, roughness = m.roughness,
+            exposure = m.exposure, contrast = m.contrast, saturation = m.saturation
+        )
+        spatialAnchors.upsertRecord(record)
+        if (menuVisible) uiNeedsRefresh = true
+    }
+
+    private fun onAnchorResolveComplete(
+        rev: SpatialAnchorManager.ResolveEvent,
+        gr: GlesModelRenderer
+    ) {
+        val rec = rev.record
+        if (rec == null) {
+            Log.w(TAG, "Resolve event with no matching on-disk record — ignoring")
+            return
+        }
+        if (!rev.valid) {
+            // Anchor is gone (user wiped map / new room). Drop the record and the
+            // corresponding placed model (if spawned), and notify the user so they
+            // understand why the model is missing.
+            Log.w(TAG, "Anchor ${rec.modelPath} lost — removing stored entry")
+            spatialAnchors.deleteRecord(rec.uuid)
+            return
+        }
+        // Avoid double-spawning when the scene autosave already restored this model.
+        val already = models.firstOrNull { m ->
+            m.anchorUuid?.contentEquals(rec.uuid) == true ||
+                m.file.absolutePath == rec.modelPath
+        }
+        if (already != null) {
+            // Update its pose to the fresh anchor location and ensure UUID is attached.
+            already.posX = rev.posX; already.posY = rev.posY; already.posZ = rev.posZ
+            already.rotX = rev.rotX; already.rotY = rev.rotY; already.rotZ = rev.rotZ; already.rotW = rev.rotW
+            if (already.anchorUuid == null) already.anchorUuid = rec.uuid.copyOf()
+            sceneManager.updateModelTransform(already)
+            return
+        }
+        val spawned = sceneManager.spawnFromAnchor(
+            rec,
+            rev.posX, rev.posY, rev.posZ,
+            rev.rotX, rev.rotY, rev.rotZ, rev.rotW
+        )
+        if (spawned != null) {
+            anchorRestoreCount++
+            // Defer the toast until we've drained the batch to avoid N toasts in quick succession.
+            runOnUiThread {
+                if (anchorRestoreCount > 0 && !spatialAnchors.hasPendingResolutions()) {
+                    showMessage("Restored $anchorRestoreCount anchored model(s)")
+                    anchorRestoreCount = 0
+                }
+            }
+        }
+    }
+
+    /**
+     * Called by InputHandler when a grip release is detected. Creates a spatial anchor
+     * at the model's final world pose and stores its pending-handle so we can stamp the
+     * UUID once async persist completes.
+     */
+    internal fun commitAnchorForGrip(model: SceneManager.PlacedModel) {
+        if (!SettingsManager.useSpatialAnchors) return
+        if (!spatialAnchors.isReady()) return
+        // If the model already has an anchor, drop the old one first so we don't
+        // leak a persisted UUID for a pose we no longer care about.
+        model.anchorUuid?.let { old ->
+            spatialAnchors.deleteRecord(old)
+            model.anchorUuid = null
+        }
+        val handle = spatialAnchors.submitCreate(
+            model.posX, model.posY, model.posZ,
+            model.rotX, model.rotY, model.rotZ, model.rotW
+        )
+        if (handle < 0) {
+            Log.w(TAG, "submitCreate failed — anchor not committed for ${model.file.name}")
+            return
+        }
+        model.pendingAnchorHandle = handle
+        Log.i(TAG, "Submitted anchor create handle=$handle for ${model.file.name}")
+    }
+
+    /** Wipe every persisted anchor (runtime + local record). */
+    internal fun clearAllAnchors() {
+        spatialAnchors.clearAll()
+        for (m in models) { m.anchorUuid = null; m.pendingAnchorHandle = -1 }
+        uiNeedsRefresh = true
+        showMessage("All spatial anchors cleared")
     }
 
     private fun startRenderLoop() {
@@ -921,6 +1073,11 @@ class FilamentModelActivity : ComponentActivity() {
                 if (sensorPollFrame % 3 == 0) {
                     sensorPoller.poll(sensorPollFrame)
                 }
+
+                // ── Persistent spatial anchors ──
+                // Kick off resolve for all stored UUIDs once the anchor manager is ready.
+                // Drain pending create/resolve completions every frame (cheap — deque pop).
+                pollSpatialAnchors()
                 // Build debug string (every 10 frames when HUD visible)
                 if (sensorHudVisible && sensorPollFrame % 10 == 0) {
                     sensorDebugStr = sensorPoller.buildDebugString(sensorHub, xrLightEstimateAvailable, xrLightDebugStr)

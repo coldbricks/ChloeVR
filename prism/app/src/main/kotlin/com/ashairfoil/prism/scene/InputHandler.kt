@@ -671,7 +671,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 if (by > 1222f) {
                                     if (bx < 350f) hoveredActionButton = 130
                                     else if (bx < 674f) hoveredActionButton = 134
-                                    else hoveredActionButton = 135
+                                    else {
+                                        // 3rd-slot is CLEAR ANCHORS (140) when anchors are supported,
+                                        // otherwise BLOOM (135). Keep the two paths in sync with UiRenderer.
+                                        val anchorMgrHit = try { activity.spatialAnchors } catch (_: UninitializedPropertyAccessException) { null }
+                                        hoveredActionButton = if (anchorMgrHit?.isSupported() == true) 140 else 135
+                                    }
                                 }
 
                                 // Param rows with section headers (rowH=46px, 10px section pad)
@@ -1109,6 +1114,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     Log.i(TAG, "Bloom: ${gr.bloomEnabled}")
                 }
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 140) {
+                // CLEAR ANCHORS: wipe every persisted spatial anchor + local record.
+                activity.clearAllAnchors()
             } else if (activity.menuVisible && activity.saveNameMode && hoveredKeyboardKey >= 0) {
                 val kb = activity.uiRenderer.keyboard
                 val (action, ch) = kb.getKeyChar(hoveredKeyboardKey)
@@ -1874,6 +1882,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
             activity.updateModelTransform(selected)
         } else {
+            // Edge-trigger: grip was held last frame, released this frame.
+            // Commit a spatial anchor at the model's final pose so the placement
+            // survives app close. `commitAnchorForGrip` no-ops gracefully if anchors
+            // are disabled or the runtime doesn't support the extension.
+            if (grabbing && selectedModelIndex in models.indices) {
+                activity.commitAnchorForGrip(models[selectedModelIndex])
+            }
             grabbing = false
         }
 

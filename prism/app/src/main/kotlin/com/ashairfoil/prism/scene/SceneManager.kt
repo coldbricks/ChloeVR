@@ -37,7 +37,15 @@ class SceneManager(
         var roughness: Float = 0.9f,
         var exposure: Float = 0f,
         var contrast: Float = 1f,
-        var saturation: Float = 1f
+        var saturation: Float = 1f,
+        // ── Persistent anchor state ──
+        // 16-byte UUID from the OpenXR persistence context once the async persist
+        // completes, or null when the model is not (yet) anchored. Stored in
+        // anchors.json keyed by UUID plus included in scene JSON for completeness.
+        var anchorUuid: ByteArray? = null,
+        // Pending client handle from submitCreate — matches against CreateEvent later.
+        // Not persisted; reset each session.
+        var pendingAnchorHandle: Int = -1
     )
 
     // ── Yeet animation ──
@@ -280,6 +288,9 @@ class SceneManager(
                 obj.put("exposure", m.exposure.toDouble())
                 obj.put("contrast", m.contrast.toDouble())
                 obj.put("saturation", m.saturation.toDouble())
+                // Optional spatial anchor binding — included for diagnostics; authoritative
+                // copy still lives in anchors.json keyed by UUID.
+                m.anchorUuid?.let { obj.put("anchorUuid", bytesToHex(it)) }
                 modelsArr.put(obj)
             }
             scene.put("models", modelsArr)
@@ -372,7 +383,8 @@ class SceneManager(
                         roughness = obj.optDouble("roughness", 0.9).toFloat(),
                         exposure = obj.optDouble("exposure", 0.0).toFloat(),
                         contrast = obj.optDouble("contrast", 1.0).toFloat(),
-                        saturation = obj.optDouble("saturation", 1.0).toFloat()
+                        saturation = obj.optDouble("saturation", 1.0).toFloat(),
+                        anchorUuid = hexToBytes(obj.optString("anchorUuid", ""))
                     )
                     gpuModel.metallic = placed.metallic
                     gpuModel.roughness = placed.roughness
@@ -400,4 +412,120 @@ class SceneManager(
             return null
         }
     }
+
+    // ── Anchor-driven spawn ─────────────────────────────────────────────
+    // Call from render thread (needs a live GL context). Given an AnchorRecord and a
+    // RESOLVED world pose (anchor origin in appSpace), load the model and place it so
+    // the anchor is pinned to the stored local offset. Returns the newly-added PlacedModel
+    // or null if the model file is missing/unreadable.
+    fun spawnFromAnchor(
+        record: SpatialAnchorManager.AnchorRecord,
+        anchorPosX: Float, anchorPosY: Float, anchorPosZ: Float,
+        anchorRotX: Float, anchorRotY: Float, anchorRotZ: Float, anchorRotW: Float
+    ): PlacedModel? {
+        val file = File(record.modelPath)
+        if (!file.exists()) {
+            Log.w(TAG, "spawnFromAnchor: model file missing: ${record.modelPath}")
+            return null
+        }
+        return try {
+            val bytes = file.readBytes()
+            val gpuId = renderer.loadGlb(bytes)
+            if (gpuId < 0) {
+                Log.w(TAG, "spawnFromAnchor: GLB load failed: ${file.name}")
+                return null
+            }
+            val gpuModel = renderer.getModel(gpuId) ?: return null
+            // World pose = anchor pose * offset. For now the offset is zero in the common
+            // case (anchor created at the model pivot itself); we still respect the stored
+            // offset so future workflows that anchor to a wall/floor independent of the
+            // model pivot will just work.
+            val worldPosX = anchorPosX + rotateX(anchorRotX, anchorRotY, anchorRotZ, anchorRotW,
+                record.offsetPosX, record.offsetPosY, record.offsetPosZ)
+            val worldPosY = anchorPosY + rotateY(anchorRotX, anchorRotY, anchorRotZ, anchorRotW,
+                record.offsetPosX, record.offsetPosY, record.offsetPosZ)
+            val worldPosZ = anchorPosZ + rotateZ(anchorRotX, anchorRotY, anchorRotZ, anchorRotW,
+                record.offsetPosX, record.offsetPosY, record.offsetPosZ)
+            // World rotation = anchor rotation * offset rotation
+            val (wrx, wry, wrz, wrw) = quatMul(
+                anchorRotX, anchorRotY, anchorRotZ, anchorRotW,
+                record.offsetRotX, record.offsetRotY, record.offsetRotZ, record.offsetRotW
+            )
+            val placed = PlacedModel(
+                file = file, asset = null, gpuModelId = gpuId,
+                scale = record.scale, baseScale = record.scale,
+                posX = worldPosX, posY = worldPosY, posZ = worldPosZ,
+                rotX = wrx, rotY = wry, rotZ = wrz, rotW = wrw,
+                metallic = record.metallic, roughness = record.roughness,
+                exposure = record.exposure, contrast = record.contrast, saturation = record.saturation,
+                anchorUuid = record.uuid.copyOf()
+            )
+            gpuModel.metallic = placed.metallic
+            gpuModel.roughness = placed.roughness
+            gpuModel.exposure = placed.exposure
+            gpuModel.contrast = placed.contrast
+            gpuModel.saturation = placed.saturation
+            models.add(placed)
+            if (selectedModelIndex < 0) selectedModelIndex = models.size - 1
+            updateModelTransform(placed)
+            Log.i(TAG, "spawnFromAnchor: ${file.name} at ($worldPosX,$worldPosY,$worldPosZ)")
+            placed
+        } catch (e: Exception) {
+            Log.e(TAG, "spawnFromAnchor error: ${e.message}", e)
+            null
+        }
+    }
+
+    // ── Hex utility (shared with scene JSON) ─────────────────────────
+    private fun bytesToHex(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            val v = b.toInt() and 0xff
+            sb.append("0123456789abcdef"[v ushr 4])
+            sb.append("0123456789abcdef"[v and 0x0f])
+        }
+        return sb.toString()
+    }
+
+    private fun hexToBytes(hex: String): ByteArray? {
+        if (hex.isEmpty() || hex.length % 2 != 0) return null
+        val out = ByteArray(hex.length / 2)
+        for (i in out.indices) {
+            val hi = Character.digit(hex[i * 2], 16)
+            val lo = Character.digit(hex[i * 2 + 1], 16)
+            if (hi < 0 || lo < 0) return null
+            out[i] = ((hi shl 4) or lo).toByte()
+        }
+        return out
+    }
+
+    private fun rotateX(qx: Float, qy: Float, qz: Float, qw: Float, vx: Float, vy: Float, vz: Float): Float {
+        val tx = 2f * (qy * vz - qz * vy)
+        val ty = 2f * (qz * vx - qx * vz)
+        val tz = 2f * (qx * vy - qy * vx)
+        return vx + qw * tx + (qy * tz - qz * ty)
+    }
+    private fun rotateY(qx: Float, qy: Float, qz: Float, qw: Float, vx: Float, vy: Float, vz: Float): Float {
+        val tx = 2f * (qy * vz - qz * vy)
+        val ty = 2f * (qz * vx - qx * vz)
+        val tz = 2f * (qx * vy - qy * vx)
+        return vy + qw * ty + (qz * tx - qx * tz)
+    }
+    private fun rotateZ(qx: Float, qy: Float, qz: Float, qw: Float, vx: Float, vy: Float, vz: Float): Float {
+        val tx = 2f * (qy * vz - qz * vy)
+        val ty = 2f * (qz * vx - qx * vz)
+        val tz = 2f * (qx * vy - qy * vx)
+        return vz + qw * tz + (qx * ty - qy * tx)
+    }
+
+    private data class Quat(val x: Float, val y: Float, val z: Float, val w: Float)
+    private fun quatMul(
+        ax: Float, ay: Float, az: Float, aw: Float,
+        bx: Float, by: Float, bz: Float, bw: Float
+    ): Quat = Quat(
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz
+    )
 }
