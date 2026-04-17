@@ -484,4 +484,115 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsUsingStageSpace(
     return (g_renderer && g_renderer->isUsingStageSpace()) ? JNI_TRUE : JNI_FALSE;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Display refresh rate (frame-pacing lock)
+// ═══════════════════════════════════════════════════════════════════════
+
+JNIEXPORT jfloatArray JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetAvailableRefreshRates(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return env->NewFloatArray(0);
+    float rates[16];
+    int count = g_renderer->getAvailableRefreshRates(rates, 16);
+    if (count < 0) count = 0;
+    jfloatArray arr = env->NewFloatArray(count);
+    if (count > 0 && arr) env->SetFloatArrayRegion(arr, 0, count, rates);
+    return arr;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetDisplayRefreshRate(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return 0.0f;
+    return g_renderer->getDisplayRefreshRate();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeRequestDisplayRefreshRate(
+        JNIEnv* env, jobject thiz, jfloat rateHz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    return g_renderer->requestDisplayRefreshRate(rateHz) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Eye-tracked foveation
+// ═══════════════════════════════════════════════════════════════════════
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeHasEyeTrackedFoveation(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return (g_renderer && g_renderer->hasEyeTrackedFoveation()) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetEyeTrackedFoveation(
+        JNIEnv* env, jobject thiz, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    return g_renderer->setEyeTrackedFoveation(enabled) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsEyeTrackedFoveationEnabled(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return (g_renderer && g_renderer->isEyeTrackedFoveationEnabled()) ? JNI_TRUE : JNI_FALSE;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Thermal / perf-settings
+// ═══════════════════════════════════════════════════════════════════════
+
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeHasPerfSettings(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return (g_renderer && g_renderer->hasPerfSettings()) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Returns: highest pending notification level, encoded with domain in high bits:
+//   bits 0..7   = toLevel (XrPerfSettingsNotificationLevelEXT)
+//   bits 8..15  = fromLevel
+//   bits 16..23 = domain (0=CPU, 1=GPU)
+//   bit  31     = set if an event was consumed (no event → return -1)
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeConsumeThermalEvent(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return -1;
+    int dom = 0, fromL = 0, toL = 0;
+    if (!g_renderer->consumeThermalEvent(&dom, &fromL, &toL)) return -1;
+    // Pack without triggering sign extension.
+    return (jint)((((uint32_t)dom & 0xFF) << 16)
+                | (((uint32_t)fromL & 0xFF) << 8)
+                | ((uint32_t)toL & 0xFF));
+}
+
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetThermalLevel(
+        JNIEnv* env, jobject thiz, jint domain) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return 0;
+    return (jint)g_renderer->getThermalNotificationLevel(domain);
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetRenderScale(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return 1.0f;
+    return g_renderer->getRenderScale();
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetRenderScale(
+        JNIEnv* env, jobject thiz, jfloat scale) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_renderer) g_renderer->setRenderScale(scale);
+}
+
 } // extern "C"

@@ -89,6 +89,11 @@ object SettingsManager {
     // Haptic scripting (funscript/HSP playback) — values: Off|Reactive|Scripted|Mixed
     private const val KEY_HAPTIC_SCRIPT_MODE = "haptic_script_mode"
 
+    // Native OpenXR tuning (applies in FilamentModelActivity / unmanaged space)
+    private const val KEY_DISPLAY_REFRESH_RATE = "display_refresh_rate"
+    private const val KEY_EYE_TRACKED_FOVEATION = "eye_tracked_foveation"
+    private const val KEY_THERMAL_AUTO_DOWNGRADE = "thermal_auto_downgrade"
+
     // ── Defaults ────────────────────────────────────────────────────────
     private const val DEFAULT_PLAYBACK_SPEED = 1.0f
     private const val DEFAULT_SEEK_INCREMENT_MS = 10_000L
@@ -233,6 +238,25 @@ object SettingsManager {
     var zoomLevel: Float
         get() { ensureInit(); return prefs.getFloat(KEY_ZOOM_LEVEL, DEFAULT_ZOOM_LEVEL).coerceIn(0.1f, 20.0f) }
         set(value) { ensureInit(); prefs.edit().putFloat(KEY_ZOOM_LEVEL, value.coerceIn(0.1f, 20.0f)).apply() }
+
+    // ── Native OpenXR tuning ────────────────────────────────────────────
+    // 0 = auto (highest supported); otherwise target Hz (72/90/120). Clamped
+    // against the actual supported-rates list at apply time.
+    var displayRefreshRate: Int
+        get() { ensureInit(); return prefs.getInt(KEY_DISPLAY_REFRESH_RATE, 0) }
+        set(value) { ensureInit(); prefs.edit().putInt(KEY_DISPLAY_REFRESH_RATE, value).apply() }
+
+    // Enable eye-tracked foveation when supported. Falls back to the static
+    // FB foveation cone if the runtime/hardware does not report support.
+    var eyeTrackedFoveation: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_EYE_TRACKED_FOVEATION, true) }
+        set(value) { ensureInit(); prefs.edit().putBoolean(KEY_EYE_TRACKED_FOVEATION, value).apply() }
+
+    // Auto-downgrade effects / refresh / resolution when XR_EXT_performance_settings
+    // reports a thermal warning. Users who want deterministic perf can disable.
+    var thermalAutoDowngrade: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_THERMAL_AUTO_DOWNGRADE, true) }
+        set(value) { ensureInit(); prefs.edit().putBoolean(KEY_THERMAL_AUTO_DOWNGRADE, value).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 
