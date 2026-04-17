@@ -699,4 +699,113 @@ Java_com_ashairfoil_prism_scene_SceneOcclusionManager_nativeOcclusionDiagnostics
     return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Spatial anchor JNI (XR_EXT_spatial_entity family)
+// All functions no-op when g_renderer is null or anchors aren't supported.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Is the anchor manager ready for create/resolve calls?
+// Returns: 0=not supported, 1=supported but not ready yet, 2=ready
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativeStatus(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return 0;
+    auto& a = g_renderer->anchors();
+    if (!a.isSupported()) return 0;
+    return a.isReady() ? 2 : 1;
+}
+
+// Submit anchor create+persist. posRot is [px,py,pz, rx,ry,rz,rw] in appSpace.
+// Returns: clientHandle (>0) or -1 on failure/not-ready.
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativeSubmitCreate(
+        JNIEnv* env, jobject thiz, jfloatArray posRot) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return -1;
+    if (!posRot || env->GetArrayLength(posRot) < 7) return -1;
+    jfloat buf[7];
+    env->GetFloatArrayRegion(posRot, 0, 7, buf);
+    XrPosef pose{};
+    pose.position.x = buf[0];
+    pose.position.y = buf[1];
+    pose.position.z = buf[2];
+    pose.orientation.x = buf[3];
+    pose.orientation.y = buf[4];
+    pose.orientation.z = buf[5];
+    pose.orientation.w = buf[6];
+    return g_renderer->anchors().submitCreate(pose, g_renderer->lastPredictedTime());
+}
+
+// Pop one completed create result.
+// outBuf layout: [0]=clientHandle, [1]=success (0/1), [2..17]=uuid bytes (16 floats, 1 byte each).
+// Returns JNI_TRUE if a result was popped.
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativePollCreateResult(
+        JNIEnv* env, jobject thiz, jintArray outHandleFlag, jbyteArray outUuid) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    if (!outHandleFlag || !outUuid) return JNI_FALSE;
+    if (env->GetArrayLength(outHandleFlag) < 2) return JNI_FALSE;
+    if (env->GetArrayLength(outUuid) < XR_UUID_SIZE) return JNI_FALSE;
+    chloe::AnchorCreateResult r;
+    if (!g_renderer->anchors().popCreateResult(r)) return JNI_FALSE;
+    jint hf[2] = { r.clientHandle, r.success ? 1 : 0 };
+    env->SetIntArrayRegion(outHandleFlag, 0, 2, hf);
+    env->SetByteArrayRegion(outUuid, 0, XR_UUID_SIZE,
+                             reinterpret_cast<const jbyte*>(r.uuid.bytes));
+    return JNI_TRUE;
+}
+
+// Submit a resolve request for a list of UUIDs.
+// uuidsFlat is a byte array of length (count * 16), containing UUIDs back-to-back.
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativeSubmitResolve(
+        JNIEnv* env, jobject thiz, jbyteArray uuidsFlat, jint count) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return;
+    if (!uuidsFlat || count <= 0) return;
+    if (env->GetArrayLength(uuidsFlat) < count * (jint)XR_UUID_SIZE) return;
+    std::vector<chloe::AnchorUuid> uuids(count);
+    env->GetByteArrayRegion(uuidsFlat, 0, count * (jint)XR_UUID_SIZE,
+                             reinterpret_cast<jbyte*>(uuids[0].bytes));
+    g_renderer->anchors().submitResolve(uuids.data(), (uint32_t)count);
+}
+
+// Pop one resolved anchor result.
+// outUuid: 16 bytes. outPoseFlag: [0]=valid(0/1), [1..7]=pose px,py,pz,rx,ry,rz,rw.
+// Returns JNI_TRUE if a result was popped.
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativePollResolveResult(
+        JNIEnv* env, jobject thiz, jbyteArray outUuid, jfloatArray outPoseFlag) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    if (!outUuid || !outPoseFlag) return JNI_FALSE;
+    if (env->GetArrayLength(outUuid) < XR_UUID_SIZE) return JNI_FALSE;
+    if (env->GetArrayLength(outPoseFlag) < 8) return JNI_FALSE;
+    chloe::AnchorResolveResult r;
+    if (!g_renderer->anchors().popResolveResult(r)) return JNI_FALSE;
+    env->SetByteArrayRegion(outUuid, 0, XR_UUID_SIZE,
+                             reinterpret_cast<const jbyte*>(r.uuid.bytes));
+    jfloat pf[8] = {
+        r.valid ? 1.0f : 0.0f,
+        r.pose.position.x, r.pose.position.y, r.pose.position.z,
+        r.pose.orientation.x, r.pose.orientation.y, r.pose.orientation.z, r.pose.orientation.w
+    };
+    env->SetFloatArrayRegion(outPoseFlag, 0, 8, pf);
+    return JNI_TRUE;
+}
+
+// Submit an unpersist for one UUID.
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativeUnpersist(
+        JNIEnv* env, jobject thiz, jbyteArray uuid) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return;
+    if (!uuid || env->GetArrayLength(uuid) < XR_UUID_SIZE) return;
+    chloe::AnchorUuid u;
+    env->GetByteArrayRegion(uuid, 0, XR_UUID_SIZE, reinterpret_cast<jbyte*>(u.bytes));
+    g_renderer->anchors().submitUnpersist(u);
+}
+
 } // extern "C"

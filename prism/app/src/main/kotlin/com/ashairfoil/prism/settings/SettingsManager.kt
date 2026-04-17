@@ -97,6 +97,11 @@ object SettingsManager {
     private const val KEY_EYE_TRACKED_FOVEATION = "eye_tracked_foveation"
     private const val KEY_THERMAL_AUTO_DOWNGRADE = "thermal_auto_downgrade"
 
+    // Persistent spatial anchors (XR_EXT_spatial_entity). Default on — placed models stay in the
+    // real room across sessions. Users who don't want the runtime to persist spatial data can
+    // opt out, falling back to purely session-local positions.
+    private const val KEY_USE_SPATIAL_ANCHORS = "use_spatial_anchors"
+
     // ── Defaults ────────────────────────────────────────────────────────
     private const val DEFAULT_PLAYBACK_SPEED = 1.0f
     private const val DEFAULT_SEEK_INCREMENT_MS = 10_000L
@@ -441,6 +446,14 @@ object SettingsManager {
     var occlusionEnabled: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_OCCLUSION_ENABLED, true) }
         set(v) { ensureInit(); prefs.edit().putBoolean(KEY_OCCLUSION_ENABLED, v).apply() }
+
+    // ── Persistent spatial anchors ──────────────────────────────────────
+    // True by default: placed 3D models auto-anchor to the user's real-world space via
+    // XR_EXT_spatial_entity so they reappear in the same physical spot next session.
+    // Users who turn this off fall back to session-local poses (current legacy behavior).
+    var useSpatialAnchors: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_USE_SPATIAL_ANCHORS, true) }
+        set(v) { ensureInit(); prefs.edit().putBoolean(KEY_USE_SPATIAL_ANCHORS, v).apply() }
 
     // ── Favorite folders ────────────────────────────────────────────────
     // Stored as newline-separated paths

@@ -12,6 +12,7 @@
 #include "openxr_input.h"  // reuse ControllerState
 #include "xr_light_estimation.h"
 #include "xr_sensors.h"
+#include "xr_spatial_anchors.h"
 
 #define XRLOG_TAG "ChloeVR-XRRenderer"
 #define XR_LOGI(...) __android_log_print(ANDROID_LOG_INFO, XRLOG_TAG, __VA_ARGS__)
@@ -202,6 +203,11 @@ public:
     bool isVisible() const { return visible_; }
     bool isUsingStageSpace() const { return usingStageSpace_; }
 
+    // Spatial anchors (persistent model positions across sessions)
+    chloe::XrSpatialAnchorManager& anchors() { return spatialAnchors_; }
+    const chloe::XrSpatialAnchorManager& anchors() const { return spatialAnchors_; }
+    XrTime lastPredictedTime() const { return lastPredictedTime_; }
+
 private:
     bool createInstance(JNIEnv* env, jobject activity);
     bool getSystem();
@@ -387,4 +393,10 @@ private:
     XrAction aimPoseAction_ = XR_NULL_HANDLE;
     XrSpace handSpaces_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
     XrSpace aimSpaces_[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+
+    // ── Spatial anchor manager (XR_EXT_spatial_entity family) ──
+    // Initialized after session becomes READY (inside handleSessionStateChange or init
+    // post-session). Owns persistent anchor lifecycle and future polling.
+    chloe::XrSpatialAnchorManager spatialAnchors_;
+    bool spatialAnchorsInitAttempted_ = false;
 };

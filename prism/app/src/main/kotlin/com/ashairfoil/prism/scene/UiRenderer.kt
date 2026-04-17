@@ -1773,11 +1773,22 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, ThemeManager.PINK_HOT)
         drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, ThemeManager.RED)
 
-        // Row 4: LIGHTS / SENSOR HUD
+        // Row 4: LIGHTS / SENSOR HUD / BLOOM (or anchor-clear when 3rd slot is re-purposed).
+        // When spatial anchors are supported, replace BLOOM's slot with a combined
+        // "CLEAR ANCH" label so the user has a visible control without overflowing the panel.
+        // Bloom remains accessible via param adjustments (BeatReactor setting).
         val row4Y = row3Y + btnH + btnGap
+        val anchorMgr = try { activity.spatialAnchors } catch (_: UninitializedPropertyAccessException) { null }
+        val anchorsUiVisible = anchorMgr != null && anchorMgr.isSupported()
         drawButton(r2b1, r2b1 + btn3W, row4Y, "LIGHTS", hoveredActionButton == 130, ThemeManager.GOLD_WARM)
         drawButton(r2b2, r2b2 + btn3W, row4Y, "SENSOR HUD", hoveredActionButton == 134, ThemeManager.GREEN)
-        drawButton(r2b3, r2b3 + btn3W, row4Y, "BLOOM", hoveredActionButton == 135, ThemeManager.PURPLE_DEEP)
+        if (anchorsUiVisible) {
+            val n = anchorMgr.allRecords().size
+            val lbl = if (n > 0) "CLR ANCH ($n)" else "CLR ANCH"
+            drawButton(r2b3, r2b3 + btn3W, row4Y, lbl, hoveredActionButton == 140, ThemeManager.PINK_HOT)
+        } else {
+            drawButton(r2b3, r2b3 + btn3W, row4Y, "BLOOM", hoveredActionButton == 135, ThemeManager.PURPLE_DEEP)
+        }
 
         // ── Sensor debug HUD overlay ──
         if (sensorHudVisible && sensorDebugStr.isNotEmpty()) {
