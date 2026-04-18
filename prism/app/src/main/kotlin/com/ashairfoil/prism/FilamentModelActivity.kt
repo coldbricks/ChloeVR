@@ -554,33 +554,95 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     /** Shuffle a model's dance parameters — amplitudes, rates, phases, ease.
-     *  Used by both the manual SHUFFLE button and IMPROV auto-resume. */
+     *  Used by both the manual SHUFFLE button and IMPROV auto-resume.
+     *
+     *  Rolls one of four choreographed patterns instead of independent randoms.
+     *  All patterns obey the sweep-speed law amp × rate ≈ K, so big-and-slow
+     *  reads identically to small-and-fast — never the earthquake combo of
+     *  large amplitude at 1/16. */
     internal fun shuffleDance(m: SceneManager.PlacedModel) {
         val rng = java.util.concurrent.ThreadLocalRandom.current()
-        val rates = intArrayOf(2, 4, 8, 16)
-        val eases = SceneManager.DanceEase.entries.toTypedArray()
-        m.danceYawDeg = if (rng.nextFloat() < 0.75f) (5f + rng.nextFloat() * 20f) else 0f
-        m.dancePitchDeg = if (rng.nextFloat() < 0.45f) (3f + rng.nextFloat() * 12f) else 0f
-        m.danceYMeters = if (rng.nextFloat() < 0.4f) (0.01f + rng.nextFloat() * 0.04f) else 0f
-        // Guarantee at least one axis is active so something keeps dancing.
-        if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-            m.danceYawDeg = 8f + rng.nextFloat() * 15f
-        }
-        m.danceYawRate = rates[rng.nextInt(rates.size)]
-        m.dancePitchRate = rates[rng.nextInt(rates.size)]
-        m.danceYRate = rates[rng.nextInt(rates.size)]
-        m.danceYawPhase = rng.nextFloat()
-        m.dancePitchPhase = rng.nextFloat()
-        m.danceYPhase = rng.nextFloat()
-        // Bias toward smooth eases; occasional BACK/EXPO for attitude.
-        val easeRoll = rng.nextFloat()
-        m.danceEase = when {
-            easeRoll < 0.40f -> SceneManager.DanceEase.SINE
-            easeRoll < 0.60f -> SceneManager.DanceEase.CUBIC
-            easeRoll < 0.75f -> SceneManager.DanceEase.CIRC
-            easeRoll < 0.85f -> SceneManager.DanceEase.EXPO
-            easeRoll < 0.95f -> SceneManager.DanceEase.BACK
-            else -> SceneManager.DanceEase.LINEAR
+        // Sweep-speed K constants — amplitude at any rate = K / rate.
+        // Tuned so 1/4 base lands in the visually-pleasing zone:
+        //   yaw  K=64  → 1/4=16°, 1/8=8°, 1/16=4°
+        //   pit  K=32  → 1/4=8°,  1/8=4°, 1/16=2°
+        //   bob  K=.14 → 1/4=3.5cm, 1/8≈1.75cm, 1/16≈0.88cm
+        val kYaw = 64f; val kPitch = 32f; val kBob = 0.14f
+        val phases = floatArrayOf(0f, 0.25f, 0.5f, 0.75f)
+
+        val patternRoll = rng.nextFloat()
+        when {
+            // ── WIND (circular hip motion) — slightly favored ─────────────
+            // Yaw + pitch at same rate with pitch phase +90° → COM traces
+            // a circle in the frontal plane (belly-dance winding).
+            patternRoll < 0.34f -> {
+                val rate = if (rng.nextFloat() < 0.7f) 4 else 8
+                val yawPhase = phases[rng.nextInt(phases.size)]
+                m.danceYawRate = rate
+                m.dancePitchRate = rate
+                m.danceYawDeg = (kYaw / rate).coerceAtMost(30f)
+                m.dancePitchDeg = (kPitch / rate).coerceAtMost(20f)
+                m.danceYawPhase = yawPhase
+                m.dancePitchPhase = (yawPhase + 0.25f) % 1f
+                if (rng.nextFloat() < 0.5f) {
+                    m.danceYRate = (rate / 2).coerceAtLeast(2)
+                    m.danceYMeters = (kBob / m.danceYRate * 0.6f).coerceAtMost(0.08f)
+                    m.danceYPhase = phases[rng.nextInt(phases.size)]
+                } else {
+                    m.danceYRate = 4; m.danceYMeters = 0f; m.danceYPhase = 0f
+                }
+                m.danceEase = SceneManager.DanceEase.SINE
+            }
+            // ── SWAY — pure side-to-side hip sway, yaw only ────────────────
+            patternRoll < 0.56f -> {
+                val rate = if (rng.nextFloat() < 0.65f) 4 else 8
+                m.danceYawRate = rate
+                m.danceYawDeg = (kYaw / rate).coerceAtMost(30f)
+                m.danceYawPhase = phases[rng.nextInt(phases.size)]
+                m.dancePitchRate = 4; m.dancePitchDeg = 0f; m.dancePitchPhase = 0f
+                m.danceYRate = 4; m.danceYMeters = 0f; m.danceYPhase = 0f
+                m.danceEase = if (rng.nextFloat() < 0.5f)
+                    SceneManager.DanceEase.SINE else SceneManager.DanceEase.LINEAR
+            }
+            // ── POP (booty whip) — fast bob + linear yaw hip-shake ────────
+            // Bob carries the bounce (PHYSICS asymmetric envelope adds the
+            // down-fast/up-slow whip). Yaw locked 1:1 with bob, half-K
+            // amplitude so the shake stays tight, never earthquake.
+            patternRoll < 0.78f -> {
+                val bobRate = if (rng.nextFloat() < 0.6f) 8 else 16
+                m.danceYRate = bobRate
+                m.danceYMeters = (kBob / bobRate).coerceAtMost(0.08f)
+                m.danceYPhase = 0f
+                m.danceYawRate = bobRate
+                m.danceYawDeg = (kYaw * 0.7f / bobRate).coerceAtMost(30f)
+                m.danceYawPhase = 0.25f
+                m.dancePitchRate = 4; m.dancePitchDeg = 0f; m.dancePitchPhase = 0f
+                m.danceEase = SceneManager.DanceEase.LINEAR
+            }
+            // ── FULL groove — all 3 axes at locked harmonic ratios ─────────
+            else -> {
+                val baseRate = if (rng.nextFloat() < 0.7f) 4 else 8
+                fun pickRate(): Int = when (rng.nextInt(3)) {
+                    0 -> baseRate / 2
+                    1 -> baseRate
+                    else -> baseRate * 2
+                }.coerceIn(2, 16)
+                m.danceYawRate = pickRate()
+                m.dancePitchRate = pickRate()
+                m.danceYRate = pickRate()
+                m.danceYawDeg = (kYaw / m.danceYawRate).coerceAtMost(30f)
+                m.dancePitchDeg = (kPitch / m.dancePitchRate).coerceAtMost(20f)
+                m.danceYMeters = (kBob / m.danceYRate).coerceAtMost(0.08f)
+                m.danceYawPhase = phases[rng.nextInt(phases.size)]
+                m.dancePitchPhase = phases[rng.nextInt(phases.size)]
+                m.danceYPhase = phases[rng.nextInt(phases.size)]
+                val easeRoll = rng.nextFloat()
+                m.danceEase = when {
+                    easeRoll < 0.50f -> SceneManager.DanceEase.SINE
+                    easeRoll < 0.95f -> SceneManager.DanceEase.LINEAR
+                    else -> SceneManager.DanceEase.CUBIC
+                }
+            }
         }
     }
 
