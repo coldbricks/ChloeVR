@@ -1430,6 +1430,10 @@ class FilamentModelActivity : ComponentActivity() {
                             // holding the selected model, anim yields to them.
                             val ar = audioReactor
                             if (ar != null) {
+                                // Floor-contact shadow pulse is written by the selected
+                                // dancer below; reset each frame so non-dance scenes
+                                // get the user's persisted shadow darkness untouched.
+                                gr.shadowDarknessPulse = 0f
                                 val rawFill = ar.boxFillPct
                                 for (i in models.indices) {
                                     val m = models[i]
@@ -1472,6 +1476,52 @@ class FilamentModelActivity : ComponentActivity() {
                                         val b = m.animBasePose
                                         var px = b[0]; var py = b[1]; var pz = b[2]
                                         var qx = b[3]; var qy = b[4]; var qz = b[5]; var qw = b[6]
+
+                                        // Camera-aware yaw bias — capture facing-relative-to-viewer
+                                        // on the first dance frame, then slowly slew the base yaw
+                                        // so the user keeps her (or her ass) in their face as they
+                                        // move through the room. ~1.5s exp time-constant — slow
+                                        // enough not to feel mechanical, fast enough to track.
+                                        if (m.faceCamEnabled) {
+                                            val dxC = camPosX - m.posX
+                                            val dzC = camPosZ - m.posZ
+                                            if (dxC * dxC + dzC * dzC > 0.04f) {
+                                                val dirYaw = kotlin.math.atan2(dxC.toDouble(), dzC.toDouble()).toFloat()
+                                                if (!m.faceCamHasCapture) {
+                                                    val cyaw = kotlin.math.atan2(
+                                                        (2f * (qw * qy + qx * qz)).toDouble(),
+                                                        (1f - 2f * (qy * qy + qz * qz)).toDouble()
+                                                    ).toFloat()
+                                                    m.faceYawAtArm = cyaw
+                                                    m.faceYawCurrent = cyaw
+                                                    m.faceCamOffset = cyaw - dirYaw
+                                                    m.faceCamHasCapture = true
+                                                }
+                                                val targetYaw = dirYaw + m.faceCamOffset
+                                                var delta = targetYaw - m.faceYawCurrent
+                                                val pi = Math.PI.toFloat()
+                                                val twoPi = 2f * pi
+                                                while (delta > pi) delta -= twoPi
+                                                while (delta < -pi) delta += twoPi
+                                                m.faceYawCurrent += delta * 0.0093f  // ~1.5s tau @ 72fps
+                                                val biasYaw = m.faceYawCurrent - m.faceYawAtArm
+                                                val half = biasYaw * 0.5f
+                                                val sb = kotlin.math.sin(half.toDouble()).toFloat()
+                                                val cb = kotlin.math.cos(half.toDouble()).toFloat()
+                                                val nx = cb * qx + sb * qz
+                                                val ny = cb * qy + sb * qw
+                                                val nz = cb * qz - sb * qx
+                                                val nw = cb * qw - sb * qy
+                                                qx = nx; qy = ny; qz = nz; qw = nw
+                                            }
+                                        }
+
+                                        // Drop detection — phase-wrap on phaseInBars(16) marks bar 1
+                                        // of each 16-bar phrase (= the drop). Boosts the next impact
+                                        // kick + flashes the contact shadow.
+                                        val curPhrasePhase = if (hasTempo) ar.phaseInBars(16) else 0f
+                                        val isDropBeat = hasTempo && curPhrasePhase < m.lastPhrasePhase - 0.05f
+                                        m.lastPhrasePhase = curPhrasePhase
 
                                         // fBm amplitude modulation — slow pseudo-random scalar per axis
                                         // so the same loop never has identical magnitudes. Kills loop-feel.
@@ -1574,17 +1624,20 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
 
                                         // ── ALIVE: impact kick on each detected beat ──
+                                        // Drop beats get a deeper roll-axis kick + shadow flash.
                                         if (ar.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f) {
                                             m.lastBeatSeen = ar.beatCounter
                                             m.impactKickStartMs = System.currentTimeMillis()
-                                            m.impactKickAxis = (ar.beatCounter % 3).toInt()
+                                            m.impactKickAxis = if (isDropBeat) 2 else (ar.beatCounter % 3).toInt()
+                                            m.kickAmpDeg = if (isDropBeat) 6f else 3f
+                                            if (isDropBeat) m.dropFlashMs = System.currentTimeMillis()
                                         }
                                         if (m.impactKickStartMs > 0L) {
                                             val el = (System.currentTimeMillis() - m.impactKickStartMs).toFloat()
                                             if (el < 200f) {
                                                 val kp = el / 200f
                                                 val ks = kotlin.math.sin(Math.PI * kp).toFloat() * (1f - kp)
-                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * ks).toFloat()
+                                                val kickRad = Math.toRadians((m.kickAmpDeg * m.physicsAmount * ks).toDouble()).toFloat()
                                                 val half = kickRad * 0.5f
                                                 val sh = kotlin.math.sin(half); val ch = kotlin.math.cos(half)
                                                 when (m.impactKickAxis) {
@@ -1670,6 +1723,22 @@ class FilamentModelActivity : ComponentActivity() {
                                             m.posX = px; m.posY = py; m.posZ = pz
                                             m.rotX = tqx; m.rotY = tqy; m.rotZ = tqz; m.rotW = tqw
                                             m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
+                                        }
+                                        // Floor-contact shadow pulse — when the selected dancer's bob
+                                        // reaches the bottom (landing), darken the global PCF shadow
+                                        // briefly. Drop-bar landings stack a deeper, decaying punch.
+                                        if (i == selectedModelIndex && m.danceYMeters > 0f && hasTempo) {
+                                            val phB = (ar.phaseAt(m.danceYRate) + m.danceYPhase) % 1f
+                                            val landFactor = (-kotlin.math.cos(2.0 * Math.PI * phB).toFloat())
+                                                .coerceAtLeast(0f)  // peaks 1.0 at bottom of bob
+                                            var pulse = 0.18f * m.physicsAmount * landFactor
+                                            if (m.dropFlashMs > 0L) {
+                                                val dropAge = (System.currentTimeMillis() - m.dropFlashMs).toFloat()
+                                                if (dropAge in 0f..300f) {
+                                                    pulse += 0.25f * (1f - dropAge / 300f)
+                                                }
+                                            }
+                                            gr.shadowDarknessPulse = pulse
                                         }
                                         sceneManager.updateModelTransform(m)
                                     } else if (m.animHasA && m.animHasB) {

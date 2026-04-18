@@ -1152,6 +1152,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     } else {
                         m.animHasBase = false
                         m.danceYawDeg = 0f; m.dancePitchDeg = 0f; m.danceYMeters = 0f
+                        m.faceCamHasCapture = false  // re-capture facing on next arm
                         Log.i(TAG, "Dance cleared on ${m.file.name}")
                     }
                     activity.uiNeedsRefresh = true

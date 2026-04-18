@@ -148,7 +148,22 @@ class SceneManager(
         var lastDanceNanos: Long = 0L,
         // Per-model fBm seed so the "slow random amplitude drift" is uncorrelated
         // between axes (prevents them all breathing in unison).
-        var fbmSeed: Float = 0f
+        var fbmSeed: Float = 0f,
+        // Camera-aware yaw bias — captures the model's facing-relative-to-viewer
+        // at dance-arm time, then slowly drifts the base pose so that relative
+        // orientation is preserved as the user moves around. Lets the user keep
+        // her (or her ass) consistently in their face. Cleared on disarm so the
+        // next arm re-captures from the model's then-current orientation.
+        var faceCamEnabled: Boolean = true,
+        var faceCamHasCapture: Boolean = false,
+        var faceCamOffset: Float = 0f,
+        var faceYawAtArm: Float = 0f,
+        var faceYawCurrent: Float = 0f,
+        // Drop-bar tracking — wraps detect bar 1 of each 16-bar phrase, which
+        // fires a louder impact kick (roll axis) and pulses the contact shadow.
+        var lastPhrasePhase: Float = 0f,
+        var dropFlashMs: Long = 0L,
+        var kickAmpDeg: Float = 3f
     )
 
     /** Easing curves available for dance motion — mirrors ShapesXR's options. */

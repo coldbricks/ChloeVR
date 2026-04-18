@@ -95,6 +95,10 @@ class GlesModelRenderer {
     private val shadowMapSize = 2048
     var shadowLightMatrix = FloatArray(16)
     var shadowDarkness = 0.7f
+    // Transient additive pulse driven by the dance system on bob-landings
+    // and drop beats. Caller assigns each frame; renderer sums it into
+    // shadowDarkness when binding the uniform. Clamped to [0,1] at use.
+    var shadowDarknessPulse = 0f
     var shadowSoftness = 2.0f
     var shadowSpread = 8f  // ortho extent in meters — larger = wider shadow area
     var lightSize = 1.0f   // PCSS light size — controls penumbra width
@@ -1299,7 +1303,8 @@ class GlesModelRenderer {
 
         // Shadow uniforms
         GLES30.glUniformMatrix4fv(uGridShadowMVP, 1, false, shadowLightMatrix, 0)
-        GLES30.glUniform1f(uGridShadowDarkness, if (shadowEnabled) shadowDarkness else 0f)
+        GLES30.glUniform1f(uGridShadowDarkness,
+            if (shadowEnabled) (shadowDarkness + shadowDarknessPulse).coerceIn(0f, 1f) else 0f)
         GLES30.glUniform1f(uGridShadowSoftness, shadowSoftness)
         GLES30.glUniform1f(uGridLightSize, lightSize)
 
@@ -1369,7 +1374,7 @@ class GlesModelRenderer {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
         GLES30.glUniform1i(uSpShadowMap, 0)
         GLES30.glUniformMatrix4fv(uSpShadowMVP, 1, false, shadowLightMatrix, 0)
-        GLES30.glUniform1f(uSpShadowDarkness, shadowDarkness)
+        GLES30.glUniform1f(uSpShadowDarkness, (shadowDarkness + shadowDarknessPulse).coerceIn(0f, 1f))
         GLES30.glUniform1f(uSpShadowSoftness, shadowSoftness)
         GLES30.glUniform1f(uSpLightSize, lightSize)
 
