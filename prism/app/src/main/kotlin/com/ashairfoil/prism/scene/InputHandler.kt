@@ -192,6 +192,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
             BeatSlider("EXPAND", "x", 0.3f, 4f,
                 { activity.audioReactor?.dynRange ?: 2f },
                 { activity.audioReactor?.dynRange = it }),
+            // Silence floor — lowest value musicalLevel can reach. 0 = dance
+            // fully stops during a breakdown, 100% = no breathing at all (flat
+            // dynamics). Default 15% keeps motion alive during quiet passages.
+            BeatSlider("SILENCE", "%", 0f, 100f,
+                { (activity.audioReactor?.silenceFloor ?: 0.15f) * 100f },
+                { activity.audioReactor?.silenceFloor = (it / 100f).coerceIn(0f, 1f) }),
             BeatSlider("SMOOTH", "%", 0f, 100f,
                 { (activity.audioReactor?.smootherAmount ?: 0.3f) * 100f },
                 { activity.audioReactor?.smootherAmount = it / 100f }),
@@ -272,8 +278,117 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     com.ashairfoil.prism.settings.SettingsManager.vibesDynamicCurve = c
                     com.ashairfoil.prism.settings.SettingsManager.vibesPresetName = ""
                 }),
+            // FOOT anchor strength — moved from Row C (which now hosts the
+            // CHARACTER toggle). 100% = heels fully planted; body pivots
+            // around them. 0% = full drift (ice skater). Default 85%.
+            BeatSlider("FOOT", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.footAnchorStrength ?: 0.85f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.footAnchorStrength = (v / 100f).coerceIn(0f, 1f)
+                }),
         )
     }
+
+    // Tier 3 — CHARACTER sub-panel sliders. Swapped in for `beatSliders` when
+    // `activity.characterMode` is true. Each slider writes directly to the
+    // selected model's fields (same pattern as YAW/PITCH/BOB amp sliders).
+    val characterSliders by lazy {
+        arrayOf(
+            BeatSlider("YAW SHARP", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.yawSharpness ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.yawSharpness = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("YAW CMPLX", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.yawComplexity ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.yawComplexity = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("PITCH SHARP", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.pitchSharpness ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.pitchSharpness = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("PITCH CMPLX", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.pitchComplexity ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.pitchComplexity = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("BOB SHARP", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.bobSharpness ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.bobSharpness = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("BOB CMPLX", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.bobComplexity ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.bobComplexity = (v / 100f).coerceIn(0f, 1f)
+                }),
+            // Tier 3 Feature 4 — glute deformation sliders. Live on the
+            // CHARACTER sub-panel (plenty of room at 6 → 9 sliders) rather
+            // than a separate GLUTE sub-mode — saves a Row C slot and groups
+            // the per-model "body feel" knobs together. PUSH in cm for feel.
+            BeatSlider("GLUTE PUSH", "cm", 0f, 8f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.gluteBasePush ?: 0f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.gluteBasePush = (v / 100f).coerceIn(0f, 0.08f)
+                }),
+            BeatSlider("GLUTE SHAKE", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.gluteShakeIntensity ?: 0.5f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.gluteShakeIntensity = (v / 100f).coerceIn(0f, 1f)
+                }),
+            BeatSlider("GLUTE RADIUS", "cm", 5f, 30f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.gluteRadius ?: 0.15f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.gluteRadius = (v / 100f).coerceIn(0.05f, 0.30f)
+                }),
+        )
+    }
+
+    /** Active slider list — character sub-panel overrides reactor sliders. */
+    val activeSliders: Array<BeatSlider>
+        get() = if (activity.characterMode) characterSliders else beatSliders
 
     // ── Ray-Object Intersection ──
 
@@ -330,7 +445,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
     }
 
     private fun applyBeatSlider(idx: Int, normalizedX: Float) {
-        val slider = beatSliders.getOrNull(idx) ?: return
+        val slider = activeSliders.getOrNull(idx) ?: return
         val value = if (slider.logScale && slider.min > 0f) {
             // Log interpolation: left side of slider gets more resolution for low values
             val logMin = kotlin.math.ln(slider.min)
@@ -706,9 +821,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                             beatDragCorner = -1
                                         }
                                     }
-                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * beatSliders.size) {
-                                    // Slider area
-                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, beatSliders.size - 1)
+                                } else if (by >= sliderAreaTopHit && by < sliderAreaTopHit + sliderRowH * activeSliders.size) {
+                                    // Slider area — dispatches to characterSliders when that
+                                    // sub-panel is active, otherwise the main reactor sliders.
+                                    val sliderIdx = ((by - sliderAreaTopHit) / sliderRowH).toInt().coerceIn(0, activeSliders.size - 1)
                                     beatDraggingSlider = sliderIdx
                                     beatSliderLaserX = ((bx - 260f) / (984f - 260f)).coerceIn(0f, 1f)
                                     if (rightTrigger > 0.5f) {
@@ -1411,16 +1527,18 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 Log.i(TAG, "Haptic script mode: $next")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 144) {
-                // INTENSITY cycle: 0.25 → 0.5 → 1.0 → 1.5 → 2.0 → 0.25. Added the
-                // lower steps because the default 1.0× reads as "spaz" for many
-                // GLBs; 0.25-0.5× is the sweet spot for subtle realism.
+                // INTENSITY cycle: 0.25 → 0.5 → 1.0 → 2.0 → 3.0 → 5.0 → 0.25.
+                // Low end (0.25-0.5×) is sweet spot for subtle realism on most
+                // GLBs; upper end (3-5×) is explicit "go wild" headroom for
+                // moments where the user wants cartoon-level motion.
                 val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                 if (m != null) {
                     val next = when {
                         m.danceIntensity < 0.38f -> 0.5f
                         m.danceIntensity < 0.75f -> 1.0f
-                        m.danceIntensity < 1.25f -> 1.5f
-                        m.danceIntensity < 1.75f -> 2.0f
+                        m.danceIntensity < 1.5f  -> 2.0f
+                        m.danceIntensity < 2.5f  -> 3.0f
+                        m.danceIntensity < 4.0f  -> 5.0f
                         else -> 0.25f
                     }
                     m.danceIntensity = next
@@ -1462,21 +1580,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 146) {
-                // FOOT STICK strength cycle: 0 → 50 → 85 → 100 → 0. How planted
-                // her heels are. 100% = bolted to floor (body fully pivots around
-                // the heels), 0% = full drift (ice-skater). Sweet spot around 85%.
-                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                if (m != null) {
-                    val next = when {
-                        m.footAnchorStrength < 0.25f -> 0.50f
-                        m.footAnchorStrength < 0.70f -> 0.85f
-                        m.footAnchorStrength < 0.95f -> 1.0f
-                        else -> 0.0f
-                    }
-                    m.footAnchorStrength = next
-                    Log.i(TAG, "Foot stick: ${(next * 100).toInt()}% on ${m.file.name}")
-                    activity.uiNeedsRefresh = true
-                }
+                // Tier 3: toggle CHARACTER sub-panel. When on, the slider area
+                // shows per-axis sharpness/complexity sliders instead of the
+                // reactor sliders. FOOT cycle moved to a regular beat slider.
+                activity.characterMode = !activity.characterMode
+                Log.i(TAG, "Character panel: ${if (activity.characterMode) "open" else "closed"}")
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 147) {
                 // TAP TEMPO — each tap feeds AudioReactor's tap-BPM averager. Three taps → lock.
                 activity.audioReactor?.tapTempo()

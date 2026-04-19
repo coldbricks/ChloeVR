@@ -63,7 +63,16 @@ class GlesModelRenderer {
         var metallicRoughnessTexId: Int = 0,
         var emissiveTexId: Int = 0,
         var emissiveFactor: FloatArray = floatArrayOf(1f, 1f, 1f),
-        var hasNormalMap: Boolean = false
+        var hasNormalMap: Boolean = false,
+        // Tier 3 Feature 4 — glute deformation state (CPU-driven, shader-applied).
+        // Positions are model-local; radius 0 = disabled. Push in mesh units
+        // (pre-scale). The dance loop writes these each frame.
+        var gluteAPos: FloatArray = floatArrayOf(0f, 0f, 0f),
+        var gluteBPos: FloatArray = floatArrayOf(0f, 0f, 0f),
+        var gluteARadius: Float = 0f,
+        var gluteBRadius: Float = 0f,
+        var gluteAPush: Float = 0f,
+        var gluteBPush: Float = 0f
     )
 
     data class ShadowPlane(
@@ -196,6 +205,13 @@ class GlesModelRenderer {
     private var uUseSH = -1
     private var uSH = -1
     private var uModelMat = -1  // "uModel" in main shader
+    // Tier 3 Feature 4 — glute deformation uniforms
+    private var uGluteAPos = -1
+    private var uGluteBPos = -1
+    private var uGluteARadius = -1
+    private var uGluteBRadius = -1
+    private var uGluteAPush = -1
+    private var uGluteBPush = -1
     // PBR map uniforms
     private var uHasNormalMap = -1
     private var uNormalMap = -1
@@ -335,6 +351,13 @@ class GlesModelRenderer {
         uUseSH = GLES30.glGetUniformLocation(programId, "uUseSH")
         uSH = GLES30.glGetUniformLocation(programId, "uSH")
         uModelMat = GLES30.glGetUniformLocation(programId, "uModel")
+        // Tier 3 Feature 4 — glute deformation
+        uGluteAPos = GLES30.glGetUniformLocation(programId, "uGluteAPos")
+        uGluteBPos = GLES30.glGetUniformLocation(programId, "uGluteBPos")
+        uGluteARadius = GLES30.glGetUniformLocation(programId, "uGluteARadius")
+        uGluteBRadius = GLES30.glGetUniformLocation(programId, "uGluteBRadius")
+        uGluteAPush = GLES30.glGetUniformLocation(programId, "uGluteAPush")
+        uGluteBPush = GLES30.glGetUniformLocation(programId, "uGluteBPush")
 
         // Main FBO
         val fboBuf = intArrayOf(0)
@@ -1309,6 +1332,13 @@ class GlesModelRenderer {
                 GLES30.glUniform1i(uEmissiveMap, 3)
                 GLES30.glUniform3f(uEmissiveFactor, m.emissiveFactor[0], m.emissiveFactor[1], m.emissiveFactor[2])
             }
+            // Tier 3 Feature 4 — glute deformation (radius 0 → no-op in shader).
+            GLES30.glUniform3f(uGluteAPos, m.gluteAPos[0], m.gluteAPos[1], m.gluteAPos[2])
+            GLES30.glUniform3f(uGluteBPos, m.gluteBPos[0], m.gluteBPos[1], m.gluteBPos[2])
+            GLES30.glUniform1f(uGluteARadius, m.gluteARadius)
+            GLES30.glUniform1f(uGluteBRadius, m.gluteBRadius)
+            GLES30.glUniform1f(uGluteAPush, m.gluteAPush)
+            GLES30.glUniform1f(uGluteBPush, m.gluteBPush)
             GLES30.glBindVertexArray(m.vao)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, m.indexCount, GLES30.GL_UNSIGNED_INT, 0)
         }
@@ -2255,17 +2285,44 @@ layout(location=3) in vec4 aTangent;
 uniform mat4 uMVP, uModelView, uModel;
 uniform mat3 uNormalMatrix;
 uniform float uHasNormalMap;
+// Tier 3 Feature 4 — glute deformation. Two influence spheres in model-local
+// space; vertices inside a radius displace outward along their own normal,
+// smoothstep-falloff from inner 30% to edge. Radius = 0 disables the pair
+// entirely (the CPU zeroes the radius when the feature is off). Lighting
+// normals are NOT recomputed — for small pushes (<5cm on human-scale meshes)
+// the error is imperceptible; defer rederivation unless visibly wrong.
+uniform vec3 uGluteAPos;
+uniform vec3 uGluteBPos;
+uniform float uGluteARadius;
+uniform float uGluteBRadius;
+uniform float uGluteAPush;
+uniform float uGluteBPush;
 out vec3 vNormal, vPosition;
 out vec2 vTexCoord;
 out float vWorldY;
 out mat3 vTBN;
 void main() {
-    gl_Position = uMVP * vec4(aPosition, 1.0);
+    vec3 pos = aPosition;
+    if (uGluteARadius > 0.0001) {
+        float dA = distance(aPosition, uGluteAPos);
+        if (dA < uGluteARadius) {
+            float fA = 1.0 - smoothstep(uGluteARadius * 0.3, uGluteARadius, dA);
+            pos += aNormal * (uGluteAPush * fA);
+        }
+    }
+    if (uGluteBRadius > 0.0001) {
+        float dB = distance(aPosition, uGluteBPos);
+        if (dB < uGluteBRadius) {
+            float fB = 1.0 - smoothstep(uGluteBRadius * 0.3, uGluteBRadius, dB);
+            pos += aNormal * (uGluteBPush * fB);
+        }
+    }
+    gl_Position = uMVP * vec4(pos, 1.0);
     vec3 N = normalize(uNormalMatrix * aNormal);
     vNormal = N;
     vTexCoord = aTexCoord;
-    vPosition = (uModelView * vec4(aPosition, 1.0)).xyz;
-    vWorldY = (uModel * vec4(aPosition, 1.0)).y;
+    vPosition = (uModelView * vec4(pos, 1.0)).xyz;
+    vWorldY = (uModel * vec4(pos, 1.0)).y;
     if (uHasNormalMap > 0.5) {
         vec3 T = normalize(uNormalMatrix * aTangent.xyz);
         T = normalize(T - dot(T, N) * N);

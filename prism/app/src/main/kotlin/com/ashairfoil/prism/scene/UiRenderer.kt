@@ -254,7 +254,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val audioReactor = activity.audioReactor
         val audioPlayer = activity.audioPlayer
         val beatReactorEnabled = activity.beatReactorEnabled
-        val beatSliders = activity.inputHandler.beatSliders
+        val beatSliders = activity.inputHandler.activeSliders
         val foveationLevel = activity.foveationLevel
         val foveationAvailable = activity.foveationAvailable
         val textureQuality = activity.textureQuality
@@ -354,9 +354,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             }
 
-            // Header
-            p.textSize = ThemeManager.PX_TITLE; p.color = ThemeManager.PINK_HOT; p.isFakeBoldText = true
-            canvas.drawText("BEATREACTOR", 50f, 105f, p)
+            // Header — flips to CHARACTER when the per-axis sub-panel is active.
+            p.textSize = ThemeManager.PX_TITLE; p.isFakeBoldText = true
+            if (activity.characterMode) {
+                p.color = ThemeManager.PURPLE_DEEP
+                canvas.drawText("CHARACTER", 50f, 105f, p)
+            } else {
+                p.color = ThemeManager.PINK_HOT
+                canvas.drawText("BEATREACTOR", 50f, 105f, p)
+            }
 
             // FILL display top right
             val fillPct = reactor?.boxFillPct ?: 0f
@@ -730,6 +736,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     "x" -> "${(value * 10).toInt() / 10f}x"
                     "Hz" -> "${value.toInt()} Hz"
                     "ms" -> "${value.toInt()} ms"
+                    "cm" -> "${"%.1f".format(value)} cm"
                     else -> "${value.toInt()}%"
                 }
                 val vw = valP.measureText(valStr)
@@ -905,7 +912,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.textAlign = Paint.Align.CENTER
             p.textSize = 11f
 
-            // INTENSITY cycle (0.25 / 0.5 / 1.0 / 1.5 / 2.0)
+            // INTENSITY cycle (0.25 / 0.5 / 1.0 / 2.0 / 3.0 / 5.0)
             val intensity = selModel?.danceIntensity ?: 1f
             val intensityLabel = when {
                 intensity < 0.38f -> "INT 0.25x"
@@ -937,20 +944,23 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.color = if (faceMarked || faceHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
             canvas.drawText(faceLabel, 400f, rowCY + 11f, p)
 
-            // FOOT stick strength (replaces ROLL — more immediately useful)
-            // Cycles 0 / 50 / 85 / 100%. 100% = heels fully bolted to the floor,
-            // body pivots completely around them. 0% = full drift (ice skater).
-            val footStrength = selModel?.footAnchorStrength ?: 0.85f
-            val footLabel = "FOOT ${(footStrength * 100).toInt()}%"
-            val footHover = hoveredActionButton == 146
+            // CHARACTER sub-panel toggle (Tier 3). Replaces the FOOT cycle —
+            // FOOT is now a regular slider in the main reactor list. Tapping
+            // enters a per-axis sharpness/complexity view; tapping again exits.
+            // Label flips to "← BACK" while active so the exit is unambiguous.
+            val charOn = activity.characterMode
+            val charLabel = if (charOn) "\u2190 BACK" else "CHARACTER"
+            val charHover = hoveredActionButton == 146
             p.color = when {
-                footHover -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
-                footStrength > 0.5f -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x55000000
-                else -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x25000000
+                charHover -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
+                charOn    -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x75000000
+                else      -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x25000000
             }
             canvas.drawRoundRect(530f, rowCY, 770f, rowCY + rowCH, 6f, 6f, p)
-            p.color = if (footHover || footStrength > 0.5f) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
-            canvas.drawText(footLabel, 650f, rowCY + 11f, p)
+            p.color = if (charHover || charOn) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.isFakeBoldText = charOn
+            canvas.drawText(charLabel, 650f, rowCY + 11f, p)
+            p.isFakeBoldText = false
 
             // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
             val tapHover = hoveredActionButton == 147

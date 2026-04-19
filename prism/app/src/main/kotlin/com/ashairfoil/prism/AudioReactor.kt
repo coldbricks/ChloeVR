@@ -67,6 +67,20 @@ class AudioReactor {
     @Volatile var outputCeiling = 1.0f
     @Volatile var threshold = 0.15f
     @Volatile var trim = 1.0f
+
+    // ── Musical amplitude: per-frame "breath" signal ──
+    // RMS of raw bass/mid/high bands, envelope-followed (fast attack, slow
+    // release). Decoupled from boxFillPct so breakdowns visibly quiet down
+    // without perturbing BPM lock or the box-gated output. Consumers that
+    // were "constant per beat" (impact kicks, haptic amp in BPM-lock mode,
+    // beat wash, bloom, dance ampGain) multiply by this so the whole scene
+    // breathes with the track instead of pulsing at full magnitude forever.
+    // Defaults: floor 0.15 keeps motion alive during quiet parts; dynamics
+    // 1.0 = full range. Set floor to 1.0 to disable musical breathing.
+    @Volatile var musicalLevel: Float = 1f; private set
+    @Volatile var silenceFloor: Float = 0.15f
+    @Volatile var musicalDynamics: Float = 1.0f
+    private var musicalLevelSmooth: Float = 0f
     @Volatile var beatHue = 330f
     enum class ColorMode { FIXED, CYCLE, FLASH }
     enum class BlendMode { NORMAL, ADD, MULTIPLY, SCREEN }
@@ -492,6 +506,9 @@ class AudioReactor {
         if (!enabled) {
             bass = 0f; mid = 0f; high = 0f; boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f
             box2FillPct = 0f; smoothedOutput2 = 0f; prevFillPct2 = 0f
+            // Reactor off ⇒ musical breathing inert (no gating).
+            musicalLevel = 1f
+            musicalLevelSmooth = 0f
             return
         }
 
@@ -532,6 +549,20 @@ class AudioReactor {
         val safeDt = dt.coerceIn(0.001f, 0.1f)
         val atkAlpha = (1f - kotlin.math.exp(-safeDt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
         val relAlpha = (1f - kotlin.math.exp(-safeDt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
+
+        // Musical amplitude — RMS envelope of raw bands, independent of BOX.
+        // 50ms attack keeps beat punch; 800ms release lets breakdowns settle.
+        // Value passes through above silenceFloor so loud passages read their
+        // true level (not a rescale), and pins at floor when the track is quiet.
+        val rmsInst = kotlin.math.sqrt(
+            (rawBass * rawBass + rawMid * rawMid + rawHigh * rawHigh) / 3f
+        ).coerceIn(0f, 1f)
+        val mlAtk = 1f - kotlin.math.exp(-safeDt / 0.05f)
+        val mlRel = 1f - kotlin.math.exp(-safeDt / 0.8f)
+        val mlAlpha = if (rmsInst > musicalLevelSmooth) mlAtk else mlRel
+        musicalLevelSmooth += (rmsInst - musicalLevelSmooth) * mlAlpha
+        val mlHeadroom = (musicalLevelSmooth - silenceFloor).coerceAtLeast(0f) * musicalDynamics
+        musicalLevel = (silenceFloor + mlHeadroom).coerceIn(0f, 1f)
 
         // BPM tracker runs off rawBass (bass-band RMS), NOT the user's BOX
         // settings. The box can be anywhere in the spectrum without affecting
@@ -777,6 +808,7 @@ class AudioReactor {
         var phase1bar: Float = 0f
         var phase4bar: Float = 0f
         var phase16bar: Float = 0f
+        var musicalLevel: Float = 1f
     }
 
     fun snapshot(out: FrameSnapshot) {
@@ -789,6 +821,7 @@ class AudioReactor {
         out.bandBass = bass
         out.bandMid = mid
         out.bandHigh = high
+        out.musicalLevel = musicalLevel
         if (autoBpm && detectedBpm > 0f && bpmEpochMs != 0L) {
             val quarter = 60000f / detectedBpm
             val barMs = quarter * 4f

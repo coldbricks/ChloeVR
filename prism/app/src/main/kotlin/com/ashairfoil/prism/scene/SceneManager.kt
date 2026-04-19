@@ -57,6 +57,28 @@ class SceneManager(
                 else -> -1f + eased
             }
         }
+
+        /** Tier 3 — Motion Expression ("character") shaping on top of waveAt.
+         *  sharpness 0..1 blends the eased wave toward a true triangle wave
+         *  (cusp'd peaks, constant velocity between them) — at 1 the hips
+         *  change direction on a dime. complexity 0..1 layers a 2×-rate sine
+         *  ghost at 0.4× amplitude — creates 1/8 accents over a 1/4 primary
+         *  without asking the user to pick a new rate. Both zero → waveAt. */
+        fun shapedWaveAt(phase: Float, ease: DanceEase, sharpness: Float, complexity: Float): Float {
+            val p = ((phase % 1f) + 1f) % 1f
+            val base = waveAt(p, ease)
+            // Triangle wave matching sine's zero-crossings: p=0 → 0, p=0.25 → +1,
+            // p=0.5 → 0, p=0.75 → -1, p=1 → 0. Cheaper than asin-based form,
+            // no allocations, exact cusps at ±1.
+            val tri = 1f - 4f * kotlin.math.abs(((p + 0.25f) % 1f) - 0.5f)
+            val s = sharpness.coerceIn(0f, 1f)
+            val shaped = if (s > 0.001f) base + (tri - base) * s else base
+            val c = complexity.coerceIn(0f, 1f)
+            if (c < 0.001f) return shaped
+            val ghostPh = (p * 2f) % 1f
+            val ghost = kotlin.math.sin(2.0 * Math.PI * ghostPh).toFloat()
+            return shaped + c * 0.4f * ghost
+        }
     }
 
     // ── PlacedModel ──
@@ -220,7 +242,34 @@ class SceneManager(
         var footAnchorCaptured: Boolean = false,
         var footAnchorX: Float = 0f,
         var footAnchorZ: Float = 0f,
-        var footAnchorStrength: Float = 0.85f
+        var footAnchorStrength: Float = 0.85f,
+        // ── Tier 3: Motion Expression (per-axis "character") ──
+        // Sharpness (0..1) blends the eased wave toward a true triangle —
+        // at 0 motion is round, at 1 hips change direction on a dime.
+        // Complexity (0..1) layers a 2×-rate ghost over the primary signal:
+        // 1/8 accents sitting on a 1/4 primary, syncopated groove without
+        // picking a new rate.
+        // Defaults 0 preserve pre-Tier3 motion exactly; presets (TWERK,
+        // BOUNCE, etc.) crank sharpness to give each style a recognisable
+        // feel beyond amp×rate×ease alone.
+        var yawSharpness: Float = 0f,
+        var yawComplexity: Float = 0f,
+        var pitchSharpness: Float = 0f,
+        var pitchComplexity: Float = 0f,
+        var bobSharpness: Float = 0f,
+        var bobComplexity: Float = 0f,
+        // ── Tier 3 Feature 4: glute deformation ──
+        // Vertex-shader push-out at two symmetric points near the hip, beat-
+        // synced so bass kicks spike the push amount. A/B positions are auto-
+        // derived each frame from `markedHipFrac` (or 0.45 default) + bbox.
+        // gluteBasePush = 0 disables the feature (CPU zeroes uniforms → shader
+        // skips). gluteCurrentPush is per-frame scratch (basePush × kick boost).
+        var gluteBasePush: Float = 0f,        // meters, 0..0.08
+        var gluteRadius: Float = 0.15f,       // meters influence radius
+        var gluteShakeIntensity: Float = 0.5f,// 0..1 kick-spike multiplier
+        var gluteCurrentPush: Float = 0f,     // per-frame (basePush × boost)
+        var gluteKickLastMs: Long = 0L,       // timestamp of most recent spike
+        var gluteLastBeatSeen: Long = 0L      // tracks snap.beatCounter
     )
 
     /** Easing curves available for dance motion — mirrors ShapesXR's options. */

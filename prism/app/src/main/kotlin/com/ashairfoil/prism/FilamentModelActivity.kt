@@ -283,6 +283,11 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var beatCursorX = -1f  // laser position on panel (bitmap coords)
     @Volatile internal var beatCursorY = -1f
 
+    // Tier 3 — motion CHARACTER sub-panel. When true (within beatSettingsMode),
+    // the slider area shows per-axis sharpness/complexity sliders instead of
+    // the reactor sliders. Toggled from Row C.
+    @Volatile internal var characterMode = false
+
     // Haptic device (Lovense via BLE)
     internal var hapticManager: com.ashairfoil.prism.haptics.BleDeviceManager? = null
     @Volatile internal var hapticConnected = false
@@ -601,7 +606,13 @@ class FilamentModelActivity : ComponentActivity() {
         val pitchPivot: Float = 0.85f,
         val rollPivot: Float = 0.85f,
         val counterRollPivot: Float = 0.50f,
-        val counterRollGain: Float = 0.35f
+        val counterRollGain: Float = 0.35f,
+        // Tier 3 — motion character: sharpness blends eased-sine → triangle,
+        // complexity layers a 2×-rate ghost. Per-preset defaults give each
+        // style a recognisable feel beyond amp×rate×ease alone.
+        val yawSharp: Float = 0f, val yawCmplx: Float = 0f,
+        val pitSharp: Float = 0f, val pitCmplx: Float = 0f,
+        val bobSharp: Float = 0f, val bobCmplx: Float = 0f
     )
     // Tier1-C: all amps obey sweep-speed law amp × rate ≤ K per axis
     //   yaw K = 64   → max yaw at 1/2: 32°, at 1/4: 16°, at 1/8: 8°, at 1/16: 4°
@@ -619,14 +630,14 @@ class FilamentModelActivity : ComponentActivity() {
     //   TWERK: LINEAR 1/8 weight shift + 1/16 pelvic tilt + 1/8 bob counter-phase
     //   SQUAT PULSE: asymmetric bob envelope (fast down, slow up) + slow yaw carrier
     private val dancePresets = listOf(
-        //           name          yaw rate ph  pitch rate ph  bob   rate ph    ease                              phys  pP    rP    crP   crG
-        DancePreset("SLOW WIND",    6f,  2, 0f,     5f,  2, 0.25f,   0.010f, 2, 0.50f, SceneManager.DanceEase.SINE,   0.65f, 0.85f, 0.85f, 0.50f, 0.35f),
-        DancePreset("SWAY",         6f,  2, 0f,     1f,  2, 0.50f,   0.003f, 2, 0.25f, SceneManager.DanceEase.SINE,   0.25f, 0.80f, 0.90f, 0.50f, 0.50f),
-        DancePreset("BODY ROLL",    4f,  2, 0f,    12f,  2, 0.25f,   0.020f, 2, 0f,    SceneManager.DanceEase.SINE,   0.70f, 0.55f, 0.55f, 0.50f, 0.35f),
-        DancePreset("BOUNCE",       1f,  4, 0f,     4f,  4, 0.75f,   0.025f, 4, 0f,    SceneManager.DanceEase.LINEAR, 0.80f, 0.00f, 0.00f, 0.50f, 0.35f),
-        DancePreset("GRIND",        6f,  2, 0f,     3f,  8, 0f,      0.008f, 8, 0.25f, SceneManager.DanceEase.SINE,   0.55f, 0.95f, 0.85f, 0.50f, 0.35f),
-        DancePreset("TWERK",        3f,  8, 0.5f,   1.5f,16, 0f,     0.015f, 8, 0.50f, SceneManager.DanceEase.LINEAR, 0.90f, 0.95f, 0.95f, 0.50f, 0.10f),
-        DancePreset("SQUAT PULSE",  8f,  2, 0f,     4f,  4, 0.25f,   0.030f, 4, 0f,    SceneManager.DanceEase.SINE,   0.75f, 0.25f, 0.35f, 0.50f, 0.35f),
+        //           name          yaw rate ph  pitch rate ph  bob   rate ph    ease                              phys  pP    rP    crP   crG    yawS  yawC  pitS  pitC  bobS  bobC
+        DancePreset("SLOW WIND",    6f,  2, 0f,     5f,  2, 0.25f,   0.010f, 2, 0.50f, SceneManager.DanceEase.SINE,   0.65f, 0.85f, 0.85f, 0.50f, 0.35f, 0.0f, 0.2f, 0.0f, 0.2f, 0.0f, 0.0f),
+        DancePreset("SWAY",         6f,  2, 0f,     1f,  2, 0.50f,   0.003f, 2, 0.25f, SceneManager.DanceEase.SINE,   0.25f, 0.80f, 0.90f, 0.50f, 0.50f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f),
+        DancePreset("BODY ROLL",    4f,  2, 0f,    12f,  2, 0.25f,   0.020f, 2, 0f,    SceneManager.DanceEase.SINE,   0.70f, 0.55f, 0.55f, 0.50f, 0.35f, 0.0f, 0.3f, 0.3f, 0.3f, 0.2f, 0.0f),
+        DancePreset("BOUNCE",       1f,  4, 0f,     4f,  4, 0.75f,   0.025f, 4, 0f,    SceneManager.DanceEase.LINEAR, 0.80f, 0.00f, 0.00f, 0.50f, 0.35f, 0.8f, 0.0f, 0.6f, 0.0f, 0.9f, 0.0f),
+        DancePreset("GRIND",        6f,  2, 0f,     3f,  8, 0f,      0.008f, 8, 0.25f, SceneManager.DanceEase.SINE,   0.55f, 0.95f, 0.85f, 0.50f, 0.35f, 0.3f, 0.4f, 0.6f, 0.2f, 0.2f, 0.0f),
+        DancePreset("TWERK",        3f,  8, 0.5f,   1.5f,16, 0f,     0.015f, 8, 0.50f, SceneManager.DanceEase.LINEAR, 0.90f, 0.95f, 0.95f, 0.50f, 0.10f, 0.7f, 0.5f, 0.9f, 0.4f, 0.6f, 0.3f),
+        DancePreset("SQUAT PULSE",  8f,  2, 0f,     4f,  4, 0.25f,   0.030f, 4, 0f,    SceneManager.DanceEase.SINE,   0.75f, 0.25f, 0.35f, 0.50f, 0.35f, 0.7f, 0.0f, 0.6f, 0.0f, 1.0f, 0.0f),
     )
 
     // ── Tier1-A: hoisted per-frame scratch — avoid closure/listOf alloc in hot loop ──
@@ -759,6 +770,10 @@ class FilamentModelActivity : ComponentActivity() {
         m.rollPivotFrac = p.rollPivot
         m.counterRollPivotFrac = p.counterRollPivot
         m.counterRollGain = p.counterRollGain
+        // Tier 3 — per-preset motion character.
+        m.yawSharpness = p.yawSharp; m.yawComplexity = p.yawCmplx
+        m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
+        m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset: ${p.name} (pP=${p.pitchPivot} rP=${p.rollPivot} crG=${p.counterRollGain})")
     }
@@ -785,6 +800,10 @@ class FilamentModelActivity : ComponentActivity() {
         m.rollPivotFrac = p.rollPivot
         m.counterRollPivotFrac = p.counterRollPivot
         m.counterRollGain = p.counterRollGain
+        // Tier 3 — per-preset motion character.
+        m.yawSharpness = p.yawSharp; m.yawComplexity = p.yawCmplx
+        m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
+        m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset (direct): ${p.name}")
     }
@@ -1364,6 +1383,9 @@ class FilamentModelActivity : ComponentActivity() {
                                 val bi = beatIntensity
                                 val c = reactor.getBeatColor()
                                 val bass = reactor.bass
+                                // Musical "breath" — 0..1 loudness envelope. Scales beat-driven
+                                // consumers so breakdowns quiet down naturally. 1.0 when reactor off.
+                                val ml = reactor.musicalLevel
 
                                 // Straight box output: pct * bi. No accumulation, no drift.
                                 val intensity = pct * bi
@@ -1413,15 +1435,17 @@ class FilamentModelActivity : ComponentActivity() {
 
                                     // Shadows soften proportionally — floor at 20% of base so
                                     // the beat wash can't zero or invert shadow darkness when the
-                                    // user cranks beatIntensity > 2.5.
-                                    gr.shadowDarkness = (beatBaseShadow * (1f - pct * 0.4f * bi))
+                                    // user cranks beatIntensity > 2.5. Wash amount tracks musical
+                                    // loudness (ml) so quiet passages don't push shadows as hard.
+                                    gr.shadowDarkness = (beatBaseShadow * (1f - pct * 0.4f * bi * ml))
                                         .coerceAtLeast(beatBaseShadow * 0.2f)
                                 }
 
-                                // Bloom: direct from box fill
+                                // Bloom: direct from box fill, scaled by musical level so quiet
+                                // passages don't bloom at full magnitude.
                                 if (gr.bloomEnabled) {
-                                    gr.bloomThreshold = (0.8f - pct * bi * 0.3f).coerceAtLeast(0.2f)
-                                    gr.bloomIntensity = 0.3f + pct * bi * 0.5f
+                                    gr.bloomThreshold = (0.8f - pct * bi * 0.3f * ml).coerceAtLeast(0.2f)
+                                    gr.bloomIntensity = 0.3f + pct * bi * 0.5f * ml
                                 }
 
                                 // Room wash: direct from box fill
@@ -1448,7 +1472,10 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (hapticEnabled && hapticConnected) {
                                     val hm = hapticManager
                                     if (hm != null && shakeAmp >= 0f) {
-                                        val hIntensity = (shakeAmp * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        // Scale by ml so the motor breathes with the track —
+                                        // BPM-locked pulses stay on the beat but ease off during
+                                        // quiet passages.
+                                        val hIntensity = (shakeAmp * ml * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (hIntensity != lastHapticIntensity) {
                                             lastHapticIntensity = hIntensity
                                             if (hm.isDualMotor) hm.setDualIntensity(hIntensity, hIntensity)
@@ -1467,17 +1494,18 @@ class FilamentModelActivity : ComponentActivity() {
                                             else hm.setIntensity(m1)
                                         }
                                     } else if (hm != null && hm.isDualMotor && hapticDualMotorSplit) {
-                                        // Split mode: box A → motor 1, box B → motor 2
-                                        val m1 = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
-                                        val m2 = (reactor.box2FillPct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        // Split mode: box A → motor 1, box B → motor 2. Musical
+                                        // level gates so quiet passages don't drive at full amp.
+                                        val m1 = (pct * ml * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        val m2 = (reactor.box2FillPct * ml * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (m1 != lastHapticMotor1 || m2 != lastHapticMotor2) {
                                             lastHapticMotor1 = m1
                                             lastHapticMotor2 = m2
                                             hm.setDualIntensity(m1, m2)
                                         }
                                     } else if (hm != null) {
-                                        // Unified: both motors follow box fill directly
-                                        val hIntensity = (pct * 20f + 0.5f).toInt().coerceIn(0, 20)
+                                        // Unified: both motors follow box fill directly, breathed by ml.
+                                        val hIntensity = (pct * ml * 20f + 0.5f).toInt().coerceIn(0, 20)
                                         if (hIntensity != lastHapticIntensity) {
                                             lastHapticIntensity = hIntensity
                                             if (hm.isDualMotor) {
@@ -1594,6 +1622,47 @@ class FilamentModelActivity : ComponentActivity() {
                                     if (m.isPreview) continue
                                     if (inputHandler.grabbing && i == selectedModelIndex) continue
 
+                                    // ── Tier 3 Feature 4: glute deformation sync ──
+                                    // Runs BEFORE the dance check so a non-dancing model with a
+                                    // positive basePush still gets the static push. Bass kicks
+                                    // spike the push amount; exp decay to baseline over ~250ms.
+                                    // Positions auto-derive from bbox + hip mark — no separate
+                                    // glute marking flow needed for the MVP.
+                                    val gluteGpu = glesRenderer?.getModel(m.gpuModelId)
+                                    if (gluteGpu != null) {
+                                        if (m.gluteBasePush > 0.0001f) {
+                                            if (snap.beatCounter != m.gluteLastBeatSeen && snap.beatCounter > 0L) {
+                                                m.gluteKickLastMs = snap.nowMs
+                                                m.gluteLastBeatSeen = snap.beatCounter
+                                            }
+                                            val elapsedMs = if (m.gluteKickLastMs > 0L) (snap.nowMs - m.gluteKickLastMs).toFloat() else 1_000_000f
+                                            val spike = kotlin.math.exp(-elapsedMs * 3f / 250f).coerceIn(0f, 1f)
+                                            val boost = 1f + m.gluteShakeIntensity * spike
+                                            m.gluteCurrentPush = m.gluteBasePush * boost
+                                            val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
+                                            val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
+                                            val hipY = gluteGpu.boundsMinY + hipFrac * height
+                                            val sideOff = 0.18f * gluteGpu.boundsRadius
+                                            val rearOff = 0.10f * gluteGpu.boundsRadius
+                                            gluteGpu.gluteAPos[0] = gluteGpu.boundsCenterX - sideOff
+                                            gluteGpu.gluteAPos[1] = hipY
+                                            gluteGpu.gluteAPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                            gluteGpu.gluteBPos[0] = gluteGpu.boundsCenterX + sideOff
+                                            gluteGpu.gluteBPos[1] = hipY
+                                            gluteGpu.gluteBPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                            gluteGpu.gluteARadius = m.gluteRadius
+                                            gluteGpu.gluteBRadius = m.gluteRadius
+                                            gluteGpu.gluteAPush = m.gluteCurrentPush
+                                            gluteGpu.gluteBPush = m.gluteCurrentPush
+                                        } else {
+                                            m.gluteCurrentPush = 0f
+                                            gluteGpu.gluteARadius = 0f
+                                            gluteGpu.gluteBRadius = 0f
+                                            gluteGpu.gluteAPush = 0f
+                                            gluteGpu.gluteBPush = 0f
+                                        }
+                                    }
+
                                     val dancing = m.animHasBase && (m.danceYawDeg != 0f ||
                                         m.dancePitchDeg != 0f || m.danceYMeters != 0f)
                                     if (dancing) {
@@ -1623,7 +1692,11 @@ class FilamentModelActivity : ComponentActivity() {
                                         // 1/8 (was 1/16) on yaw+pitch. Full 1/16 on three axes at once
                                         // read as spaz; 1/8 at reduced amp reads as a tasteful fill.
                                         val fillAmp = if (fillActive) 0.4f else 1f
-                                        val ampGain = accentGain * moodGain * fillAmp
+                                        // Musical breathing: multiply amp by track loudness so the
+                                        // dance visibly quiets during breakdowns and explodes on
+                                        // drops. Band gates (bass/mid) stay intact — this layers
+                                        // on top as a global magnitude shaper.
+                                        val ampGain = accentGain * moodGain * fillAmp * snap.musicalLevel
                                         val yawRate = if (fillActive) 8 else m.danceYawRate
                                         val pitchRate = if (fillActive) 8 else m.dancePitchRate
                                         val yRate = if (fillActive) 8 else m.danceYRate
@@ -1713,7 +1786,9 @@ class FilamentModelActivity : ComponentActivity() {
                                         // the hips, kinetic energy travels UP the block).
                                         if (m.danceYawDeg != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPh + phaseSlop) % 1f + 1f) % 1f
-                                            yawSig = SceneManager.waveAt(ph, easeYaw)
+                                            // Tier 3 — character shaping: sharpness cusps the wave
+                                            // toward a triangle; complexity layers a 2×-rate ghost.
+                                            yawSig = SceneManager.shapedWaveAt(ph, easeYaw, m.yawSharpness, m.yawComplexity)
                                             val half = Math.toRadians((m.danceYawDeg * effInt * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig).toDouble()).toFloat() * 0.5f
                                             val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
                                             val nx = cy * qx + sy * qz
@@ -1759,7 +1834,8 @@ class FilamentModelActivity : ComponentActivity() {
                                         // height (e.g. 0.95 head for TWERK → hips pop, head stays fixed).
                                         if (m.dancePitchDeg != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, pitchRate) + m.dancePitchPhase - 0.04f + phaseSlop) % 1f + 1f) % 1f
-                                            val sig = SceneManager.waveAt(ph, easePitch)
+                                            // Tier 3 — character shaping (see yaw above).
+                                            val sig = SceneManager.shapedWaveAt(ph, easePitch, m.pitchSharpness, m.pitchComplexity)
                                             val half = Math.toRadians((m.dancePitchDeg * effInt * ampGain * fbmPitch * bassGate * proxMacro * gazeGain * sig).toDouble()).toFloat() * 0.5f
                                             val sp = kotlin.math.sin(half); val cp = kotlin.math.cos(half)
                                             val qxP = qx; val qyP = qy; val qzP = qz; val qwP = qw
@@ -1782,12 +1858,25 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
                                         // BOB on world Y — asymmetric fast-down/slow-up envelope gives
                                         // the "body drops into the beat" gravity feel. Phase-shear 0 (hips lead).
+                                        // Tier 3 — bob is a one-sided bump (not a ±sine), so character
+                                        // shaping is applied bespoke: sharpness lerps smoothstep → raw
+                                        // triangle (cusp'd peak); complexity adds a secondary 2×-rate
+                                        // bump. Both 0 → pre-Tier3 behaviour.
                                         if (m.danceYMeters != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, yRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                             val kSkew = 0.5f - 0.2f * m.physicsAmount  // 0.5 = symmetric, 0.3 = fast-down
                                             val phase01 = if (ph < kSkew) ph / kSkew else 1f - (ph - kSkew) / (1f - kSkew)
-                                            val bob = phase01 * phase01 * (3f - 2f * phase01)
-                                            py += m.danceYMeters * effInt * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bob
+                                            val smoothBob = phase01 * phase01 * (3f - 2f * phase01)
+                                            val bobS = m.bobSharpness.coerceIn(0f, 1f)
+                                            // phase01 itself is the sharp (cusp'd) bump; smoothBob is round.
+                                            val bob = smoothBob + (phase01 - smoothBob) * bobS
+                                            val bobC = m.bobComplexity.coerceIn(0f, 1f)
+                                            val bobFinal = if (bobC > 0.001f) {
+                                                val gPh = (ph * 2f) % 1f
+                                                val g01 = if (gPh < kSkew) gPh / kSkew else 1f - (gPh - kSkew) / (1f - kSkew)
+                                                bob + bobC * 0.4f * (g01 * g01 * (3f - 2f * g01))
+                                            } else bob
+                                            py += m.danceYMeters * effInt * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bobFinal
                                         }
 
                                         // ROLL around LOCAL Z (Tier1.5) — banking axis. Completes the 3-axis
@@ -1906,7 +1995,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             if (el < 200f) {
                                                 val kp = el / 200f
                                                 val ks = kotlin.math.sin(Math.PI * kp).toFloat() * (1f - kp)
-                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * effInt * ks * gazeGain).toFloat()
+                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * effInt * ks * gazeGain * snap.musicalLevel).toFloat()
                                                 val half = kickRad * 0.5f
                                                 val sh = kotlin.math.sin(half); val ch = kotlin.math.cos(half)
                                                 val qxK = qx; val qyK = qy; val qzK = qz; val qwK = qw
