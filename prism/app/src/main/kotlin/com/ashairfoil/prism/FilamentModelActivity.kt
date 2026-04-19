@@ -637,6 +637,11 @@ class FilamentModelActivity : ComponentActivity() {
     // quaternion into world frame. Single-threaded (render thread) so safe.
     private val pivotRotScratch = FloatArray(3)
 
+    // Laser dot color — matches renderer default. Used when NOT in mark mode.
+    private val LASER_DEFAULT_COLOR = floatArrayOf(0f, 0.8f, 1f)
+    // Mark reticle color — hot pink. Shows when anatomy-mark mode is armed.
+    private val MARK_RETICLE_COLOR = floatArrayOf(1f, 0.2f, 0.6f)
+
     /** Remap a preset's pivot fraction through the user's marked anatomy.
      *  Default preset vocabulary assumes hip ≈ 0.45 and shoulder ≈ 0.85 of bbox
      *  height. If the user has marked the real hip or shoulder Y on THIS model,
@@ -1631,6 +1636,10 @@ class FilamentModelActivity : ComponentActivity() {
                                         // closure or listOf allocation (was ~720 alloc/sec at 4 models × 120Hz).
                                         val tSec = snap.nowMs / 1000f
                                         val seed = if (m.fbmSeed == 0f) { m.fbmSeed = (m.gpuModelId * 0.37f + 1.13f); m.fbmSeed } else m.fbmSeed
+                                        // Quarter-scale intensity internally so the UI's "1.0x" feels
+                                        // like the previous "0.25x" (which the user settled on as correct).
+                                        // Labels stay familiar; the gain just shifted down two notches.
+                                        val effInt = m.danceIntensity * 0.25f
                                         val fbmYaw = fbmMod(tSec, seed, 0f)
                                         val fbmPitch = fbmMod(tSec, seed, 1.7f)
                                         val fbmBob = fbmMod(tSec, seed, 3.1f)
@@ -1666,65 +1675,22 @@ class FilamentModelActivity : ComponentActivity() {
                                         val midGate = 0.35f + 0.65f * snap.bandMid.coerceIn(0f, 1f)
                                         val highGate = 0.35f + 0.65f * snap.bandHigh.coerceIn(0f, 1f)
 
-                                        // ── Tier1-F: gaze saccade FSM + Gemini #5 VO-dip ──
-                                        // HOLD 2-6s → SACCADE with BACK overshoot 180-220ms → FREEZE
-                                        // all dance axes 80-120ms on arrival. 20% of saccades look 20°
-                                        // OFF-viewer. Gated on danceGazeFollow (Tier1.5 toggle).
-                                        var gazeFreezeActive = false
+                                        // ── Gaze follow: smooth continuous slew toward viewer ──
+                                        // User wanted LOCKED tracking (not the saccade FSM). Each frame
+                                        // the bias eases toward the dir-to-camera by (1 - exp(-dt/τ))
+                                        // with τ≈1.2s. She faces you no matter where you walk. Gated on
+                                        // danceGazeFollow per model. Angle-wrapped so she takes the
+                                        // shorter path when you cross her back.
                                         var gazeVoDipRad = 0f
+                                        val gazeGain = 1f
                                         if (m.gazeFaceCamHasCapture && m.danceGazeFollow) {
                                             val dirToCamRad = kotlin.math.atan2(dxCam, dzCam)
-                                            val nowMsG = snap.nowMs
-                                            when (m.gazeState) {
-                                                0 -> {  // HOLD
-                                                    if (nowMsG >= m.gazeNextCheckMs) {
-                                                        val targetBias = normAngle(dirToCamRad - m.gazeFaceCamAnchorRad)
-                                                        val offAxis = normAngle(targetBias - m.gazeCurrentBiasRad)
-                                                        if (kotlin.math.abs(offAxis) > (15.0 * Math.PI / 180.0).toFloat()) {
-                                                            val rngG = java.util.concurrent.ThreadLocalRandom.current()
-                                                            val offsetRad = if (rngG.nextFloat() < 0.20f)
-                                                                ((if (rngG.nextBoolean()) 20.0 else -20.0) * Math.PI / 180.0).toFloat() else 0f
-                                                            m.gazeSaccadeFromRad = m.gazeCurrentBiasRad
-                                                            m.gazeSaccadeToRad = m.gazeCurrentBiasRad + offAxis + offsetRad
-                                                            m.gazeSaccadeStartMs = nowMsG
-                                                            m.gazeSaccadeDurationMs = 180L + rngG.nextLong(40L)
-                                                            m.gazeState = 1
-                                                        } else {
-                                                            m.gazeNextCheckMs = nowMsG + 2000L + java.util.concurrent.ThreadLocalRandom.current().nextLong(4000L)
-                                                        }
-                                                    }
-                                                }
-                                                1 -> {  // SACCADE
-                                                    val t = ((nowMsG - m.gazeSaccadeStartMs).toFloat() /
-                                                        m.gazeSaccadeDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
-                                                    if (t >= 1f) {
-                                                        m.gazeCurrentBiasRad = m.gazeSaccadeToRad
-                                                        m.gazeFreezeEndsMs = nowMsG + 80L +
-                                                            java.util.concurrent.ThreadLocalRandom.current().nextLong(40L)
-                                                        m.gazeState = 2
-                                                    } else {
-                                                        val eased = SceneManager.applyEase(t, SceneManager.DanceEase.BACK)
-                                                        m.gazeCurrentBiasRad = m.gazeSaccadeFromRad +
-                                                            (m.gazeSaccadeToRad - m.gazeSaccadeFromRad) * eased
-                                                        // Gemini #5: VO dip — chin drops slightly mid-saccade.
-                                                        val dipDeg = 1.5f * kotlin.math.sin((t * Math.PI).toFloat())
-                                                        gazeVoDipRad = Math.toRadians(dipDeg.toDouble()).toFloat()
-                                                    }
-                                                }
-                                                2 -> {  // FREEZE
-                                                    if (nowMsG >= m.gazeFreezeEndsMs) {
-                                                        m.gazeState = 0
-                                                        m.gazeNextCheckMs = nowMsG + 2000L +
-                                                            java.util.concurrent.ThreadLocalRandom.current().nextLong(4000L)
-                                                    } else {
-                                                        gazeFreezeActive = true
-                                                    }
-                                                }
-                                            }
+                                            val target = normAngle(dirToCamRad - m.gazeFaceCamAnchorRad)
+                                            val delta = normAngle(target - m.gazeCurrentBiasRad)
+                                            val dtGaze = 1f / 72f  // XR refresh
+                                            val alpha = (1f - kotlin.math.exp(-dtGaze / 1.2f)).coerceIn(0f, 1f)
+                                            m.gazeCurrentBiasRad = normAngle(m.gazeCurrentBiasRad + delta * alpha)
                                         }
-                                        // Freeze gate: zero dance amp during arrival hold so only breath
-                                        // + idle layers run. Impact-on-contact = the sexiest eighth-note.
-                                        val gazeGain = if (gazeFreezeActive) 0f else 1f
 
                                         // ── Tier2-pivot: derive local-frame pivot Y per axis ──
                                         // Preset fractions assume hip ≈ 0.45, shoulder ≈ 0.85 of bbox.
@@ -1748,7 +1714,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         if (m.danceYawDeg != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPh + phaseSlop) % 1f + 1f) % 1f
                                             yawSig = SceneManager.waveAt(ph, easeYaw)
-                                            val half = Math.toRadians((m.danceYawDeg * m.danceIntensity * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig).toDouble()).toFloat() * 0.5f
+                                            val half = Math.toRadians((m.danceYawDeg * effInt * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig).toDouble()).toFloat() * 0.5f
                                             val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
                                             val nx = cy * qx + sy * qz
                                             val ny = cy * qy + sy * qw
@@ -1762,7 +1728,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             // (q * qZ). Pivots at hips (frac 0.50) by default so it looks
                                             // like a spinal twist regardless of where the dance yaw pivots.
                                             if (m.physicsAmount > 0.001f && m.counterRollGain > 0.001f) {
-                                                val rollDeg = -m.counterRollGain * m.danceYawDeg * m.danceIntensity * yawSig * m.physicsAmount
+                                                val rollDeg = -m.counterRollGain * m.danceYawDeg * effInt * yawSig * m.physicsAmount
                                                 val rh = Math.toRadians(rollDeg.toDouble()).toFloat() * 0.5f
                                                 val sr = kotlin.math.sin(rh); val cr = kotlin.math.cos(rh)
                                                 // Stash q BEFORE the counter-roll so pivot correction
@@ -1794,7 +1760,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         if (m.dancePitchDeg != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, pitchRate) + m.dancePitchPhase - 0.04f + phaseSlop) % 1f + 1f) % 1f
                                             val sig = SceneManager.waveAt(ph, easePitch)
-                                            val half = Math.toRadians((m.dancePitchDeg * m.danceIntensity * ampGain * fbmPitch * bassGate * proxMacro * gazeGain * sig).toDouble()).toFloat() * 0.5f
+                                            val half = Math.toRadians((m.dancePitchDeg * effInt * ampGain * fbmPitch * bassGate * proxMacro * gazeGain * sig).toDouble()).toFloat() * 0.5f
                                             val sp = kotlin.math.sin(half); val cp = kotlin.math.cos(half)
                                             val qxP = qx; val qyP = qy; val qzP = qz; val qwP = qw
                                             val nx = qx * cp + qw * sp
@@ -1821,7 +1787,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             val kSkew = 0.5f - 0.2f * m.physicsAmount  // 0.5 = symmetric, 0.3 = fast-down
                                             val phase01 = if (ph < kSkew) ph / kSkew else 1f - (ph - kSkew) / (1f - kSkew)
                                             val bob = phase01 * phase01 * (3f - 2f * phase01)
-                                            py += m.danceYMeters * m.danceIntensity * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bob
+                                            py += m.danceYMeters * effInt * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bob
                                         }
 
                                         // ROLL around LOCAL Z (Tier1.5) — banking axis. Completes the 3-axis
@@ -1834,7 +1800,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             val phR = ((ar.phaseAtSnap(snap, rollRate) + m.danceRollPhase + phaseSlop) % 1f + 1f) % 1f
                                             val sigR = SceneManager.waveAt(phR, easeRoll)
                                             val halfR = Math.toRadians(
-                                                (m.danceRollDeg * m.danceIntensity * ampGain * fbmPitch * midGate * proxMacro * gazeGain * sigR).toDouble()
+                                                (m.danceRollDeg * effInt * ampGain * fbmPitch * midGate * proxMacro * gazeGain * sigR).toDouble()
                                             ).toFloat() * 0.5f
                                             val srR = kotlin.math.sin(halfR); val crR = kotlin.math.cos(halfR)
                                             val qxR = qx; val qyR = qy; val qzR = qz; val qwR = qw
@@ -1860,7 +1826,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // literal kinematic signature of belly-dance/winding. Horizontal
                                         // at 1x yaw rate, vertical at 2x → ∞-shape COM trajectory.
                                         if (m.physicsAmount > 0.001f && hasTempo) {
-                                            val lissAmp = 0.018f * m.physicsAmount * m.danceIntensity * ampGain * gazeGain
+                                            val lissAmp = 0.018f * m.physicsAmount * effInt * ampGain * gazeGain
                                             val hp = ar.phaseAtSnap(snap, yawRate)
                                             val hCos = kotlin.math.cos(2.0 * Math.PI * hp).toFloat()
                                             val hSin2 = kotlin.math.sin(4.0 * Math.PI * hp).toFloat()
@@ -1874,7 +1840,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // Breath runs independent of the beat — she's alive on stillness.
 
                                         // Tier1-E: weight-shift bob dip on yaw extremes.
-                                        py -= 0.010f * m.physicsAmount * m.danceIntensity * kotlin.math.abs(yawSig) * proxMacro
+                                        py -= 0.010f * m.physicsAmount * effInt * kotlin.math.abs(yawSig) * proxMacro
 
                                         // Tier1-G: breath bob — 3mm @ 0.25Hz, per-model seed decorrelation.
                                         val breathBobM = 0.003f * proxMicro *
@@ -1893,7 +1859,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // Local-frame (right-multiply q * qX) so tilt goes in HER forward.
                                         if (yawSig != 0f && m.danceYawDeg > 0f) {
                                             val halfC = Math.toRadians(
-                                                (m.danceYawDeg * m.danceIntensity * yawSig * 0.15f * proxMacro * gazeGain).toDouble()
+                                                (m.danceYawDeg * effInt * yawSig * 0.15f * proxMacro * gazeGain).toDouble()
                                             ).toFloat() * 0.5f
                                             val scp = kotlin.math.sin(halfC); val ccp = kotlin.math.cos(halfC)
                                             val nxC = qx * ccp + qw * scp
@@ -1930,7 +1896,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // ── ALIVE: impact kick on each detected beat ──
                                         // Skip beat capture during freeze — the held-gaze moment is more
                                         // powerful than a syncopated twitch.
-                                        if (snap.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f && !gazeFreezeActive) {
+                                        if (snap.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f) {
                                             m.lastBeatSeen = snap.beatCounter
                                             m.impactKickStartMs = snap.nowMs
                                             m.impactKickAxis = (snap.beatCounter % 3).toInt()
@@ -1940,7 +1906,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             if (el < 200f) {
                                                 val kp = el / 200f
                                                 val ks = kotlin.math.sin(Math.PI * kp).toFloat() * (1f - kp)
-                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * m.danceIntensity * ks * gazeGain).toFloat()
+                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * effInt * ks * gazeGain).toFloat()
                                                 val half = kickRad * 0.5f
                                                 val sh = kotlin.math.sin(half); val ch = kotlin.math.cos(half)
                                                 val qxK = qx; val qyK = qy; val qzK = qz; val qwK = qw
@@ -2054,7 +2020,7 @@ class FilamentModelActivity : ComponentActivity() {
                                                 val ph = ((ar.phaseAtSnap(snap, m.danceYRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                                 val bobSig = -kotlin.math.cos(2.0 * Math.PI * ph).toFloat()
                                                 val bobAmpScale = (m.danceYMeters / 0.05f).coerceIn(0f, 1f)
-                                                val k = 0.1f * m.physicsAmount * m.danceIntensity * proxMicro * bobAmpScale
+                                                val k = 0.1f * m.physicsAmount * effInt * proxMicro * bobAmpScale
                                                 m.scaleMulY = 1f + k * bobSig
                                                 m.scaleMulX = 1f - k * bobSig * 0.5f
                                                 m.scaleMulZ = 1f - k * bobSig * 0.5f
@@ -2197,8 +2163,55 @@ class FilamentModelActivity : ComponentActivity() {
                             if (gizmoVisible && hasGizmoPose)
                                 gr.renderGizmo(leftProj, leftView, gizmoPosBuf, gizmoRotBuf, ih.hoveredGizmoAxis)
                             gr.renderEmitter(leftProj, leftView, ih.emitterHovered)
+                            // Tier2: front-facing markers on selected / armed models so the
+                            // user can tell which side is the front without guessing.
+                            val markMode = markAnatomyMode > 0
+                            for ((mi, m) in models.withIndex()) {
+                                if (m.isPreview) continue
+                                val isSel = mi == selectedModelIndex
+                                if (!isSel) continue  // show markers only on selected
+                                val gmF = gr.getModel(m.gpuModelId) ?: continue
+                                val hLocal = 2f * (gmF.boundsCenterY - gmF.boundsMinY)
+                                val headYWorld = m.posY + (gmF.boundsMinY + hLocal * 0.92f) * m.scale
+                                // FACE dot: only rendered when face is explicitly marked.
+                                // Positioned on her captured-face side, rotates with her body.
+                                if (!m.markedFaceLocalYaw.isNaN()) {
+                                    val faceWorldYaw = kotlin.math.atan2(
+                                        2f * (m.rotW * m.rotY + m.rotX * m.rotZ),
+                                        1f - 2f * (m.rotY * m.rotY + m.rotZ * m.rotZ)
+                                    ) + m.markedFaceLocalYaw
+                                    val faceX = m.posX + kotlin.math.sin(faceWorldYaw) * 0.35f
+                                    val faceZ = m.posZ + kotlin.math.cos(faceWorldYaw) * 0.35f
+                                    gr.renderFacingMarker(leftProj, leftView, faceX, headYWorld, faceZ, 0.25f, 1f, 0.2f, 0.6f)
+                                }
+                                if (m.markedHipFrac >= 0f) {
+                                    val hY = m.posY + (gmF.boundsMinY + m.markedHipFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(leftProj, leftView, m.posX, hY, m.posZ, 0.08f, 1f, 0.5f, 0f)
+                                }
+                                if (m.markedShoulderFrac >= 0f) {
+                                    val sY = m.posY + (gmF.boundsMinY + m.markedShoulderFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(leftProj, leftView, m.posX, sY, m.posZ, 0.08f, 0.3f, 0.9f, 1f)
+                                }
+                                if (m.markedKneeFrac >= 0f) {
+                                    val kY = m.posY + (gmF.boundsMinY + m.markedKneeFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(leftProj, leftView, m.posX, kY, m.posZ, 0.08f, 0.8f, 0.3f, 1f)
+                                }
+                                if (markAnatomyMode > 0) {
+                                    val rxm = ih.laserRayDir[0]; val rzm = ih.laserRayDir[2]
+                                    val hmag = rxm*rxm + rzm*rzm
+                                    if (hmag > 0.0001f) {
+                                        val sr = ((m.posX - ih.laserHandPos[0]) * rxm + (m.posZ - ih.laserHandPos[2]) * rzm) / hmag
+                                        val projY = (ih.laserHandPos[1] + ih.laserRayDir[1] * sr).coerceIn(
+                                            m.posY + gmF.boundsMinY * m.scale,
+                                            m.posY + (gmF.boundsMinY + hLocal) * m.scale)
+                                        gr.renderFacingMarker(leftProj, leftView, m.posX, projY, m.posZ, 0.22f, 1f, 1f, 0.1f)
+                                    }
+                                }
+                            }
                             if (ih.laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
-                                ih.laserHandPos, ih.laserAimRot, ih.hitDistance)
+                                ih.laserHandPos, ih.laserAimRot, ih.hitDistance,
+                                dotScale = if (markMode) 0.04f else 0.01f,
+                                dotColor = if (markMode) MARK_RETICLE_COLOR else LASER_DEFAULT_COLOR)
                             if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(leftTexId, width, height)
                             gr.finishEyePass()
@@ -2211,8 +2224,50 @@ class FilamentModelActivity : ComponentActivity() {
                             if (gizmoVisible && hasGizmoPose)
                                 gr.renderGizmo(rightProj, rightView, gizmoPosBuf, gizmoRotBuf, ih.hoveredGizmoAxis)
                             gr.renderEmitter(rightProj, rightView, ih.emitterHovered)
+                            for ((mi, m) in models.withIndex()) {
+                                if (m.isPreview) continue
+                                val isSel = mi == selectedModelIndex
+                                if (!isSel) continue
+                                val gmF = gr.getModel(m.gpuModelId) ?: continue
+                                val hLocal = 2f * (gmF.boundsCenterY - gmF.boundsMinY)
+                                val headYWorld = m.posY + (gmF.boundsMinY + hLocal * 0.92f) * m.scale
+                                if (!m.markedFaceLocalYaw.isNaN()) {
+                                    val faceWorldYaw = kotlin.math.atan2(
+                                        2f * (m.rotW * m.rotY + m.rotX * m.rotZ),
+                                        1f - 2f * (m.rotY * m.rotY + m.rotZ * m.rotZ)
+                                    ) + m.markedFaceLocalYaw
+                                    val faceX = m.posX + kotlin.math.sin(faceWorldYaw) * 0.35f
+                                    val faceZ = m.posZ + kotlin.math.cos(faceWorldYaw) * 0.35f
+                                    gr.renderFacingMarker(rightProj, rightView, faceX, headYWorld, faceZ, 0.25f, 1f, 0.2f, 0.6f)
+                                }
+                                if (m.markedHipFrac >= 0f) {
+                                    val hY = m.posY + (gmF.boundsMinY + m.markedHipFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(rightProj, rightView, m.posX, hY, m.posZ, 0.08f, 1f, 0.5f, 0f)
+                                }
+                                if (m.markedShoulderFrac >= 0f) {
+                                    val sY = m.posY + (gmF.boundsMinY + m.markedShoulderFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(rightProj, rightView, m.posX, sY, m.posZ, 0.08f, 0.3f, 0.9f, 1f)
+                                }
+                                if (m.markedKneeFrac >= 0f) {
+                                    val kY = m.posY + (gmF.boundsMinY + m.markedKneeFrac * hLocal) * m.scale
+                                    gr.renderFacingMarker(rightProj, rightView, m.posX, kY, m.posZ, 0.08f, 0.8f, 0.3f, 1f)
+                                }
+                                if (markAnatomyMode > 0) {
+                                    val rxm = ih.laserRayDir[0]; val rzm = ih.laserRayDir[2]
+                                    val hmag = rxm*rxm + rzm*rzm
+                                    if (hmag > 0.0001f) {
+                                        val sr = ((m.posX - ih.laserHandPos[0]) * rxm + (m.posZ - ih.laserHandPos[2]) * rzm) / hmag
+                                        val projY = (ih.laserHandPos[1] + ih.laserRayDir[1] * sr).coerceIn(
+                                            m.posY + gmF.boundsMinY * m.scale,
+                                            m.posY + (gmF.boundsMinY + hLocal) * m.scale)
+                                        gr.renderFacingMarker(rightProj, rightView, m.posX, projY, m.posZ, 0.22f, 1f, 1f, 0.1f)
+                                    }
+                                }
+                            }
                             if (ih.laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,
-                                ih.laserHandPos, ih.laserAimRot, ih.hitDistance)
+                                ih.laserHandPos, ih.laserAimRot, ih.hitDistance,
+                                dotScale = if (markMode) 0.04f else 0.01f,
+                                dotColor = if (markMode) MARK_RETICLE_COLOR else LASER_DEFAULT_COLOR)
                             if (washActive) gr.renderColorWash(washR, washG, washB, beatWashAlpha, washMode)
                             gr.renderBloom(rightTexId, width, height)
                             gr.finishEyePass()

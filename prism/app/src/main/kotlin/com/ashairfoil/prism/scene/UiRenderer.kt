@@ -921,32 +921,36 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText(intensityLabel, 150f, rowCY + 11f, p)
             p.isFakeBoldText = false
 
-            // GAZE follow toggle
-            val gazeOn = selModel?.danceGazeFollow ?: true
-            val gazeLabel = if (gazeOn) "GAZE \u25CF" else "GAZE off"
-            val gazeHover = hoveredActionButton == 145
+            // FACE mark (replaces GAZE toggle — more immediately useful).
+            // Tap while facing her to lock in THIS side as her front. Dot then
+            // rotates with her body. Second tap clears. Also auto-enables gaze
+            // follow so she tracks with the marked side toward the viewer.
+            val faceMarked = selModel?.markedFaceLocalYaw?.let { !it.isNaN() } ?: false
+            val faceLabel = if (faceMarked) "FACE \u25CF" else "MARK FACE"
+            val faceHover = hoveredActionButton == 145
             p.color = when {
-                gazeHover -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt()
-                gazeOn -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x55000000
+                faceHover -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt()
+                faceMarked -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x55000000
                 else -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x20000000
             }
             canvas.drawRoundRect(280f, rowCY, 520f, rowCY + rowCH, 6f, 6f, p)
-            p.color = if (gazeOn || gazeHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
-            canvas.drawText(gazeLabel, 400f, rowCY + 11f, p)
+            p.color = if (faceMarked || faceHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            canvas.drawText(faceLabel, 400f, rowCY + 11f, p)
 
-            // ROLL rate cycle (also arms roll with small default if off)
-            val rollRate = selModel?.danceRollRate ?: 4
-            val rollActive = (selModel?.danceRollDeg ?: 0f) > 0.01f
-            val rollLabel = if (rollActive) "ROLL 1/$rollRate \u25CF" else "ROLL 1/$rollRate"
-            val rollHover = hoveredActionButton == 146
+            // FOOT stick strength (replaces ROLL — more immediately useful)
+            // Cycles 0 / 50 / 85 / 100%. 100% = heels fully bolted to the floor,
+            // body pivots completely around them. 0% = full drift (ice skater).
+            val footStrength = selModel?.footAnchorStrength ?: 0.85f
+            val footLabel = "FOOT ${(footStrength * 100).toInt()}%"
+            val footHover = hoveredActionButton == 146
             p.color = when {
-                rollHover -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
-                rollActive -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x55000000
+                footHover -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
+                footStrength > 0.5f -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x55000000
                 else -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x25000000
             }
             canvas.drawRoundRect(530f, rowCY, 770f, rowCY + rowCH, 6f, 6f, p)
-            p.color = if (rollActive || rollHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
-            canvas.drawText(rollLabel, 650f, rowCY + 11f, p)
+            p.color = if (footHover || footStrength > 0.5f) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            canvas.drawText(footLabel, 650f, rowCY + 11f, p)
 
             // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
             val tapHover = hoveredActionButton == 147
@@ -1955,11 +1959,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText(label, (bx1 + bx2) / 2f, by + 35f, actionButtonTextPaint)
         }
 
-        // Row 1: SAVE / LOAD
+        // Row 1: SAVE / LOAD / LAST — quick-load the _autosave.json that always
+        // captures the last active scene. Saves the "why don't I just save it
+        // already" rediscovery loop.
         val row1Y = uiH - 226f
-        val btn2W = (uiW - 60f - btnGap) / 2f
-        drawButton(30f, 30f + btn2W, row1Y, "SAVE SCENE", hoveredActionButton == 104, ThemeManager.PURPLE_DEEP)
-        drawButton(30f + btn2W + btnGap, uiW - 30f, row1Y, "LOAD SCENE", hoveredActionButton == 105, ThemeManager.BLUE)
+        val row1W = (uiW - 60f - btnGap * 2f) / 3f
+        drawButton(30f, 30f + row1W, row1Y, "SAVE", hoveredActionButton == 104, ThemeManager.PURPLE_DEEP)
+        drawButton(30f + row1W + btnGap, 30f + row1W * 2f + btnGap, row1Y, "LOAD", hoveredActionButton == 105, ThemeManager.BLUE)
+        drawButton(30f + row1W * 2f + btnGap * 2f, uiW - 30f, row1Y, "LAST", hoveredActionButton == 150, ThemeManager.CYAN_ICE)
 
         // Row 2: ADD / DELETE / RESET
         val row2Y = row1Y + btnH + btnGap

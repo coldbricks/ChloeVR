@@ -171,8 +171,9 @@ class SceneManager(
         var lastSeenCamPosY: Float = 0f,
         var camYVelSmooth: Float = 0f,
         // Tier1.5-intensity: single knob multiplier for all three axis amps.
-        // 0 = stillness, 1 = preset default, 2 = full intensity.
-        var danceIntensity: Float = 1.0f,
+        // Default 0.25× because anything above reads as cartoony — real dance
+        // motion is small. User can crank it if they want but 0.25 is sweet spot.
+        var danceIntensity: Float = 0.25f,
         // Tier1.5-gaze-toggle: follow-gaze (saccade FSM) on/off per model.
         // When false, FSM never captures even if dance is armed.
         var danceGazeFollow: Boolean = true,
@@ -205,6 +206,12 @@ class SceneManager(
         var markedHipFrac: Float = -1f,
         var markedShoulderFrac: Float = -1f,
         var markedKneeFrac: Float = -1f,
+        // Face mark: captured angle (in model LOCAL yaw frame) of the direction
+        // from model center to the viewer at mark time. Once set, the "front
+        // dot" is rendered on that side of her body and rotates WITH her as
+        // she spins (because we convert local → world via current model yaw).
+        // NaN = not marked; no dot rendered.
+        var markedFaceLocalYaw: Float = Float.NaN,
         // Foot anchor: captured heel position in world when dance is armed.
         // Each frame, after rotations are applied, we compute the current foot
         // world position and pull the model back by (drift × strength) so the

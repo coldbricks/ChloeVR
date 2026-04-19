@@ -1549,7 +1549,8 @@ class GlesModelRenderer {
     fun renderLaser(swapchainTexId: Int, width: Int, height: Int,
                     projection: FloatArray, viewMatrix: FloatArray,
                     handPos: FloatArray, aimQuat: FloatArray,
-                    hitDistance: Float, color: FloatArray = DEFAULT_LASER_COLOR) {
+                    hitDistance: Float, color: FloatArray = DEFAULT_LASER_COLOR,
+                    dotScale: Float = 0.01f, dotColor: FloatArray = DEFAULT_LASER_COLOR) {
         if (!initialized || laserProgramId == 0) return
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
@@ -1574,11 +1575,10 @@ class GlesModelRenderer {
             // Disable depth test so dot always renders on top of panel/models
             GLES30.glDisable(GLES30.GL_DEPTH_TEST)
             quatForward(aimQuat, scratchVec3)
-            // Nudge dot 2mm toward camera to prevent z-fighting
             val dotDist = hitDistance - 0.002f
-            scratchDotModel[0] = 0.01f; scratchDotModel[1] = 0f; scratchDotModel[2] = 0f; scratchDotModel[3] = 0f
-            scratchDotModel[4] = 0f; scratchDotModel[5] = 0.01f; scratchDotModel[6] = 0f; scratchDotModel[7] = 0f
-            scratchDotModel[8] = 0f; scratchDotModel[9] = 0f; scratchDotModel[10] = 0.01f; scratchDotModel[11] = 0f
+            scratchDotModel[0] = dotScale; scratchDotModel[1] = 0f; scratchDotModel[2] = 0f; scratchDotModel[3] = 0f
+            scratchDotModel[4] = 0f; scratchDotModel[5] = dotScale; scratchDotModel[6] = 0f; scratchDotModel[7] = 0f
+            scratchDotModel[8] = 0f; scratchDotModel[9] = 0f; scratchDotModel[10] = dotScale; scratchDotModel[11] = 0f
             scratchDotModel[12] = handPos[0] + scratchVec3[0] * dotDist
             scratchDotModel[13] = handPos[1] + scratchVec3[1] * dotDist
             scratchDotModel[14] = handPos[2] + scratchVec3[2] * dotDist
@@ -1586,12 +1586,44 @@ class GlesModelRenderer {
             multiplyMat4(viewMatrix, scratchDotModel, scratchMat4A)
             multiplyMat4(projection, scratchMat4A, scratchMat4B)
             GLES30.glUniformMatrix4fv(uLaserMVP, 1, false, scratchMat4B, 0)
-            GLES30.glUniform3f(uLaserColor, 1f, 1f, 1f)
+            GLES30.glUniform3f(uLaserColor, dotColor[0], dotColor[1], dotColor[2])
             GLES30.glBindVertexArray(dotVao)
             GLES30.glDrawArrays(GLES30.GL_LINES, 0, 4)
             GLES30.glBindVertexArray(0)
             GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         }
+        GLES30.glDepthMask(true)
+        GLES30.glDisable(GLES30.GL_BLEND)
+    }
+
+    /** Render a bright front-facing marker (hot-pink cross) at a world-space
+     *  point. Used to show WHICH WAY is the model's front so the user doesn't
+     *  have to guess when placing dance presets or marking anatomy. Reuses
+     *  the laser dot VAO for cheap. Rendered on top of everything. */
+    fun renderFacingMarker(projection: FloatArray, viewMatrix: FloatArray,
+                           worldX: Float, worldY: Float, worldZ: Float,
+                           scale: Float = 0.04f,
+                           r: Float = 1f, g: Float = 0.2f, b: Float = 0.6f) {
+        if (!initialized || laserProgramId == 0) return
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        GLES30.glDepthMask(false)
+        GLES30.glDisable(GLES30.GL_DEPTH_TEST)
+        scratchDotModel[0] = scale; scratchDotModel[1] = 0f; scratchDotModel[2] = 0f; scratchDotModel[3] = 0f
+        scratchDotModel[4] = 0f; scratchDotModel[5] = scale; scratchDotModel[6] = 0f; scratchDotModel[7] = 0f
+        scratchDotModel[8] = 0f; scratchDotModel[9] = 0f; scratchDotModel[10] = scale; scratchDotModel[11] = 0f
+        scratchDotModel[12] = worldX; scratchDotModel[13] = worldY; scratchDotModel[14] = worldZ
+        scratchDotModel[15] = 1f
+        multiplyMat4(viewMatrix, scratchDotModel, scratchMat4A)
+        multiplyMat4(projection, scratchMat4A, scratchMat4B)
+        GLES30.glUseProgram(laserProgramId)
+        GLES30.glUniformMatrix4fv(uLaserMVP, 1, false, scratchMat4B, 0)
+        GLES30.glUniform3f(uLaserColor, r, g, b)
+        GLES30.glUniform1f(uLaserLenScale, 1f)
+        GLES30.glBindVertexArray(dotVao)
+        GLES30.glDrawArrays(GLES30.GL_LINES, 0, 4)
+        GLES30.glBindVertexArray(0)
+        GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
     }

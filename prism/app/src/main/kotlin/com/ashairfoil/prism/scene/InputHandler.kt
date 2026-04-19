@@ -784,8 +784,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 // Action buttons: 4 rows at bottom (UiRenderer: row1Y=1054, btnH=48, btnGap=8)
                                 // btn2W=478, btn3W=316; gap midpoints: row1=512, rows2-4=350/674
                                 if (by in 1054f..1102f) {
-                                    if (bx < 512f) hoveredActionButton = 104
-                                    else hoveredActionButton = 105
+                                    // Row 1 is now 3 buttons: SAVE / LOAD / LAST at row1W≈316
+                                    if (bx < 350f) hoveredActionButton = 104
+                                    else if (bx < 674f) hoveredActionButton = 105
+                                    else hoveredActionButton = 150
                                 }
                                 if (by in 1110f..1158f) {
                                     if (bx < 350f) hoveredActionButton = 101
@@ -1011,8 +1013,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     else activity.sceneManager.selectedModelIndex
                 val m = activity.sceneManager.models.getOrNull(tgtIdx)
                 val gm = if (m != null) activity.glesRenderer?.getModel(m.gpuModelId) else null
-                if (m != null && gm != null && hitDistance > 0f) {
-                    val hitY = laserHandPos[1] + laserRayDir[1] * hitDistance
+                // Geometry: ignore bounding-sphere hit test. Instead find the Y on
+                // the model's vertical axis closest to the laser ray. User can aim
+                // in the body's general direction and still get a clean Y capture.
+                val rx = laserRayDir[0]; val rz = laserRayDir[2]
+                val horizMag = rx*rx + rz*rz
+                if (m != null && gm != null && horizMag > 0.0001f) {
+                    val s = ((m.posX - laserHandPos[0]) * rx + (m.posZ - laserHandPos[2]) * rz) / horizMag
+                    val hitY = laserHandPos[1] + laserRayDir[1] * s
                     val bbMin = gm.boundsMinY
                     val bbCenter = gm.boundsCenterY
                     val bbHeight = 2f * (bbCenter - bbMin)
@@ -1039,7 +1047,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                     }
                 } else {
-                    activity.uiRenderer.showMessage("No hit — aim at the model body")
+                    activity.uiRenderer.showMessage("Select a model first — then aim and trigger")
                 }
                 activity.markAnatomyMode = 0
                 activity.uiNeedsRefresh = true
@@ -1420,46 +1428,53 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 145) {
-                // GAZE follow toggle (per-model)
+                // MARK FACE — lock in THIS side of her as her front. Dot rotates
+                // with her body from here on. Second tap clears.
                 val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                 if (m != null) {
-                    m.danceGazeFollow = !m.danceGazeFollow
-                    if (!m.danceGazeFollow) {
-                        // Clear current bias so she snaps back to base facing
+                    if (!m.markedFaceLocalYaw.isNaN()) {
+                        // Unmark
+                        m.markedFaceLocalYaw = Float.NaN
+                        m.danceGazeFollow = false
                         m.gazeCurrentBiasRad = 0f
-                        m.gazeState = 0
-                    } else if (m.animHasBase) {
-                        // Re-arm the capture so she tracks from the current heading
-                        activity.armGazeCapture(m)
+                        Log.i(TAG, "FACE unmarked on ${m.file.name}")
+                        activity.uiRenderer.showMessage("Face mark cleared")
+                    } else {
+                        // Capture: direction from model to camera (world), then
+                        // subtract model's current world yaw to get LOCAL face angle.
+                        val dxC = activity.camPosX - m.posX
+                        val dzC = activity.camPosZ - m.posZ
+                        val worldDirToCam = kotlin.math.atan2(dxC, dzC)
+                        // Extract model world yaw from quaternion. For upright models
+                        // (negligible pitch/roll) this simplifies to atan2 of the Y quat term.
+                        val qx = m.rotX; val qy = m.rotY; val qz = m.rotZ; val qw = m.rotW
+                        val modelWorldYaw = kotlin.math.atan2(
+                            2f * (qw * qy + qx * qz),
+                            1f - 2f * (qy * qy + qz * qz)
+                        )
+                        m.markedFaceLocalYaw = worldDirToCam - modelWorldYaw
+                        // Also auto-arm gaze-follow so she tracks with THIS side.
+                        m.danceGazeFollow = true
+                        if (m.animHasBase) activity.armGazeCapture(m)
+                        Log.i(TAG, "FACE marked (local yaw ${Math.toDegrees(m.markedFaceLocalYaw.toDouble()).toInt()}°) on ${m.file.name}")
+                        activity.uiRenderer.showMessage("Face locked")
                     }
-                    Log.i(TAG, "Gaze follow: ${if (m.danceGazeFollow) "ON" else "OFF"} on ${m.file.name}")
                     activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 146) {
-                // ROLL rate cycle. First tap arms with 4° default; subsequent taps cycle rate;
-                // long-cycle back to zero after 1/16.
+                // FOOT STICK strength cycle: 0 → 50 → 85 → 100 → 0. How planted
+                // her heels are. 100% = bolted to floor (body fully pivots around
+                // the heels), 0% = full drift (ice-skater). Sweet spot around 85%.
                 val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                 if (m != null) {
-                    if (m.danceRollDeg < 0.01f) {
-                        m.danceRollDeg = 4f
-                        m.danceRollRate = 4
-                        m.danceRollPhase = 0.5f  // offset from yaw so axes don't all peak together
-                    } else {
-                        m.danceRollRate = when (m.danceRollRate) {
-                            2 -> 4; 4 -> 8; 8 -> 16; 16 -> { m.danceRollDeg = 0f; 4 }
-                            else -> 4
-                        }
+                    val next = when {
+                        m.footAnchorStrength < 0.25f -> 0.50f
+                        m.footAnchorStrength < 0.70f -> 0.85f
+                        m.footAnchorStrength < 0.95f -> 1.0f
+                        else -> 0.0f
                     }
-                    // Clamp to sweep-speed law (amp × rate ≤ 64 for roll, using yaw K as bank proxy)
-                    m.danceRollDeg = kotlin.math.min(m.danceRollDeg, 64f / m.danceRollRate)
-                    if (!m.animHasBase) {
-                        m.animBasePose[0] = m.posX; m.animBasePose[1] = m.posY; m.animBasePose[2] = m.posZ
-                        m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
-                        m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
-                        m.animHasBase = true
-                        activity.armGazeCapture(m)
-                    }
-                    Log.i(TAG, "Roll: ${m.danceRollDeg.toInt()}° @ 1/${m.danceRollRate}")
+                    m.footAnchorStrength = next
+                    Log.i(TAG, "Foot stick: ${(next * 100).toInt()}% on ${m.file.name}")
                     activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 147) {
@@ -1650,6 +1665,18 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.refreshSceneList()
                 activity.scenePickerMode = true
                 hoveredSceneIndex = -1
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 150) {
+                // LAST — load the _autosave.json directly. Saves the step of
+                // opening LOAD → finding the most recent file.
+                val autosave = java.io.File(activity.sceneManager.getScenesDir(), "_autosave.json")
+                if (autosave.exists()) {
+                    Log.i(TAG, "Action: Load LAST (autosave)")
+                    activity.pendingSceneLoad = autosave
+                    activity.uiRenderer.showMessage("Loading last session...")
+                } else {
+                    activity.uiRenderer.showMessage("No autosave yet — save a scene first")
+                }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.scenePickerMode && hoveredActionButton == 106) {
                 activity.scenePickerMode = false
@@ -2409,8 +2436,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
             whipSampleIdx = 0
         }
 
-        // Free thumbstick = rotate/height
-        if (!isGrabbing && !activity.menuVisible) {
+        // Free thumbstick = rotate/height. Menu-visible no longer blocks — lets
+        // the user rotate the selected model to face them while the beat panel
+        // is open (common flow: open menu, pick preset, spin to face the viewer).
+        if (!isGrabbing) {
             val hAxis = if (kotlin.math.abs(rightThumbX) > kotlin.math.abs(leftThumbX))
                 rightThumbX else leftThumbX
             if (kotlin.math.abs(hAxis) > STICK_DEADZONE) {
