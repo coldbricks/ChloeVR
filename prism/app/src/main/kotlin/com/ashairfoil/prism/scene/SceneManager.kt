@@ -148,7 +148,72 @@ class SceneManager(
         var lastDanceNanos: Long = 0L,
         // Per-model fBm seed so the "slow random amplitude drift" is uncorrelated
         // between axes (prevents them all breathing in unison).
-        var fbmSeed: Float = 0f
+        var fbmSeed: Float = 0f,
+        // ── BREATH (Tier1-G): gaze-saccade FSM (Tier1-F) state ──
+        // Camera-aware yaw bias. Behaves like a dancer glancing at the viewer:
+        // hold a heading 2–6s, then SACCADE (fast snap with BACK overshoot) to
+        // re-target, then FREEZE all dance axes for 80–120ms on arrival.
+        // gazeState: 0=HOLD, 1=SACCADE, 2=FREEZE
+        var gazeState: Int = 0,
+        var gazeNextCheckMs: Long = 0L,
+        var gazeSaccadeStartMs: Long = 0L,
+        var gazeSaccadeDurationMs: Long = 200L,
+        var gazeSaccadeFromRad: Float = 0f,
+        var gazeSaccadeToRad: Float = 0f,
+        var gazeFreezeEndsMs: Long = 0L,
+        var gazeCurrentBiasRad: Float = 0f,
+        // The dir-to-camera yaw captured on dance arm. Target bias = current
+        // dir-to-camera - anchor. Means "she keeps the same relative orientation
+        // to the viewer as when you armed her."
+        var gazeFaceCamAnchorRad: Float = 0f,
+        var gazeFaceCamHasCapture: Boolean = false,
+        // Track last camera Y for vestibular mirroring (user's bob feeds model).
+        var lastSeenCamPosY: Float = 0f,
+        var camYVelSmooth: Float = 0f,
+        // Tier1.5-intensity: single knob multiplier for all three axis amps.
+        // 0 = stillness, 1 = preset default, 2 = full intensity.
+        var danceIntensity: Float = 1.0f,
+        // Tier1.5-gaze-toggle: follow-gaze (saccade FSM) on/off per model.
+        // When false, FSM never captures even if dance is armed.
+        var danceGazeFollow: Boolean = true,
+        // Tier1.5-roll: third dance axis. Applied in LOCAL frame so bank
+        // matches the model's facing direction regardless of base orientation.
+        var danceRollDeg: Float = 0f,
+        var danceRollRate: Int = 4,
+        var danceRollPhase: Float = 0f,
+        // Tier2-pivot: dynamic pivot selection per axis. Fractional height along
+        // the model's Y bbox (0 = feet, 1 = head). COUNTERINTUITIVE: to make
+        // the hips swing, pivot at SHOULDERS. Part AT the pivot stays still.
+        // pivotEnabled=false → pre-pivot behavior (rotate about model origin).
+        // Presets set these via shuffleDance so it's opt-in per preset.
+        var pivotEnabled: Boolean = false,
+        var pitchPivotFrac: Float = 0.85f,    // shoulders by default
+        var rollPivotFrac: Float = 0.85f,
+        // Counter-roll always pivots at hips (per biomechanics research) —
+        // keeps the "shoulders counter-drag the yaw" spinal-twist illusion
+        // regardless of which pivot the main yaw/pitch use.
+        var counterRollPivotFrac: Float = 0.50f,
+        // Gain for the counter-roll amplitude. TWERK wants this near 0 (shoulders
+        // MUST NOT react); SWAY wants 0.5 (shoulder lag is the whole move).
+        var counterRollGain: Float = 0.35f,
+        // Display: which preset was last rolled onto this model, for UI feedback.
+        var currentPresetName: String = "",
+        // User-marked anatomy anchors. Fraction of bbox height where the hip /
+        // shoulder actually sit on THIS particular GLB (so presets that say
+        // "pivot at 0.85 = shoulder" land on the model's real shoulder, not
+        // a generic proportion). -1 = not marked, use 0.45 / 0.85 defaults.
+        var markedHipFrac: Float = -1f,
+        var markedShoulderFrac: Float = -1f,
+        var markedKneeFrac: Float = -1f,
+        // Foot anchor: captured heel position in world when dance is armed.
+        // Each frame, after rotations are applied, we compute the current foot
+        // world position and pull the model back by (drift × strength) so the
+        // heels don't skate across the floor when the body pivots around the
+        // shoulders/chest. Strength 1.0 = fully planted; 0 = current (skating).
+        var footAnchorCaptured: Boolean = false,
+        var footAnchorX: Float = 0f,
+        var footAnchorZ: Float = 0f,
+        var footAnchorStrength: Float = 0.85f
     )
 
     /** Easing curves available for dance motion — mirrors ShapesXR's options. */

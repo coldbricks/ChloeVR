@@ -586,7 +586,11 @@ class GlesModelRenderer {
     }
 
     private fun initGridGeometry() {
-        val s = 5.0f
+        // Enlarged from 5×5m to 20×20m so shadows cast onto the floor are visible
+        // throughout a normal room regardless of where the user wandered from the
+        // origin. Grid-line fade (in the shader) still keeps the visible grid
+        // contained; shadow fade decoupled separately.
+        val s = 20.0f
         val gridVerts = floatArrayOf(-s,0f,-s, s,0f,-s, s,0f,s, -s,0f,s)
         val gridBuf = allocFloatBuf(gridVerts)
         val vaoBuf = intArrayOf(0)
@@ -933,20 +937,55 @@ class GlesModelRenderer {
             model.emissiveTexId = loadGltfTex(emissiveTexIdx, "Emissive map")
             model.hasNormalMap = model.normalMapTexId != 0
 
-            // Compute tangents if normal map exists but glTF lacks TANGENT attribute
-            // Skip on very dense meshes (>500K verts) — computed tangents create
-            // checkerboard artifacts due to handedness flipping across shared vertices
-            if (model.hasNormalMap && tangents == null && texCoords != null && posCnt <= 500000) {
-                tangents = computeTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
-                Log.i(TAG, "Computed tangents for normal mapping ($posCnt verts)")
-            } else if (model.hasNormalMap && tangents == null && posCnt > 500000) {
-                Log.w(TAG, "Skipping tangent compute on dense mesh ($posCnt verts) — using vertex normals only")
-                model.hasNormalMap = false
-                model.normalMapTexId = 0
+            // Tier1.5 FIX: normal-map tangents via MESH UNWELD.
+            //
+            // Prior implementation called computeTangents() which accumulated
+            // per-vertex tangents at shared indices. At UV seams the adjacent
+            // triangles' tangent vectors have OPPOSITE signs — summing them
+            // cancels to ~0, Gram-Schmidt fails, handedness flips per-fragment.
+            // Result: the "war paint" / "confetti" black-blotch rendering on
+            // every Tripo GLB that shipped without baked TANGENT attribute.
+            //
+            // Fix (matches MikkTSpace semantics for the common case): expand
+            // the mesh to triangle-soup (3 unique verts per triangle, no
+            // sharing), compute per-triangle tangents with Gram-Schmidt
+            // orthogonalization per-corner, and write an identity index
+            // buffer. Tangent discontinuities at UV seams are preserved.
+            // Mesh grows ~3× in vertex count; memory is cheap on XR, correct
+            // shading is not. The old posCnt ≤ 500000 cap is removed — unweld
+            // is safe at any density.
+            if (model.hasNormalMap && tangents == null && texCoords != null) {
+                val unweld = unweldWithTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
+                Log.i(TAG, "Unweld tangent fix: $posCnt verts / ${idxCnt/3} tris → ${unweld.vertCount} verts (triangle-soup)")
+
+                // Replace the previously-uploaded welded VBOs + EBO with the
+                // unwelded buffers so pos/norm/uv/tangent streams are 1:1.
+                GLES30.glBindVertexArray(model.vao)
+                if (model.vboPositions != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = model.vboPositions }, 0)
+                if (model.vboNormals != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = model.vboNormals }, 0)
+                if (model.vboTexCoords != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = model.vboTexCoords }, 0)
+                if (model.ebo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = model.ebo }, 0)
+
+                model.vboPositions = createVBO(unweld.positions, 0, 3)
+                model.vboNormals = createVBO(unweld.normals, 1, 3)
+                model.vboTexCoords = createVBO(unweld.texCoords, 2, 2)
+                model.vboTangents = createVBO(unweld.tangents, 3, 4)
+
+                val eboBufUw = intArrayOf(0)
+                GLES30.glGenBuffers(1, eboBufUw, 0)
+                model.ebo = eboBufUw[0]
+                GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, model.ebo)
+                unweld.indices.position(0)
+                GLES30.glBufferData(GLES30.GL_ELEMENT_ARRAY_BUFFER, unweld.indexCount * 4, unweld.indices, GLES30.GL_STATIC_DRAW)
+
+                GLES30.glBindVertexArray(0)
+                model.indexCount = unweld.indexCount
+                tangents = unweld.tangents  // already uploaded, skip the else-branch below
             }
 
-            // Upload tangent VBO if available
-            if (tangents != null) {
+            // Upload tangent VBO when tangents came pre-baked in the GLB (unweld
+            // path above already uploaded its own tangents).
+            if (tangents != null && model.vboTangents == 0) {
                 GLES30.glBindVertexArray(model.vao)
                 model.vboTangents = createVBO(tangents, 3, 4)
                 GLES30.glBindVertexArray(0)
@@ -1109,7 +1148,14 @@ class GlesModelRenderer {
 
     fun renderShadowMap() {
         if (!initialized || !shadowEnabled || models.isEmpty()) return
-        shadowLightMatrix = computeLightSpaceMatrix()
+        // Compute average model XZ so shadow frustum travels with the scene.
+        var cx = 0f; var cz = 0f; var n = 0
+        for (m in models) {
+            val mm = m.modelMatrix
+            if (mm.size >= 16) { cx += mm[12]; cz += mm[14]; n++ }
+        }
+        if (n > 0) { cx /= n; cz /= n }
+        shadowLightMatrix = computeLightSpaceMatrix(cx, cz)
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shadowMapFbo)
 
@@ -1839,6 +1885,124 @@ class GlesModelRenderer {
         positions.position(0); indices.position(0)
         return FloatBuffer.wrap(normals)
     }
+    /** Unweld-based tangent generation — replaces the broken index-welded
+     *  computeTangents for meshes with normal maps but no pre-baked TANGENT
+     *  attribute. The old approach accumulated tangents at shared vertex
+     *  indices, which cancels at UV seams and produces the "war paint" /
+     *  "confetti" rendering visible on Tripo AI-generated GLBs.
+     *
+     *  Fix: expand to triangle-soup (3 unique verts per triangle, no sharing),
+     *  compute per-triangle tangents with Gram-Schmidt orthogonalization and
+     *  proper handedness encoding, re-index identity. Mesh grows ~3× in
+     *  vertex count but tangents are correct at every UV seam.
+     *
+     *  Matches the MikkTSpace output semantics for the common case (t.w ∈ {±1}
+     *  as handedness), which is what every PBR shader expects. */
+    private data class UnweldResult(
+        val positions: FloatBuffer, val normals: FloatBuffer,
+        val texCoords: FloatBuffer, val tangents: FloatBuffer,
+        val indices: IntBuffer, val vertCount: Int, val indexCount: Int
+    )
+
+    private fun unweldWithTangents(
+        srcPositions: FloatBuffer, srcNormals: FloatBuffer,
+        srcTexCoords: FloatBuffer, srcIndices: IntBuffer,
+        srcVertCount: Int, srcIdxCount: Int
+    ): UnweldResult {
+        val triCount = srcIdxCount / 3
+        val outVerts = triCount * 3
+        val newPos = FloatArray(outVerts * 3)
+        val newNorm = FloatArray(outVerts * 3)
+        val newUv = FloatArray(outVerts * 2)
+        val newTan = FloatArray(outVerts * 4)
+        val newIdx = IntArray(outVerts)
+
+        val pos = FloatArray(srcVertCount * 3); srcPositions.position(0); srcPositions.get(pos); srcPositions.position(0)
+        val norm = FloatArray(srcVertCount * 3); srcNormals.position(0); srcNormals.get(norm); srcNormals.position(0)
+        val uv = FloatArray(srcVertCount * 2); srcTexCoords.position(0); srcTexCoords.get(uv); srcTexCoords.position(0)
+        srcIndices.position(0)
+
+        for (t in 0 until triCount) {
+            srcIndices.position(t * 3)
+            val i0 = srcIndices.get()
+            val i1 = srcIndices.get()
+            val i2 = srcIndices.get()
+
+            val p0x = pos[i0*3]; val p0y = pos[i0*3+1]; val p0z = pos[i0*3+2]
+            val p1x = pos[i1*3]; val p1y = pos[i1*3+1]; val p1z = pos[i1*3+2]
+            val p2x = pos[i2*3]; val p2y = pos[i2*3+1]; val p2z = pos[i2*3+2]
+            val u0 = uv[i0*2]; val v0 = uv[i0*2+1]
+            val u1 = uv[i1*2]; val v1 = uv[i1*2+1]
+            val u2 = uv[i2*2]; val v2 = uv[i2*2+1]
+
+            val e1x = p1x - p0x; val e1y = p1y - p0y; val e1z = p1z - p0z
+            val e2x = p2x - p0x; val e2y = p2y - p0y; val e2z = p2z - p0z
+            val du1 = u1 - u0; val dv1 = v1 - v0
+            val du2 = u2 - u0; val dv2 = v2 - v0
+            val det = du1 * dv2 - du2 * dv1
+
+            var tx: Float; var ty: Float; var tz: Float
+            var bx: Float; var by: Float; var bz: Float
+            if (kotlin.math.abs(det) < 1e-6f) {
+                // Degenerate UV triangle — pick arbitrary perpendicular to normal0
+                val n0x = norm[i0*3]; val n0y = norm[i0*3+1]; val n0z = norm[i0*3+2]
+                if (kotlin.math.abs(n0y) < 0.99f) { tx = n0z; ty = 0f; tz = -n0x }
+                else { tx = 1f; ty = 0f; tz = 0f }
+                bx = 0f; by = 0f; bz = 0f
+            } else {
+                val inv = 1f / det
+                tx = (dv2 * e1x - dv1 * e2x) * inv
+                ty = (dv2 * e1y - dv1 * e2y) * inv
+                tz = (dv2 * e1z - dv1 * e2z) * inv
+                bx = (-du2 * e1x + du1 * e2x) * inv
+                by = (-du2 * e1y + du1 * e2y) * inv
+                bz = (-du2 * e1z + du1 * e2z) * inv
+            }
+
+            // Emit 3 unwelded verts, each with tangent Gram-Schmidt'd to its own normal
+            val src0 = i0 * 3; val src1 = i1 * 3; val src2 = i2 * 3
+            val srcU0 = i0 * 2; val srcU1 = i1 * 2; val srcU2 = i2 * 2
+            for (k in 0..2) {
+                val src3 = when (k) { 0 -> src0; 1 -> src1; else -> src2 }
+                val srcU = when (k) { 0 -> srcU0; 1 -> srcU1; else -> srcU2 }
+                val dst = t * 3 + k
+                val d3 = dst * 3
+                val d2 = dst * 2
+                val d4 = dst * 4
+                newPos[d3] = pos[src3]; newPos[d3+1] = pos[src3+1]; newPos[d3+2] = pos[src3+2]
+                val nx = norm[src3]; val ny = norm[src3+1]; val nz = norm[src3+2]
+                newNorm[d3] = nx; newNorm[d3+1] = ny; newNorm[d3+2] = nz
+                newUv[d2] = uv[srcU]; newUv[d2+1] = uv[srcU+1]
+
+                // Gram-Schmidt: T' = normalize(T - N (N·T))
+                val d = tx * nx + ty * ny + tz * nz
+                var ox = tx - d * nx
+                var oy = ty - d * ny
+                var oz = tz - d * nz
+                val len = kotlin.math.sqrt(ox * ox + oy * oy + oz * oz)
+                if (len > 1e-5f) { ox /= len; oy /= len; oz /= len }
+                else { ox = 1f; oy = 0f; oz = 0f }
+                // Handedness w = sign(dot(cross(N, T'), B))
+                val cx = ny * oz - nz * oy
+                val cy = nz * ox - nx * oz
+                val cz = nx * oy - ny * ox
+                val w = if (cx * bx + cy * by + cz * bz < 0f) -1f else 1f
+                newTan[d4] = ox; newTan[d4+1] = oy; newTan[d4+2] = oz; newTan[d4+3] = w
+                newIdx[dst] = dst
+            }
+        }
+        srcIndices.position(0)
+        return UnweldResult(
+            positions = FloatBuffer.wrap(newPos),
+            normals = FloatBuffer.wrap(newNorm),
+            texCoords = FloatBuffer.wrap(newUv),
+            tangents = FloatBuffer.wrap(newTan),
+            indices = IntBuffer.wrap(newIdx),
+            vertCount = outVerts,
+            indexCount = outVerts
+        )
+    }
+
     private fun computeTangents(positions: FloatBuffer, normals: FloatBuffer,
                                 texCoords: FloatBuffer, indices: IntBuffer,
                                 vertCount: Int, idxCount: Int): FloatBuffer {
@@ -2007,12 +2171,16 @@ class GlesModelRenderer {
 
     private fun dot3(a: FloatArray, b: FloatArray) = a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 
-    private fun computeLightSpaceMatrix(): FloatArray {
-        // lightDir points FROM surface TOWARD the light, so camera goes along +lightDir
+    private fun computeLightSpaceMatrix(centerX: Float = 0f, centerZ: Float = 0f): FloatArray {
+        // lightDir points FROM surface TOWARD the light, so camera goes along +lightDir.
+        // Shadow frustum CENTERS on the models (centerX, centerZ from renderShadowMap).
+        // Before this, the light camera was hardcoded at world origin with ±shadowSpread
+        // ortho → models placed in rooms far from origin fell outside the frustum and
+        // cast no shadow. Now the frustum travels with the scene.
         val ld = lightDir
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
-        lookAt(nx*10f, ny*10f, nz*10f, 0f, 0f, 0f, shadowLookAt)
+        lookAt(centerX + nx*10f, ny*10f, centerZ + nz*10f, centerX, 0f, centerZ, shadowLookAt)
         val s = shadowSpread
         ortho(-s, s, -s, s, 0.1f, 30f, shadowOrtho)
         return multiplyMat4(shadowOrtho, shadowLookAt, shadowResult)
@@ -2184,7 +2352,9 @@ void main() {
     color = pow(color, vec3(uContrast));
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
     color = clamp(mix(vec3(luma), color, uSaturation), 0.0, 1.0);
-    color = pow(color, vec3(1.0/2.2));
+    // Output linear — the OpenXR swapchain is GL_SRGB8_ALPHA8 so the driver
+    // does the linear→sRGB encode on write. Doing pow(color, 1/2.2) here
+    // too would double-gamma and produce a washed-out / lifted-midtone look.
     fragColor = vec4(color, 1.0);
 }
 """
@@ -2282,7 +2452,10 @@ void main() {
     float fade = 1.0 - smoothstep(2.0, 5.0, dist);
 
     float gridA = gridVal * fade * uAlpha;
-    float shadowFade = 1.0 - smoothstep(3.0, 8.0, dist);
+    // Shadow fade decoupled from grid-line fade: shadows render anywhere on the
+    // enlarged grid plane so models placed far from origin still cast onto the
+    // floor. Only a gentle fade at the grid's edge (17-20m) to avoid hard cutoff.
+    float shadowFade = 1.0 - smoothstep(17.0, 20.0, dist);
     float shadow = uShadowDarkness > 0.0 ? getShadow() : 0.0;
     float shadowA = shadow * uShadowDarkness * shadowFade;
 

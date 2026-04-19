@@ -345,10 +345,15 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
         // RECORD_AUDIO is required for the BeatReactor Visualizer (FFT capture of
         // the app's own audio session). Android refuses to create the Visualizer
         // without it, even for the app's own session id.
+        // BLUETOOTH_CONNECT + BLUETOOTH_SCAN are runtime permissions on Android
+        // 12+ that the haptic BLE manager needs before it can discover a Lovense
+        // device — without them the VIBES button silently no-ops.
         val permissions = arrayOf(
             Manifest.permission.READ_MEDIA_VIDEO,
             Manifest.permission.READ_MEDIA_IMAGES,
-            Manifest.permission.RECORD_AUDIO
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.BLUETOOTH_SCAN
         )
 
         val allGranted = permissions.all {

@@ -147,6 +147,32 @@ class BleDeviceManager(private val context: Context) {
         discoveredDevices.clear()
         autoConnect = true
 
+        // Fast path: if a Lovense device is already bonded (paired at system
+        // level), it probably won't advertise for a fresh scan. Connect to it
+        // directly instead. Works for Domi/Lush/Hush that get paired once and
+        // then never show up in scan results again.
+        try {
+            val bonded = bluetoothAdapter?.bondedDevices ?: emptySet()
+            val lovenseBonded = bonded.firstOrNull {
+                val n = it.name ?: ""
+                n.startsWith("LVS-") || n.contains("Lovense", ignoreCase = true)
+            }
+            if (lovenseBonded != null) {
+                Log.i(TAG, "Found already-bonded Lovense device: ${lovenseBonded.name} (${lovenseBonded.address}) — connecting directly")
+                val info = BleDeviceInfo(
+                    name = lovenseBonded.name ?: "LVS-?",
+                    address = lovenseBonded.address,
+                    rssi = 0,
+                    isLovense = true
+                )
+                synchronized(discoveredDevices) { discoveredDevices[lovenseBonded.address] = info }
+                handler.post { connect(lovenseBonded.address) }
+                return true
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "bondedDevices access blocked: ${e.message}")
+        }
+
         try {
             scanner.startScan(scanCallback)
             isScanning = true

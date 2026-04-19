@@ -897,6 +897,66 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val improvLabel = if (improvOn) "IMPROV \u25CF ${selModel?.improvBars ?: 4}bar" else "IMPROV"
             canvas.drawText(improvLabel, 885f, rowBY + 29f, p)
             p.isFakeBoldText = false
+
+            // ── Row C (Tier1.5): INTENSITY | GAZE | ROLL | TAP TEMPO ──
+            // Compressed into the narrow band between Row B (ends 1115) and
+            // haptic presets (start 1135). Small buttons but readable.
+            val rowCY = 1118f; val rowCH = 14f
+            p.textAlign = Paint.Align.CENTER
+            p.textSize = 11f
+
+            // INTENSITY cycle (0.25 / 0.5 / 1.0 / 1.5 / 2.0)
+            val intensity = selModel?.danceIntensity ?: 1f
+            val intensityLabel = when {
+                intensity < 0.38f -> "INT 0.25x"
+                intensity < 0.75f -> "INT 0.5x"
+                else -> "INT ${"%.1f".format(intensity)}x"
+            }
+            val intensityHover = hoveredActionButton == 144
+            p.color = if (intensityHover) (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x80000000.toInt()
+                else (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x35000000
+            canvas.drawRoundRect(30f, rowCY, 270f, rowCY + rowCH, 6f, 6f, p)
+            p.color = if (intensityHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
+            p.isFakeBoldText = selModel != null && kotlin.math.abs(intensity - 1f) > 0.05f
+            canvas.drawText(intensityLabel, 150f, rowCY + 11f, p)
+            p.isFakeBoldText = false
+
+            // GAZE follow toggle
+            val gazeOn = selModel?.danceGazeFollow ?: true
+            val gazeLabel = if (gazeOn) "GAZE \u25CF" else "GAZE off"
+            val gazeHover = hoveredActionButton == 145
+            p.color = when {
+                gazeHover -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x80000000.toInt()
+                gazeOn -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x55000000
+                else -> (ThemeManager.CYAN_ICE and 0x00FFFFFF) or 0x20000000
+            }
+            canvas.drawRoundRect(280f, rowCY, 520f, rowCY + rowCH, 6f, 6f, p)
+            p.color = if (gazeOn || gazeHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            canvas.drawText(gazeLabel, 400f, rowCY + 11f, p)
+
+            // ROLL rate cycle (also arms roll with small default if off)
+            val rollRate = selModel?.danceRollRate ?: 4
+            val rollActive = (selModel?.danceRollDeg ?: 0f) > 0.01f
+            val rollLabel = if (rollActive) "ROLL 1/$rollRate \u25CF" else "ROLL 1/$rollRate"
+            val rollHover = hoveredActionButton == 146
+            p.color = when {
+                rollHover -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
+                rollActive -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x55000000
+                else -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x25000000
+            }
+            canvas.drawRoundRect(530f, rowCY, 770f, rowCY + rowCH, 6f, 6f, p)
+            p.color = if (rollActive || rollHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            canvas.drawText(rollLabel, 650f, rowCY + 11f, p)
+
+            // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
+            val tapHover = hoveredActionButton == 147
+            p.color = if (tapHover) (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
+                else (ThemeManager.GREEN and 0x00FFFFFF) or 0x35000000
+            canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
+            p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GREEN
+            p.isFakeBoldText = tapHover
+            canvas.drawText("TAP TEMPO", 887f, rowCY + 11f, p)
+            p.isFakeBoldText = false
             p.textAlign = Paint.Align.LEFT
 
             // ── Buttons: BOOM / VIBES / SPLIT / OFF / BACK ──
@@ -1654,9 +1714,30 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     } else "ON"
                 } else "SELECT"
             } else "OFF",
+            "Center Here" to "TAP",
+            "Mark Hip" to when {
+                activity.markAnatomyMode == 1 -> "AIM..."
+                (model?.markedHipFrac ?: -1f) >= 0f -> "${((model!!.markedHipFrac) * 100).toInt()}%"
+                else -> "—"
+            },
+            "Mark Shldr" to when {
+                activity.markAnatomyMode == 2 -> "AIM..."
+                (model?.markedShoulderFrac ?: -1f) >= 0f -> "${((model!!.markedShoulderFrac) * 100).toInt()}%"
+                else -> "—"
+            },
+            "Mark Knee" to when {
+                activity.markAnatomyMode == 3 -> "AIM..."
+                (model?.markedKneeFrac ?: -1f) >= 0f -> "${((model!!.markedKneeFrac) * 100).toInt()}%"
+                else -> "—"
+            },
+            "Reset Marks" to "TAP",
+            "Auto Light" to if (autoAmbient) "ON" else "OFF",
         )
 
-        val rowH = 46f
+        // Tier2: tightened from 46 → 34 so the grown param list (Room Edit /
+        // Center Here / Mark Hip / Mark Shldr / Reset Marks / Auto Light) fits
+        // above the SAVE/LOAD/ADD/DELETE action buttons without covering them.
+        val rowH = 34f
 
         val paramRanges = activity.PARAM_RANGES
         fun getParamValue(idx: Int): Float = when (idx) {

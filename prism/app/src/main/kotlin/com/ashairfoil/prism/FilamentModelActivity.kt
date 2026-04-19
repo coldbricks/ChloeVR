@@ -114,7 +114,15 @@ class FilamentModelActivity : ComponentActivity() {
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
-        "BeatReactor", "Foveation", "Tex Quality", "Show Planes", "Room Track")
+        "BeatReactor", "Foveation", "Tex Quality", "Show Planes", "Room Track",
+        "Room Edit", "Center Here",
+        "Mark Hip", "Mark Shldr", "Mark Knee", "Reset Marks",
+        "Auto Light")
+
+    // Tier2-pivot: user-marking mode. 0 = off. 1 = next laser-trigger captures
+    // the hit Y as the selected model's hip anchor. 2 = shoulder. After capture
+    // the mode resets to 0 and the anatomy fracs get remapped in the dance loop.
+    @Volatile internal var markAnatomyMode: Int = 0
     // Slider ranges for continuous params 0-12. Toggles (13-16) have no range.
     internal val PARAM_RANGES = arrayOf(
         0f to 1f, 0.05f to 1f, -5f to 5f, 0.5f to 2.0f, 0f to 3f,
@@ -553,36 +561,232 @@ class FilamentModelActivity : ComponentActivity() {
             camPosX, camPosY, camPosZ, camFwdX, camFwdY, camFwdZ)
     }
 
-    /** Shuffle a model's dance parameters — amplitudes, rates, phases, ease.
-     *  Used by both the manual SHUFFLE button and IMPROV auto-resume. */
-    internal fun shuffleDance(m: SceneManager.PlacedModel) {
-        val rng = java.util.concurrent.ThreadLocalRandom.current()
-        val rates = intArrayOf(2, 4, 8, 16)
-        val eases = SceneManager.DanceEase.entries.toTypedArray()
-        m.danceYawDeg = if (rng.nextFloat() < 0.75f) (5f + rng.nextFloat() * 20f) else 0f
-        m.dancePitchDeg = if (rng.nextFloat() < 0.45f) (3f + rng.nextFloat() * 12f) else 0f
-        m.danceYMeters = if (rng.nextFloat() < 0.4f) (0.01f + rng.nextFloat() * 0.04f) else 0f
-        // Guarantee at least one axis is active so something keeps dancing.
-        if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-            m.danceYawDeg = 8f + rng.nextFloat() * 15f
+    /** Teleport all (non-preview) models to an arm's-length position in front of
+     *  the user. Preserves inter-model offsets + any dance anchors so the dance
+     *  survives. Used when the XR floor origin was set up in a different room. */
+    internal fun centerModelsToView() {
+        val list = sceneManager.models.filter { !it.isPreview }
+        if (list.isEmpty()) return
+        var cx = 0f; var cz = 0f
+        for (m in list) { cx += m.posX; cz += m.posZ }
+        cx /= list.size; cz /= list.size
+        val hLen = kotlin.math.sqrt(camFwdX * camFwdX + camFwdZ * camFwdZ).coerceAtLeast(0.01f)
+        val targetX = camPosX + (camFwdX / hLen) * 1.5f
+        val targetZ = camPosZ + (camFwdZ / hLen) * 1.5f
+        val dx = targetX - cx
+        val dz = targetZ - cz
+        for (m in list) {
+            m.posX += dx; m.posZ += dz
+            if (m.animHasBase) { m.animBasePose[0] += dx; m.animBasePose[2] += dz }
+            if (m.animHasA) { m.animPoseA[0] += dx; m.animPoseA[2] += dz }
+            if (m.animHasB) { m.animPoseB[0] += dx; m.animPoseB[2] += dz }
+            sceneManager.updateModelTransform(m)
         }
-        m.danceYawRate = rates[rng.nextInt(rates.size)]
-        m.dancePitchRate = rates[rng.nextInt(rates.size)]
-        m.danceYRate = rates[rng.nextInt(rates.size)]
-        m.danceYawPhase = rng.nextFloat()
-        m.dancePitchPhase = rng.nextFloat()
-        m.danceYPhase = rng.nextFloat()
-        // Bias toward smooth eases; occasional BACK/EXPO for attitude.
-        val easeRoll = rng.nextFloat()
-        m.danceEase = when {
-            easeRoll < 0.40f -> SceneManager.DanceEase.SINE
-            easeRoll < 0.60f -> SceneManager.DanceEase.CUBIC
-            easeRoll < 0.75f -> SceneManager.DanceEase.CIRC
-            easeRoll < 0.85f -> SceneManager.DanceEase.EXPO
-            easeRoll < 0.95f -> SceneManager.DanceEase.BACK
-            else -> SceneManager.DanceEase.LINEAR
+        Log.i(TAG, "Recentered ${list.size} model(s) to current view (Δx=${"%.2f".format(dx)} Δz=${"%.2f".format(dz)})")
+    }
+
+    /** Named dance-style presets. IMPROV / SHUFFLE pick from these rather than
+     *  spraying random numbers, so the model always moves like a real style.
+     *  Tier2-pivot: per-preset pivot heights come from biomechanics of the
+     *  style — to make hips MOVE, pivot at SHOULDERS (counterintuitive but
+     *  correct for rigid bodies). Counter-roll gain is per-preset so TWERK
+     *  can kill it (shoulders stay) and SWAY can boost it. */
+    private data class DancePreset(
+        val name: String,
+        val yawDeg: Float, val yawRate: Int, val yawPhase: Float,
+        val pitchDeg: Float, val pitchRate: Int, val pitchPhase: Float,
+        val bobM: Float, val yRate: Int, val yPhase: Float,
+        val ease: SceneManager.DanceEase,
+        val physics: Float,
+        val pitchPivot: Float = 0.85f,
+        val rollPivot: Float = 0.85f,
+        val counterRollPivot: Float = 0.50f,
+        val counterRollGain: Float = 0.35f
+    )
+    // Tier1-C: all amps obey sweep-speed law amp × rate ≤ K per axis
+    //   yaw K = 64   → max yaw at 1/2: 32°, at 1/4: 16°, at 1/8: 8°, at 1/16: 4°
+    //   pitch K = 32 → max pitch at 1/2: 16°, at 1/4: 8°, at 1/8: 4°, at 1/16: 2°
+    //   bob K = 0.14 → max bob at 1/2: 7cm, at 1/4: 3.5cm, at 1/8: 1.75cm
+    // Tier1-D: preset eases SINE or LINEAR only. Fancier eases (BACK/EXPO/CIRC/
+    //   CUBIC) stay reachable via the manual EASE button for slow axes where the
+    //   curve reads — not in the randomizer pool. They stack badly with physics
+    //   jiggle and look cheap without speed.
+    // Dancer notes encoded in the values:
+    //   SLOW WIND: pitch phase +¼ from yaw → hip traces a CIRCLE, not a figure-8
+    //   BODY ROLL: bob phase at 0, pitch at ¼ → belly leads chest (undulation)
+    //   BOUNCE: tiny yaw (pogo stays vertical), LINEAR for punch, all axes locked 1/4
+    //   GRIND: slow 1/2 yaw gives the move direction, fast 1/8 pitch is the grind
+    //   TWERK: LINEAR 1/8 weight shift + 1/16 pelvic tilt + 1/8 bob counter-phase
+    //   SQUAT PULSE: asymmetric bob envelope (fast down, slow up) + slow yaw carrier
+    private val dancePresets = listOf(
+        //           name          yaw rate ph  pitch rate ph  bob   rate ph    ease                              phys  pP    rP    crP   crG
+        DancePreset("SLOW WIND",    6f,  2, 0f,     5f,  2, 0.25f,   0.010f, 2, 0.50f, SceneManager.DanceEase.SINE,   0.65f, 0.85f, 0.85f, 0.50f, 0.35f),
+        DancePreset("SWAY",         6f,  2, 0f,     1f,  2, 0.50f,   0.003f, 2, 0.25f, SceneManager.DanceEase.SINE,   0.25f, 0.80f, 0.90f, 0.50f, 0.50f),
+        DancePreset("BODY ROLL",    4f,  2, 0f,    12f,  2, 0.25f,   0.020f, 2, 0f,    SceneManager.DanceEase.SINE,   0.70f, 0.55f, 0.55f, 0.50f, 0.35f),
+        DancePreset("BOUNCE",       1f,  4, 0f,     4f,  4, 0.75f,   0.025f, 4, 0f,    SceneManager.DanceEase.LINEAR, 0.80f, 0.00f, 0.00f, 0.50f, 0.35f),
+        DancePreset("GRIND",        6f,  2, 0f,     3f,  8, 0f,      0.008f, 8, 0.25f, SceneManager.DanceEase.SINE,   0.55f, 0.95f, 0.85f, 0.50f, 0.35f),
+        DancePreset("TWERK",        3f,  8, 0.5f,   1.5f,16, 0f,     0.015f, 8, 0.50f, SceneManager.DanceEase.LINEAR, 0.90f, 0.95f, 0.95f, 0.50f, 0.10f),
+        DancePreset("SQUAT PULSE",  8f,  2, 0f,     4f,  4, 0.25f,   0.030f, 4, 0f,    SceneManager.DanceEase.SINE,   0.75f, 0.25f, 0.35f, 0.50f, 0.35f),
+    )
+
+    // ── Tier1-A: hoisted per-frame scratch — avoid closure/listOf alloc in hot loop ──
+    // Audio snapshot reused each frame (read-once vs 6+ @Volatile loads per model).
+    private val danceSnapshot = AudioReactor.FrameSnapshot()
+
+    // Tier2-pivot: zero-alloc scratch for rotating a local-frame vec3 by a
+    // quaternion into world frame. Single-threaded (render thread) so safe.
+    private val pivotRotScratch = FloatArray(3)
+
+    /** Remap a preset's pivot fraction through the user's marked anatomy.
+     *  Default preset vocabulary assumes hip ≈ 0.45 and shoulder ≈ 0.85 of bbox
+     *  height. If the user has marked the real hip or shoulder Y on THIS model,
+     *  piecewise-linear remap so the preset's intent (e.g. TWERK at 0.95 ≈ head)
+     *  lands on the model's actual anatomy. Unmarked → preset value unchanged. */
+    private fun remapAnatomyFrac(presetFrac: Float, kneeMark: Float, hipMark: Float, shldrMark: Float): Float {
+        val k = if (kneeMark >= 0f) kneeMark else 0.25f
+        val h = if (hipMark >= 0f) hipMark else 0.45f
+        val s = if (shldrMark >= 0f) shldrMark else 0.85f
+        return when {
+            presetFrac <= 0.25f -> presetFrac * (k / 0.25f)
+            presetFrac <= 0.45f -> k + (presetFrac - 0.25f) * (h - k) / 0.20f
+            presetFrac <= 0.85f -> h + (presetFrac - 0.45f) * (s - h) / 0.40f
+            else -> s + (presetFrac - 0.85f) * (1f - s) / 0.15f
         }
     }
+
+    /** Rotate (vx, vy, vz) by unit quaternion q = (qx, qy, qz, qw). Writes result
+     *  into pivotRotScratch[0..2]. Zero-alloc. Formula: v + 2·q×(q×v + qw·v). */
+    private fun rotateVecQ(qx: Float, qy: Float, qz: Float, qw: Float,
+                           vx: Float, vy: Float, vz: Float) {
+        val tx = 2f * (qy * vz - qz * vy)
+        val ty = 2f * (qz * vx - qx * vz)
+        val tz = 2f * (qx * vy - qy * vx)
+        pivotRotScratch[0] = vx + qw * tx + (qy * tz - qz * ty)
+        pivotRotScratch[1] = vy + qw * ty + (qz * tx - qx * tz)
+        pivotRotScratch[2] = vz + qw * tz + (qx * ty - qy * tx)
+    }
+
+    /** fBm modulation — 3 incommensurable sines composed to ~0.4..1.1. Hoisted
+     *  out of the per-frame closure to kill the ~720 alloc/sec GC spike. */
+    private fun fbmMod(tSec: Float, seed: Float, phaseOff: Float): Float {
+        val s = (kotlin.math.sin((tSec * 0.11f + seed + phaseOff).toDouble()).toFloat()
+            + 0.5f * kotlin.math.sin((tSec * 0.19f + seed * 1.7f + phaseOff).toDouble()).toFloat()
+            + 0.33f * kotlin.math.sin((tSec * 0.37f + seed * 2.3f + phaseOff).toDouble()).toFloat()) / 1.83f
+        return 0.75f + 0.35f * s  // ~0.4..1.1
+    }
+
+    /** Normalize a radian angle to [-π, π]. Used by gaze saccade FSM to pick
+     *  the shorter angular direction when camera crosses the model's back. */
+    private fun normAngle(a: Float): Float {
+        val twoPi = (2.0 * Math.PI).toFloat()
+        var r = a
+        while (r > Math.PI.toFloat()) r -= twoPi
+        while (r < -Math.PI.toFloat()) r += twoPi
+        return r
+    }
+
+    /** Tier1-F: arm the gaze FSM — capture current dir-to-camera as the
+     *  "anchor" so the model remembers its relative orientation to the viewer
+     *  at dance-arm time. Saccade FSM reactivates automatically.
+     *  Tier2: also captures the foot anchor so her heels stay planted while
+     *  the body pivots around shoulders/chest. Computed from the base pose
+     *  (the stance pose at arm time), not the current swayed pose. */
+    internal fun armGazeCapture(m: SceneManager.PlacedModel) {
+        val dxC = camPosX - m.posX
+        val dzC = camPosZ - m.posZ
+        m.gazeFaceCamAnchorRad = kotlin.math.atan2(dxC, dzC)
+        m.gazeFaceCamHasCapture = true
+        m.gazeCurrentBiasRad = 0f
+        m.gazeState = 0
+        m.gazeNextCheckMs = 0L
+
+        // Foot anchor — rotate foot-local (0, minY, 0) through the base pose
+        // quaternion and add to base position. That's her heel position right
+        // now; the dance loop pulls her back toward it each frame.
+        val gm = glesRenderer?.getModel(m.gpuModelId)
+        if (gm != null && m.animHasBase) {
+            val footY = gm.boundsMinY * m.scale
+            val bx = m.animBasePose[0]; val bz = m.animBasePose[2]
+            val bqx = m.animBasePose[3]; val bqy = m.animBasePose[4]
+            val bqz = m.animBasePose[5]; val bqw = m.animBasePose[6]
+            rotateVecQ(bqx, bqy, bqz, bqw, 0f, footY, 0f)
+            m.footAnchorX = bx + pivotRotScratch[0]
+            m.footAnchorZ = bz + pivotRotScratch[2]
+            m.footAnchorCaptured = true
+        }
+    }
+
+    /** Tier1-F: clear gaze capture on dance disarm so the model returns to
+     *  its base pose and a future arm re-captures from a fresh heading. */
+    internal fun clearGazeCapture(m: SceneManager.PlacedModel) {
+        m.gazeFaceCamHasCapture = false
+        m.gazeCurrentBiasRad = 0f
+        m.gazeState = 0
+    }
+
+    /** Shuffle a model's dance parameters — now picks a named style preset so
+     *  motion actually looks like a style (wind / bounce / grind / twerk…)
+     *  rather than random parameter noise. */
+    internal fun shuffleDance(m: SceneManager.PlacedModel) {
+        // Deterministic cycle through the 7 presets so the user can walk the
+        // library (TWERK, GRIND, BODY ROLL, ...) by repeated taps. Previously
+        // this rolled a uniform random — which meant the user had no way to
+        // dial in a specific style they wanted. Name shows on the DANCE button.
+        val currentIdx = dancePresets.indexOfFirst { it.name == m.currentPresetName }
+        val nextIdx = if (currentIdx < 0) 0 else (currentIdx + 1) % dancePresets.size
+        val p = dancePresets[nextIdx]
+        m.danceYawDeg = p.yawDeg.coerceIn(0f, 30f)
+        m.danceYawRate = p.yawRate
+        m.danceYawPhase = p.yawPhase
+        m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 20f)
+        m.dancePitchRate = p.pitchRate
+        m.dancePitchPhase = p.pitchPhase
+        m.danceYMeters = p.bobM.coerceIn(0f, 0.08f)
+        m.danceYRate = p.yRate
+        m.danceYPhase = p.yPhase
+        m.danceEase = p.ease
+        m.physicsAmount = p.physics
+        // Tier2-pivot: bake biomechanical pivot heights from the preset so
+        // hips actually isolate (pivot at shoulders for TWERK, shoulders stay
+        // for SWAY via high roll pivot, thighs anchor for SQUAT PULSE, etc.).
+        m.pivotEnabled = true
+        m.pitchPivotFrac = p.pitchPivot
+        m.rollPivotFrac = p.rollPivot
+        m.counterRollPivotFrac = p.counterRollPivot
+        m.counterRollGain = p.counterRollGain
+        m.currentPresetName = p.name
+        android.util.Log.i(TAG, "Dance preset: ${p.name} (pP=${p.pitchPivot} rP=${p.rollPivot} crG=${p.counterRollGain})")
+    }
+
+    /** Set a specific preset by index 0..6 (order matches dancePresets list).
+     *  Used by the PRESET cycle button to walk through presets deterministically
+     *  instead of rolling random. */
+    internal fun setDancePreset(m: SceneManager.PlacedModel, index: Int) {
+        val i = ((index % dancePresets.size) + dancePresets.size) % dancePresets.size
+        val p = dancePresets[i]
+        m.danceYawDeg = p.yawDeg.coerceIn(0f, 30f)
+        m.danceYawRate = p.yawRate
+        m.danceYawPhase = p.yawPhase
+        m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 20f)
+        m.dancePitchRate = p.pitchRate
+        m.dancePitchPhase = p.pitchPhase
+        m.danceYMeters = p.bobM.coerceIn(0f, 0.08f)
+        m.danceYRate = p.yRate
+        m.danceYPhase = p.yPhase
+        m.danceEase = p.ease
+        m.physicsAmount = p.physics
+        m.pivotEnabled = true
+        m.pitchPivotFrac = p.pitchPivot
+        m.rollPivotFrac = p.rollPivot
+        m.counterRollPivotFrac = p.counterRollPivot
+        m.counterRollGain = p.counterRollGain
+        m.currentPresetName = p.name
+        android.util.Log.i(TAG, "Dance preset (direct): ${p.name}")
+    }
+
+    internal val dancePresetCount: Int get() = dancePresets.size
+    internal fun dancePresetNameAt(index: Int): String =
+        dancePresets[((index % dancePresets.size) + dancePresets.size) % dancePresets.size].name
 
     /** Drop any active preview model from the scene. Safe to call at any time. */
     internal fun disposePreviewIfAny() {
@@ -1202,8 +1406,11 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
                                     }
 
-                                    // Shadows soften proportionally
-                                    gr.shadowDarkness = beatBaseShadow * (1f - pct * 0.4f * bi)
+                                    // Shadows soften proportionally — floor at 20% of base so
+                                    // the beat wash can't zero or invert shadow darkness when the
+                                    // user cranks beatIntensity > 2.5.
+                                    gr.shadowDarkness = (beatBaseShadow * (1f - pct * 0.4f * bi))
+                                        .coerceAtLeast(beatBaseShadow * 0.2f)
                                 }
 
                                 // Bloom: direct from box fill
@@ -1368,7 +1575,15 @@ class FilamentModelActivity : ComponentActivity() {
                             // holding the selected model, anim yields to them.
                             val ar = audioReactor
                             if (ar != null) {
-                                val rawFill = ar.boxFillPct
+                                // Tier1-B: read once, consult N times. Kills 6+ volatile loads
+                                // + phaseAt() currentTimeMillis syscalls per model per frame.
+                                ar.snapshot(danceSnapshot)
+                                val snap = danceSnapshot
+                                val rawFill = snap.boxFillPct
+                                // Tier1-H (Gemini #6): sub-perceptual phase slop — she drifts
+                                // in/out of the grid like a real dancer sitting in the pocket.
+                                val tSecFrame = snap.nowMs / 1000f
+                                val phaseSlop = 0.05f * kotlin.math.sin((tSecFrame * 0.1f * 2.0 * Math.PI).toFloat())
                                 for (i in models.indices) {
                                     val m = models[i]
                                     if (m.isPreview) continue
@@ -1378,12 +1593,11 @@ class FilamentModelActivity : ComponentActivity() {
                                         m.dancePitchDeg != 0f || m.danceYMeters != 0f)
                                     if (dancing) {
                                         // Improv re-shuffle every N bars of locked BPM.
-                                        if (m.danceImprov && ar.autoBpm && ar.detectedBpm > 0f) {
-                                            val barMs = (60000f / ar.detectedBpm) * 4f
+                                        if (m.danceImprov && snap.autoBpm && snap.bpm > 0f) {
+                                            val barMs = (60000f / snap.bpm) * 4f
                                             val intervalMs = barMs * m.improvBars.coerceAtLeast(1)
-                                            val nowMs = System.currentTimeMillis()
-                                            if (m.lastImprovMs == 0L || nowMs - m.lastImprovMs >= intervalMs) {
-                                                m.lastImprovMs = nowMs
+                                            if (m.lastImprovMs == 0L || snap.nowMs - m.lastImprovMs >= intervalMs) {
+                                                m.lastImprovMs = snap.nowMs
                                                 shuffleDance(m)
                                             }
                                         }
@@ -1391,52 +1605,150 @@ class FilamentModelActivity : ComponentActivity() {
                                         // ── CHOREO: accent / mood / fill ──
                                         // Gated on IMPROV so the user can pick: predictable steady
                                         // dance (IMPROV off) vs auto-musical chaos (IMPROV on).
-                                        val hasTempo = ar.autoBpm && ar.detectedBpm > 0f
+                                        val hasTempo = snap.autoBpm && snap.bpm > 0f
                                         val choreoActive = hasTempo && m.danceImprov
                                         val accentGain = if (choreoActive) {
-                                            val bp = ar.phaseInBars(1)
-                                            1f + 0.22f * kotlin.math.cos(2.0 * Math.PI * bp).toFloat().coerceAtLeast(0f)
+                                            1f + 0.22f * kotlin.math.cos(2.0 * Math.PI * snap.phase1bar).toFloat().coerceAtLeast(0f)
                                         } else 1f
                                         val moodGain = if (choreoActive) {
-                                            val mp = ar.phaseInBars(16)
-                                            0.8f + 0.45f * (0.5f - 0.5f * kotlin.math.cos(2.0 * Math.PI * mp).toFloat())
+                                            0.8f + 0.45f * (0.5f - 0.5f * kotlin.math.cos(2.0 * Math.PI * snap.phase16bar).toFloat())
                                         } else 1f
-                                        val fillActive = choreoActive && ar.phaseInBars(4) > 0.75f
-                                        val ampGain = accentGain * moodGain
-                                        val yawRate = if (fillActive) 16 else m.danceYawRate
-                                        val pitchRate = if (fillActive) 16 else m.dancePitchRate
+                                        val fillActive = choreoActive && snap.phase4bar > 0.75f
+                                        // Softened: during fill, drop amps to 40% (was 100%) and use
+                                        // 1/8 (was 1/16) on yaw+pitch. Full 1/16 on three axes at once
+                                        // read as spaz; 1/8 at reduced amp reads as a tasteful fill.
+                                        val fillAmp = if (fillActive) 0.4f else 1f
+                                        val ampGain = accentGain * moodGain * fillAmp
+                                        val yawRate = if (fillActive) 8 else m.danceYawRate
+                                        val pitchRate = if (fillActive) 8 else m.dancePitchRate
                                         val yRate = if (fillActive) 8 else m.danceYRate
 
                                         val b = m.animBasePose
                                         var px = b[0]; var py = b[1]; var pz = b[2]
                                         var qx = b[3]; var qy = b[4]; var qz = b[5]; var qw = b[6]
 
-                                        // fBm amplitude modulation — slow pseudo-random scalar per axis
-                                        // so the same loop never has identical magnitudes. Kills loop-feel.
-                                        val tSec = System.currentTimeMillis() / 1000f
+                                        // Tier1-A: fbmMod + easeFor hoisted to class level — no per-frame
+                                        // closure or listOf allocation (was ~720 alloc/sec at 4 models × 120Hz).
+                                        val tSec = snap.nowMs / 1000f
                                         val seed = if (m.fbmSeed == 0f) { m.fbmSeed = (m.gpuModelId * 0.37f + 1.13f); m.fbmSeed } else m.fbmSeed
-                                        fun fbmMod(phaseOff: Float): Float {
-                                            val s = (kotlin.math.sin((tSec * 0.11f + seed + phaseOff).toDouble()).toFloat()
-                                                + 0.5f * kotlin.math.sin((tSec * 0.19f + seed * 1.7f + phaseOff).toDouble()).toFloat()
-                                                + 0.33f * kotlin.math.sin((tSec * 0.37f + seed * 2.3f + phaseOff).toDouble()).toFloat()) / 1.83f
-                                            return 0.75f + 0.35f * s  // ~0.4..1.1
-                                        }
-                                        val fbmYaw = fbmMod(0f)
-                                        val fbmPitch = fbmMod(1.7f)
-                                        val fbmBob = fbmMod(3.1f)
+                                        val fbmYaw = fbmMod(tSec, seed, 0f)
+                                        val fbmPitch = fbmMod(tSec, seed, 1.7f)
+                                        val fbmBob = fbmMod(tSec, seed, 3.1f)
 
                                         // Anticipation: lead yaw phase by ~45ms so motion feels "danced"
                                         // instead of "on the grid". Scales with physicsAmount so clean
                                         // motion at 0 and full swagger at 1.
-                                        val yawCycleMs = if (hasTempo) (60000f / ar.detectedBpm) * 4f / yawRate.coerceAtLeast(1) else 500f
+                                        val yawCycleMs = if (hasTempo) (60000f / snap.bpm) * 4f / yawRate.coerceAtLeast(1) else 500f
                                         val leadPh = -(45f * m.physicsAmount) / yawCycleMs
 
+                                        // Tier1-D: ease downgrade — fast rates with non-SINE/LINEAR ease
+                                        // read as twitchy. Inline check (no listOf alloc).
+                                        val baseEase = m.danceEase
+                                        val downgrade = baseEase != SceneManager.DanceEase.SINE && baseEase != SceneManager.DanceEase.LINEAR
+                                        val easeYaw = if (yawRate > 4 && downgrade) SceneManager.DanceEase.SINE else baseEase
+                                        val easePitch = if (pitchRate > 4 && downgrade) SceneManager.DanceEase.SINE else baseEase
+                                        val easeBob = if (yRate > 4 && downgrade) SceneManager.DanceEase.SINE else baseEase
+
+                                        // Tier1-I (Gemini #5 orig): proximity inversion. Near viewer
+                                        // (<1m) scales macro swings down to 40% and micro (breath/jiggle)
+                                        // up to 130%. Beyond 2m both at 100%. Smoothstep between.
+                                        val dxCam = camPosX - m.posX
+                                        val dyCam = camPosY - m.posY
+                                        val dzCam = camPosZ - m.posZ
+                                        val distToView = kotlin.math.sqrt(dxCam*dxCam + dyCam*dyCam + dzCam*dzCam)
+                                        val proxT = ((distToView - 1.0f) / 1.0f).coerceIn(0f, 1f)
+                                        val proxMacro = 0.4f + 0.6f * proxT   // 0.4..1.0
+                                        val proxMicro = 1.3f - 0.3f * proxT   // 1.3..1.0
+
+                                        // Tier1 band gating: bass → bob+pitch, low-mid → yaw, high → micro.
+                                        // Floor 0.35 so quiet breakdowns don't fully freeze her.
+                                        val bassGate = 0.35f + 0.65f * snap.bandBass.coerceIn(0f, 1f)
+                                        val midGate = 0.35f + 0.65f * snap.bandMid.coerceIn(0f, 1f)
+                                        val highGate = 0.35f + 0.65f * snap.bandHigh.coerceIn(0f, 1f)
+
+                                        // ── Tier1-F: gaze saccade FSM + Gemini #5 VO-dip ──
+                                        // HOLD 2-6s → SACCADE with BACK overshoot 180-220ms → FREEZE
+                                        // all dance axes 80-120ms on arrival. 20% of saccades look 20°
+                                        // OFF-viewer. Gated on danceGazeFollow (Tier1.5 toggle).
+                                        var gazeFreezeActive = false
+                                        var gazeVoDipRad = 0f
+                                        if (m.gazeFaceCamHasCapture && m.danceGazeFollow) {
+                                            val dirToCamRad = kotlin.math.atan2(dxCam, dzCam)
+                                            val nowMsG = snap.nowMs
+                                            when (m.gazeState) {
+                                                0 -> {  // HOLD
+                                                    if (nowMsG >= m.gazeNextCheckMs) {
+                                                        val targetBias = normAngle(dirToCamRad - m.gazeFaceCamAnchorRad)
+                                                        val offAxis = normAngle(targetBias - m.gazeCurrentBiasRad)
+                                                        if (kotlin.math.abs(offAxis) > (15.0 * Math.PI / 180.0).toFloat()) {
+                                                            val rngG = java.util.concurrent.ThreadLocalRandom.current()
+                                                            val offsetRad = if (rngG.nextFloat() < 0.20f)
+                                                                ((if (rngG.nextBoolean()) 20.0 else -20.0) * Math.PI / 180.0).toFloat() else 0f
+                                                            m.gazeSaccadeFromRad = m.gazeCurrentBiasRad
+                                                            m.gazeSaccadeToRad = m.gazeCurrentBiasRad + offAxis + offsetRad
+                                                            m.gazeSaccadeStartMs = nowMsG
+                                                            m.gazeSaccadeDurationMs = 180L + rngG.nextLong(40L)
+                                                            m.gazeState = 1
+                                                        } else {
+                                                            m.gazeNextCheckMs = nowMsG + 2000L + java.util.concurrent.ThreadLocalRandom.current().nextLong(4000L)
+                                                        }
+                                                    }
+                                                }
+                                                1 -> {  // SACCADE
+                                                    val t = ((nowMsG - m.gazeSaccadeStartMs).toFloat() /
+                                                        m.gazeSaccadeDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                                                    if (t >= 1f) {
+                                                        m.gazeCurrentBiasRad = m.gazeSaccadeToRad
+                                                        m.gazeFreezeEndsMs = nowMsG + 80L +
+                                                            java.util.concurrent.ThreadLocalRandom.current().nextLong(40L)
+                                                        m.gazeState = 2
+                                                    } else {
+                                                        val eased = SceneManager.applyEase(t, SceneManager.DanceEase.BACK)
+                                                        m.gazeCurrentBiasRad = m.gazeSaccadeFromRad +
+                                                            (m.gazeSaccadeToRad - m.gazeSaccadeFromRad) * eased
+                                                        // Gemini #5: VO dip — chin drops slightly mid-saccade.
+                                                        val dipDeg = 1.5f * kotlin.math.sin((t * Math.PI).toFloat())
+                                                        gazeVoDipRad = Math.toRadians(dipDeg.toDouble()).toFloat()
+                                                    }
+                                                }
+                                                2 -> {  // FREEZE
+                                                    if (nowMsG >= m.gazeFreezeEndsMs) {
+                                                        m.gazeState = 0
+                                                        m.gazeNextCheckMs = nowMsG + 2000L +
+                                                            java.util.concurrent.ThreadLocalRandom.current().nextLong(4000L)
+                                                    } else {
+                                                        gazeFreezeActive = true
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Freeze gate: zero dance amp during arrival hold so only breath
+                                        // + idle layers run. Impact-on-contact = the sexiest eighth-note.
+                                        val gazeGain = if (gazeFreezeActive) 0f else 1f
+
+                                        // ── Tier2-pivot: derive local-frame pivot Y per axis ──
+                                        // Preset fractions assume hip ≈ 0.45, shoulder ≈ 0.85 of bbox.
+                                        // If the user MARKED real hip/shoulder on this model, remap
+                                        // the preset vocabulary through their marks so TWERK@0.95
+                                        // lands on their actual head, not a generic proportion.
+                                        val pvGpu = glesRenderer?.getModel(m.gpuModelId)
+                                        val pvMinY = pvGpu?.boundsMinY ?: 0f
+                                        val pvCenterY = pvGpu?.boundsCenterY ?: 0f
+                                        val pvHeight = 2f * (pvCenterY - pvMinY)
+                                        val fPitch = remapAnatomyFrac(m.pitchPivotFrac, m.markedKneeFrac, m.markedHipFrac, m.markedShoulderFrac)
+                                        val fRoll = remapAnatomyFrac(m.rollPivotFrac, m.markedKneeFrac, m.markedHipFrac, m.markedShoulderFrac)
+                                        val fCtr = remapAnatomyFrac(m.counterRollPivotFrac, m.markedKneeFrac, m.markedHipFrac, m.markedShoulderFrac)
+                                        val pivotYPitch = if (m.pivotEnabled) (pvMinY + fPitch * pvHeight) * m.scale else 0f
+                                        val pivotYRoll = if (m.pivotEnabled) (pvMinY + fRoll * pvHeight) * m.scale else 0f
+                                        val pivotYCtrRoll = if (m.pivotEnabled) (pvMinY + fCtr * pvHeight) * m.scale else 0f
+
                                         var yawSig = 0f
-                                        // YAW around world Y
+                                        // YAW around world Y — Gemini#2 phase-shear -0.09 (shoulders lag
+                                        // the hips, kinetic energy travels UP the block).
                                         if (m.danceYawDeg != 0f) {
-                                            val ph = (ar.phaseAt(yawRate) + m.danceYawPhase + leadPh) % 1f
-                                            yawSig = SceneManager.waveAt(((ph + 1f) % 1f), m.danceEase)
-                                            val half = Math.toRadians((m.danceYawDeg * ampGain * fbmYaw * yawSig).toDouble()).toFloat() * 0.5f
+                                            val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPh + phaseSlop) % 1f + 1f) % 1f
+                                            yawSig = SceneManager.waveAt(ph, easeYaw)
+                                            val half = Math.toRadians((m.danceYawDeg * m.danceIntensity * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig).toDouble()).toFloat() * 0.5f
                                             val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
                                             val nx = cy * qx + sy * qz
                                             val ny = cy * qy + sy * qw
@@ -1444,64 +1756,168 @@ class FilamentModelActivity : ComponentActivity() {
                                             val nw = cy * qw - sy * qy
                                             qx = nx; qy = ny; qz = nz; qw = nw
 
-                                            // Counter-roll ribcage proxy: antiphase Z-roll at 35% amp reads
-                                            // as shoulders tilting opposite the hips — simulates torso/hip
-                                            // separation even though the mesh is one rigid body.
-                                            if (m.physicsAmount > 0.001f) {
-                                                val rollDeg = -0.35f * m.danceYawDeg * yawSig * m.physicsAmount
+                                            // Counter-roll ribcage proxy: antiphase LOCAL Z-roll at
+                                            // per-preset gain (TWERK 0.10 / SWAY 0.50 / default 0.35) —
+                                            // reads as shoulders tilting opposite the hips. Right-multiplied
+                                            // (q * qZ). Pivots at hips (frac 0.50) by default so it looks
+                                            // like a spinal twist regardless of where the dance yaw pivots.
+                                            if (m.physicsAmount > 0.001f && m.counterRollGain > 0.001f) {
+                                                val rollDeg = -m.counterRollGain * m.danceYawDeg * m.danceIntensity * yawSig * m.physicsAmount
                                                 val rh = Math.toRadians(rollDeg.toDouble()).toFloat() * 0.5f
                                                 val sr = kotlin.math.sin(rh); val cr = kotlin.math.cos(rh)
-                                                // qZ * qcur
-                                                val nnx = cr * qx - sr * qy
-                                                val nny = cr * qy + sr * qx
-                                                val nnz = cr * qz + sr * qw
-                                                val nnw = cr * qw - sr * qz
+                                                // Stash q BEFORE the counter-roll so pivot correction
+                                                // uses the pre-rotation frame.
+                                                val qxCR = qx; val qyCR = qy; val qzCR = qz; val qwCR = qw
+                                                val nnx = qx * cr + qy * sr
+                                                val nny = qy * cr - qx * sr
+                                                val nnz = qz * cr + qw * sr
+                                                val nnw = qw * cr - qz * sr
                                                 qx = nnx; qy = nny; qz = nnz; qw = nnw
+                                                // Pivot correction for local-Z roll about (0, pivotY, 0):
+                                                // local offset = (pivotY · sinθ, pivotY · (1-cosθ), 0)
+                                                if (m.pivotEnabled && pivotYCtrRoll != 0f) {
+                                                    val sTh = 2f * sr * cr
+                                                    val cTh = 1f - 2f * sr * sr
+                                                    rotateVecQ(qxCR, qyCR, qzCR, qwCR,
+                                                        pivotYCtrRoll * sTh, pivotYCtrRoll * (1f - cTh), 0f)
+                                                    px += pivotRotScratch[0]
+                                                    py += pivotRotScratch[1]
+                                                    pz += pivotRotScratch[2]
+                                                }
                                             }
                                         }
-                                        // PITCH around world X
+                                        // PITCH around LOCAL X (right-multiply q * qX) — so pitch tilts
+                                        // the model in its OWN forward-back axis regardless of base facing.
+                                        // Phase-shear -0.04 (lower back between hips & shoulders).
+                                        // Tier2-pivot: if pivotEnabled, pitch pivots at preset-specified
+                                        // height (e.g. 0.95 head for TWERK → hips pop, head stays fixed).
                                         if (m.dancePitchDeg != 0f) {
-                                            val ph = (ar.phaseAt(pitchRate) + m.dancePitchPhase) % 1f
-                                            val sig = SceneManager.waveAt(ph, m.danceEase)
-                                            val half = Math.toRadians((m.dancePitchDeg * ampGain * fbmPitch * sig).toDouble()).toFloat() * 0.5f
+                                            val ph = ((ar.phaseAtSnap(snap, pitchRate) + m.dancePitchPhase - 0.04f + phaseSlop) % 1f + 1f) % 1f
+                                            val sig = SceneManager.waveAt(ph, easePitch)
+                                            val half = Math.toRadians((m.dancePitchDeg * m.danceIntensity * ampGain * fbmPitch * bassGate * proxMacro * gazeGain * sig).toDouble()).toFloat() * 0.5f
                                             val sp = kotlin.math.sin(half); val cp = kotlin.math.cos(half)
-                                            val nx = cp * qx + sp * qw
-                                            val ny = cp * qy - sp * qz
-                                            val nz = cp * qz + sp * qy
-                                            val nw = cp * qw - sp * qx
+                                            val qxP = qx; val qyP = qy; val qzP = qz; val qwP = qw
+                                            val nx = qx * cp + qw * sp
+                                            val ny = qy * cp + qz * sp
+                                            val nz = qz * cp - qy * sp
+                                            val nw = qw * cp - qx * sp
                                             qx = nx; qy = ny; qz = nz; qw = nw
+                                            // Pivot correction for local-X pitch about (0, pivotY, 0):
+                                            // local offset = (0, pivotY · (1-cosθ), -pivotY · sinθ)
+                                            if (m.pivotEnabled && pivotYPitch != 0f) {
+                                                val sTh = 2f * sp * cp
+                                                val cTh = 1f - 2f * sp * sp
+                                                rotateVecQ(qxP, qyP, qzP, qwP,
+                                                    0f, pivotYPitch * (1f - cTh), -pivotYPitch * sTh)
+                                                px += pivotRotScratch[0]
+                                                py += pivotRotScratch[1]
+                                                pz += pivotRotScratch[2]
+                                            }
                                         }
                                         // BOB on world Y — asymmetric fast-down/slow-up envelope gives
-                                        // the "body drops into the beat" gravity feel.
+                                        // the "body drops into the beat" gravity feel. Phase-shear 0 (hips lead).
                                         if (m.danceYMeters != 0f) {
-                                            val ph = (ar.phaseAt(yRate) + m.danceYPhase) % 1f
+                                            val ph = ((ar.phaseAtSnap(snap, yRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                             val kSkew = 0.5f - 0.2f * m.physicsAmount  // 0.5 = symmetric, 0.3 = fast-down
                                             val phase01 = if (ph < kSkew) ph / kSkew else 1f - (ph - kSkew) / (1f - kSkew)
                                             val bob = phase01 * phase01 * (3f - 2f * phase01)
-                                            py += m.danceYMeters * ampGain * fbmBob * bob
+                                            py += m.danceYMeters * m.danceIntensity * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bob
+                                        }
+
+                                        // ROLL around LOCAL Z (Tier1.5) — banking axis. Completes the 3-axis
+                                        // set so the user can build "wave" or "leaning" patterns beyond what
+                                        // yaw/pitch alone can express. Right-multiplied for local frame.
+                                        // Tier2-pivot: respects rollPivotFrac per preset.
+                                        if (m.danceRollDeg != 0f) {
+                                            val rollRate = if (fillActive) 16 else m.danceRollRate
+                                            val easeRoll = if (rollRate > 4 && downgrade) SceneManager.DanceEase.SINE else baseEase
+                                            val phR = ((ar.phaseAtSnap(snap, rollRate) + m.danceRollPhase + phaseSlop) % 1f + 1f) % 1f
+                                            val sigR = SceneManager.waveAt(phR, easeRoll)
+                                            val halfR = Math.toRadians(
+                                                (m.danceRollDeg * m.danceIntensity * ampGain * fbmPitch * midGate * proxMacro * gazeGain * sigR).toDouble()
+                                            ).toFloat() * 0.5f
+                                            val srR = kotlin.math.sin(halfR); val crR = kotlin.math.cos(halfR)
+                                            val qxR = qx; val qyR = qy; val qzR = qz; val qwR = qw
+                                            val nxR = qx * crR + qy * srR
+                                            val nyR = qy * crR - qx * srR
+                                            val nzR = qz * crR + qw * srR
+                                            val nwR = qw * crR - qz * srR
+                                            qx = nxR; qy = nyR; qz = nzR; qw = nwR
+                                            // Pivot correction for local-Z roll about (0, pivotY, 0):
+                                            // local offset = (pivotY · sinθ, pivotY · (1-cosθ), 0)
+                                            if (m.pivotEnabled && pivotYRoll != 0f) {
+                                                val sTh = 2f * srR * crR
+                                                val cTh = 1f - 2f * srR * srR
+                                                rotateVecQ(qxR, qyR, qzR, qwR,
+                                                    pivotYRoll * sTh, pivotYRoll * (1f - cTh), 0f)
+                                                px += pivotRotScratch[0]
+                                                py += pivotRotScratch[1]
+                                                pz += pivotRotScratch[2]
+                                            }
                                         }
 
                                         // Lissajous hip-8: figure-8 COM arc in the frontal plane — the
                                         // literal kinematic signature of belly-dance/winding. Horizontal
                                         // at 1x yaw rate, vertical at 2x → ∞-shape COM trajectory.
                                         if (m.physicsAmount > 0.001f && hasTempo) {
-                                            val lissAmp = 0.018f * m.physicsAmount * ampGain
-                                            val hp = ar.phaseAt(yawRate)
+                                            val lissAmp = 0.018f * m.physicsAmount * m.danceIntensity * ampGain * gazeGain
+                                            val hp = ar.phaseAtSnap(snap, yawRate)
                                             val hCos = kotlin.math.cos(2.0 * Math.PI * hp).toFloat()
                                             val hSin2 = kotlin.math.sin(4.0 * Math.PI * hp).toFloat()
                                             px += lissAmp * hCos
                                             py += lissAmp * 0.45f * hSin2
                                         }
 
-                                        // ── ALIVE: subtle additive layers ──
+                                        // ── Tier1-E/G/J: breath + axis coupling + vestibular mirror ──
+                                        // Dancer: a body is causally chained, not a tripod. Yaw pulls pitch
+                                        // into the turn (contrapposto), and bob dips on the loaded side.
+                                        // Breath runs independent of the beat — she's alive on stillness.
+
+                                        // Tier1-E: weight-shift bob dip on yaw extremes.
+                                        py -= 0.010f * m.physicsAmount * m.danceIntensity * kotlin.math.abs(yawSig) * proxMacro
+
+                                        // Tier1-G: breath bob — 3mm @ 0.25Hz, per-model seed decorrelation.
+                                        val breathBobM = 0.003f * proxMicro *
+                                            kotlin.math.sin(((tSec * 0.25f + seed) * 2.0 * Math.PI).toFloat())
+                                        py += breathBobM
+
+                                        // Tier1-J (Gemini #6): vestibular mirror — user's own head-bob
+                                        // velocity bleeds 2.5× into her bob. Mirror-neuron sync.
+                                        if (m.lastSeenCamPosY == 0f) m.lastSeenCamPosY = camPosY
+                                        val camYDelta = camPosY - m.lastSeenCamPosY
+                                        m.lastSeenCamPosY = camPosY
+                                        m.camYVelSmooth = 0.9f * m.camYVelSmooth + 0.1f * camYDelta
+                                        py += (m.camYVelSmooth * 2.5f).coerceIn(-0.003f, 0.003f)
+
+                                        // Tier1-E: yaw → pitch coupling (15%). Body tilts into the turn.
+                                        // Local-frame (right-multiply q * qX) so tilt goes in HER forward.
+                                        if (yawSig != 0f && m.danceYawDeg > 0f) {
+                                            val halfC = Math.toRadians(
+                                                (m.danceYawDeg * m.danceIntensity * yawSig * 0.15f * proxMacro * gazeGain).toDouble()
+                                            ).toFloat() * 0.5f
+                                            val scp = kotlin.math.sin(halfC); val ccp = kotlin.math.cos(halfC)
+                                            val nxC = qx * ccp + qw * scp
+                                            val nyC = qy * ccp + qz * scp
+                                            val nzC = qz * ccp - qy * scp
+                                            val nwC = qw * ccp - qx * scp
+                                            qx = nxC; qy = nyC; qz = nzC; qw = nwC
+                                        }
+
+                                        // Tier1-G: breath pitch — 0.3° @ 0.3Hz, always on (local-frame).
+                                        val breathPitchDeg = 0.3f * proxMicro *
+                                            kotlin.math.sin(((tSec * 0.3f + seed * 1.3f) * 2.0 * Math.PI).toFloat())
+                                        if (breathPitchDeg != 0f) {
+                                            val halfPB = Math.toRadians(breathPitchDeg.toDouble()).toFloat() * 0.5f
+                                            val spB = kotlin.math.sin(halfPB); val cpB = kotlin.math.cos(halfPB)
+                                            val nxB = qx * cpB + qw * spB
+                                            val nyB = qy * cpB + qz * spB
+                                            val nzB = qz * cpB - qy * spB
+                                            val nwB = qw * cpB - qx * spB
+                                            qx = nxB; qy = nyB; qz = nzB; qw = nwB
+                                        }
+
+                                        // Warmth jitter — micro COM wander (kept, physics-gated).
                                         if (m.physicsAmount > 0.001f) {
-                                            // Yaw→bob coupling: micro hip-pop at yaw extremes
-                                            py += 0.015f * m.physicsAmount * kotlin.math.abs(yawSig)
-                                            // Idle breath: ~0.25 Hz Y-oscillation, always alive
-                                            val breathPh = (System.currentTimeMillis() % 4000L) / 4000f
-                                            py += 0.006f * kotlin.math.sin(2.0 * Math.PI * breathPh).toFloat()
-                                            // Warmth jitter: incommensurable sines = pseudo-random warmth
-                                            val tSec = System.currentTimeMillis() / 1000f
                                             val jAmp = 0.002f * m.physicsAmount
                                             px += jAmp * (kotlin.math.sin(tSec * 0.73f).toFloat()
                                                 + 0.5f * kotlin.math.sin(tSec * 1.41f + 0.3f).toFloat())
@@ -1512,48 +1928,112 @@ class FilamentModelActivity : ComponentActivity() {
                                         }
 
                                         // ── ALIVE: impact kick on each detected beat ──
-                                        if (ar.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f) {
-                                            m.lastBeatSeen = ar.beatCounter
-                                            m.impactKickStartMs = System.currentTimeMillis()
-                                            m.impactKickAxis = (ar.beatCounter % 3).toInt()
+                                        // Skip beat capture during freeze — the held-gaze moment is more
+                                        // powerful than a syncopated twitch.
+                                        if (snap.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f && !gazeFreezeActive) {
+                                            m.lastBeatSeen = snap.beatCounter
+                                            m.impactKickStartMs = snap.nowMs
+                                            m.impactKickAxis = (snap.beatCounter % 3).toInt()
                                         }
                                         if (m.impactKickStartMs > 0L) {
-                                            val el = (System.currentTimeMillis() - m.impactKickStartMs).toFloat()
+                                            val el = (snap.nowMs - m.impactKickStartMs).toFloat()
                                             if (el < 200f) {
                                                 val kp = el / 200f
                                                 val ks = kotlin.math.sin(Math.PI * kp).toFloat() * (1f - kp)
-                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * ks).toFloat()
+                                                val kickRad = Math.toRadians(3.0 * m.physicsAmount * m.danceIntensity * ks * gazeGain).toFloat()
                                                 val half = kickRad * 0.5f
                                                 val sh = kotlin.math.sin(half); val ch = kotlin.math.cos(half)
+                                                val qxK = qx; val qyK = qy; val qzK = qz; val qwK = qw
                                                 when (m.impactKickAxis) {
-                                                    0 -> {  // pitch
-                                                        val nx = ch * qx + sh * qw
-                                                        val ny = ch * qy - sh * qz
-                                                        val nz = ch * qz + sh * qy
-                                                        val nw = ch * qw - sh * qx
+                                                    0 -> {  // pitch — local X (right-multiply), pivot at pitch pivot
+                                                        val nx = qx * ch + qw * sh
+                                                        val ny = qy * ch + qz * sh
+                                                        val nz = qz * ch - qy * sh
+                                                        val nw = qw * ch - qx * sh
                                                         qx = nx; qy = ny; qz = nz; qw = nw
+                                                        if (m.pivotEnabled && pivotYPitch != 0f) {
+                                                            val sTh = 2f * sh * ch
+                                                            val cTh = 1f - 2f * sh * sh
+                                                            rotateVecQ(qxK, qyK, qzK, qwK,
+                                                                0f, pivotYPitch * (1f - cTh), -pivotYPitch * sTh)
+                                                            px += pivotRotScratch[0]
+                                                            py += pivotRotScratch[1]
+                                                            pz += pivotRotScratch[2]
+                                                        }
                                                     }
-                                                    1 -> {  // yaw
+                                                    1 -> {  // yaw — world Y (no pivot correction needed)
                                                         val nx = ch * qx + sh * qz
                                                         val ny = ch * qy + sh * qw
                                                         val nz = ch * qz - sh * qx
                                                         val nw = ch * qw - sh * qy
                                                         qx = nx; qy = ny; qz = nz; qw = nw
                                                     }
-                                                    else -> {  // roll
-                                                        val nx = ch * qx - sh * qy
-                                                        val ny = ch * qy + sh * qx
-                                                        val nz = ch * qz + sh * qw
-                                                        val nw = ch * qw - sh * qz
+                                                    else -> {  // roll — local Z (right-multiply), pivot at roll pivot
+                                                        val nx = qx * ch + qy * sh
+                                                        val ny = qy * ch - qx * sh
+                                                        val nz = qz * ch + qw * sh
+                                                        val nw = qw * ch - qz * sh
                                                         qx = nx; qy = ny; qz = nz; qw = nw
+                                                        if (m.pivotEnabled && pivotYRoll != 0f) {
+                                                            val sTh = 2f * sh * ch
+                                                            val cTh = 1f - 2f * sh * sh
+                                                            rotateVecQ(qxK, qyK, qzK, qwK,
+                                                                pivotYRoll * sTh, pivotYRoll * (1f - cTh), 0f)
+                                                            px += pivotRotScratch[0]
+                                                            py += pivotRotScratch[1]
+                                                            pz += pivotRotScratch[2]
+                                                        }
                                                     }
                                                 }
                                             } else {
                                                 m.impactKickStartMs = 0L
                                             }
                                         }
+
+                                        // ── Tier1-F: gaze bias post-rotation + Gemini #5 VO-dip ──
+                                        // Applied LAST so the entire composed dance pose is rotated as one
+                                        // toward/away from the viewer. VO dip is the chin-down "under the
+                                        // lashes" glance that sells the saccade as a gaze, not a pan.
+                                        if (m.gazeFaceCamHasCapture && m.danceGazeFollow && m.gazeCurrentBiasRad != 0f) {
+                                            val hb = m.gazeCurrentBiasRad * 0.5f
+                                            val sb = kotlin.math.sin(hb); val cb = kotlin.math.cos(hb)
+                                            val nxG = cb * qx + sb * qz
+                                            val nyG = cb * qy + sb * qw
+                                            val nzG = cb * qz - sb * qx
+                                            val nwG = cb * qw - sb * qy
+                                            qx = nxG; qy = nyG; qz = nzG; qw = nwG
+                                        }
+                                        if (gazeVoDipRad != 0f) {
+                                            // Negative pitch = chin down. Local-frame right-multiply so
+                                            // dip tracks her facing direction after the bias yaw.
+                                            val hp = -gazeVoDipRad * 0.5f
+                                            val sp = kotlin.math.sin(hp); val cp = kotlin.math.cos(hp)
+                                            val nxV = qx * cp + qw * sp
+                                            val nyV = qy * cp + qz * sp
+                                            val nzV = qz * cp - qy * sp
+                                            val nwV = qw * cp - qx * sp
+                                            qx = nxV; qy = nyV; qz = nzV; qw = nwV
+                                        }
+
                                         val ql = kotlin.math.sqrt(qx*qx + qy*qy + qz*qz + qw*qw).coerceAtLeast(1e-5f)
                                         val tqx = qx / ql; val tqy = qy / ql; val tqz = qz / ql; val tqw = qw / ql
+
+                                        // ── Tier2-footanchor: keep the heels planted ──
+                                        // After every rotation + pivot correction lands, compute where her
+                                        // feet actually are in world and subtract the drift from (px, pz).
+                                        // Result: torso pivots around fixed heels, not "dancing on ice."
+                                        // Y is left alone so bob + breath + squash still work freely.
+                                        if (m.footAnchorCaptured && m.footAnchorStrength > 0.001f) {
+                                            val footLocalY = pvMinY * m.scale
+                                            rotateVecQ(tqx, tqy, tqz, tqw, 0f, footLocalY, 0f)
+                                            val footWorldX = px + pivotRotScratch[0]
+                                            val footWorldZ = pz + pivotRotScratch[2]
+                                            val driftX = footWorldX - m.footAnchorX
+                                            val driftZ = footWorldZ - m.footAnchorZ
+                                            px -= driftX * m.footAnchorStrength
+                                            pz -= driftZ * m.footAnchorStrength
+                                        }
+
                                         if (m.physicsAmount > 0.001f) {
                                             // Inertia lag — body chases target rather than snapping.
                                             // physicsAmount 0..1 maps to follow rate 1..0.25 per frame.
@@ -1567,11 +2047,14 @@ class FilamentModelActivity : ComponentActivity() {
                                             m.rotW += (tqw - m.rotW) * follow
                                             val nl = kotlin.math.sqrt(m.rotX*m.rotX + m.rotY*m.rotY + m.rotZ*m.rotZ + m.rotW*m.rotW).coerceAtLeast(1e-5f)
                                             m.rotX /= nl; m.rotY /= nl; m.rotZ /= nl; m.rotW /= nl
-                                            // Squash & stretch tied to bob phase.
+                                            // Squash & stretch tied to bob phase. Tier1.5: scale with
+                                            // actual bob amplitude, not just gated on > 0. 1mm bob now
+                                            // produces 1% squash, not 10%. 7cm bob = full squash.
                                             if (m.danceYMeters > 0f) {
-                                                val ph = (ar.phaseAt(m.danceYRate) + m.danceYPhase) % 1f
+                                                val ph = ((ar.phaseAtSnap(snap, m.danceYRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                                 val bobSig = -kotlin.math.cos(2.0 * Math.PI * ph).toFloat()
-                                                val k = 0.1f * m.physicsAmount
+                                                val bobAmpScale = (m.danceYMeters / 0.05f).coerceIn(0f, 1f)
+                                                val k = 0.1f * m.physicsAmount * m.danceIntensity * proxMicro * bobAmpScale
                                                 m.scaleMulY = 1f + k * bobSig
                                                 m.scaleMulX = 1f - k * bobSig * 0.5f
                                                 m.scaleMulZ = 1f - k * bobSig * 0.5f
@@ -1587,7 +2070,7 @@ class FilamentModelActivity : ComponentActivity() {
                                             val dtJ = if (m.lastDanceNanos == 0L) 1f / 72f else (nowNsJ - m.lastDanceNanos) / 1_000_000_000f
                                             m.lastDanceNanos = nowNsJ
                                             val safeDtJ = dtJ.coerceIn(0.001f, 0.05f)
-                                            val bpmHz = if (hasTempo) ar.detectedBpm / 60f else 2f
+                                            val bpmHz = if (hasTempo) snap.bpm / 60f else 2f
                                             val omegaJ = 2f * Math.PI.toFloat() * (2.5f * bpmHz)
                                             val zetaJ = 0.18f
                                             // Drive each axis's spring toward its current squash target
@@ -1600,7 +2083,9 @@ class FilamentModelActivity : ComponentActivity() {
                                             m.jiggleVelY += aY * safeDtJ; m.jiggleY += m.jiggleVelY * safeDtJ
                                             m.jiggleVelX += aX * safeDtJ; m.jiggleX += m.jiggleVelX * safeDtJ
                                             m.jiggleVelZ += aZ * safeDtJ; m.jiggleZ += m.jiggleVelZ * safeDtJ
-                                            val jiggleGain = 0.5f * m.physicsAmount
+                                            // Jiggle gain scales with high-freq band (hats/snare drive
+                                            // micro-jiggle) × proxMicro (closer = more flesh).
+                                            val jiggleGain = 0.5f * m.physicsAmount * highGate * proxMicro
                                             m.scaleMulY *= 1f + jiggleGain * m.jiggleY
                                             m.scaleMulX *= 1f + jiggleGain * m.jiggleX
                                             m.scaleMulZ *= 1f + jiggleGain * m.jiggleZ

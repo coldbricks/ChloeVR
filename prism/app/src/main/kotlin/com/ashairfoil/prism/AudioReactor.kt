@@ -137,6 +137,27 @@ class AudioReactor {
     /** Monotonic counter of beat triggers — a model that tracks "last seen"
      *  can detect exactly when a new beat fires (for impact kicks, fills). */
     @Volatile var beatCounter: Long = 0L; private set
+
+    // Bass-band kick detector (20–150 Hz RMS rising edges). Independent of the
+    // user's BOX settings — so changing BOX for the visual reactor no longer
+    // affects BPM detection. Uses hysteresis (fire on crossing up, reset only
+    // after dropping to 60% of threshold) + min-interval to reject doubles.
+    @Volatile var bassKickThreshold: Float = 0.30f
+    private var bassAboveThresh = false
+    private var lastBassRiseMs = 0L
+    private fun detectBassKick() {
+        val nowMs = android.os.SystemClock.uptimeMillis()
+        val bv = rawBass
+        if (bv > bassKickThreshold && !bassAboveThresh) {
+            if (nowMs - lastBassRiseMs > 180L) {
+                recordTrigger()
+                lastBassRiseMs = nowMs
+            }
+            bassAboveThresh = true
+        } else if (bv < bassKickThreshold * 0.6f) {
+            bassAboveThresh = false
+        }
+    }
     private val triggerTimesMs = LongArray(8)
     private var triggerTimesIdx = 0
     private var triggerTimesFilled = 0
@@ -512,17 +533,17 @@ class AudioReactor {
         val atkAlpha = (1f - kotlin.math.exp(-safeDt / (attackMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.01f, 1f)
         val relAlpha = (1f - kotlin.math.exp(-safeDt / (releaseMs / 1000f).coerceAtLeast(0.001f))).coerceIn(0.005f, 1f)
 
+        // BPM tracker runs off rawBass (bass-band RMS), NOT the user's BOX
+        // settings. The box can be anywhere in the spectrum without affecting
+        // tempo lock.
+        detectBassKick()
+
         if (autoBpm) {
             // "Her ass is the metronome" — once we've found the click track (BPM),
             // the oscillator free-runs from the clock. Kicks only feed the BPM
             // estimator; they never touch phase. That way the sweep stays smooth
             // through breakdowns and off-beat fills and never jitters mid-cycle.
-            if (!throbLocked && rawFill > threshold) {
-                throbLocked = true
-                recordTrigger()
-            } else if (rawFill < threshold * 0.5f) {
-                throbLocked = false
-            }
+            // (No longer call recordTrigger here — detectBassKick handles it.)
             if (detectedBpm > 0f) {
                 if (bpmEpochMs == 0L) bpmEpochMs = System.currentTimeMillis()
                 // Absolute-time phase: no accumulated drift.
@@ -537,11 +558,11 @@ class AudioReactor {
             // THROB: one-shot burst. Trigger fires, runs FULL decay cycle,
             // cannot retrigger until cycle is complete.
             if (!throbLocked && rawFill > threshold) {
-                // Trigger! Start the burst — and record for BPM detection.
+                // Trigger! Start the burst. (BPM is now tracked via detectBassKick
+                // at the top of update(), independent of box settings.)
                 smoothedOutput = 1f
                 throbLocked = true
                 hardKneeTimer = 0f
-                recordTrigger()
             }
             if (throbLocked) {
                 // In decay cycle — count down, ignore all input
@@ -565,13 +586,11 @@ class AudioReactor {
                     smoothedOutput = if (rawFill > threshold) rawFill else 0f
                 }
                 Rolloff.HARD_KNEE -> {
-                    // Attack: track fill upward
+                    // Attack: track fill upward (BPM tracked via bass kick, not here)
                     if (rawFill > smoothedOutput) {
-                        val firstTrigger = !hardKneeTriggered
                         smoothedOutput += (rawFill - smoothedOutput) * atkAlpha
                         hardKneeTriggered = true
                         hardKneeTimer = 0f
-                        if (firstTrigger) recordTrigger()
                     } else if (hardKneeTriggered) {
                         // Linear decay from peak over releaseMs (tempo-locked when autoBpm)
                         hardKneeTimer += safeDt
@@ -736,5 +755,65 @@ class AudioReactor {
         if (!enabled) return "OFF"
         val modeStr = when (rolloff) { Rolloff.INSTANT -> "INS"; Rolloff.HARD_KNEE -> "HRD"; Rolloff.SOFT_KNEE -> "SFT"; Rolloff.THROB -> "THR" }
         return "$modeStr %.0f%%".format(boxFillPct * 100)
+    }
+
+    // ── FrameSnapshot: per-frame read-once struct for consumers ─────────────
+    // Dance loop reads this ONCE per frame via `snapshot(out)` then consults
+    // the fields instead of hitting @Volatile getters + phaseAt() N times per
+    // model per frame. Caller supplies + reuses the buffer — zero allocation.
+    class FrameSnapshot {
+        var nowMs: Long = 0L
+        var boxFillPct: Float = 0f
+        var beatCounter: Long = 0L
+        var bpm: Float = 0f
+        var autoBpm: Boolean = false
+        var bandBass: Float = 0f
+        var bandMid: Float = 0f
+        var bandHigh: Float = 0f
+        var phaseAt2: Float = 0f
+        var phaseAt4: Float = 0f
+        var phaseAt8: Float = 0f
+        var phaseAt16: Float = 0f
+        var phase1bar: Float = 0f
+        var phase4bar: Float = 0f
+        var phase16bar: Float = 0f
+    }
+
+    fun snapshot(out: FrameSnapshot) {
+        val now = System.currentTimeMillis()
+        out.nowMs = now
+        out.boxFillPct = boxFillPct
+        out.beatCounter = beatCounter
+        out.bpm = detectedBpm
+        out.autoBpm = autoBpm
+        out.bandBass = bass
+        out.bandMid = mid
+        out.bandHigh = high
+        if (autoBpm && detectedBpm > 0f && bpmEpochMs != 0L) {
+            val quarter = 60000f / detectedBpm
+            val barMs = quarter * 4f
+            val elapsed = (now - bpmEpochMs).toFloat()
+            out.phaseAt2 = ((elapsed / (barMs / 2f)) % 1f + 1f) % 1f
+            out.phaseAt4 = ((elapsed / quarter) % 1f + 1f) % 1f
+            out.phaseAt8 = ((elapsed / (quarter / 2f)) % 1f + 1f) % 1f
+            out.phaseAt16 = ((elapsed / (quarter / 4f)) % 1f + 1f) % 1f
+            out.phase1bar = ((elapsed / barMs) % 1f + 1f) % 1f
+            out.phase4bar = ((elapsed / (barMs * 4f)) % 1f + 1f) % 1f
+            out.phase16bar = ((elapsed / (barMs * 16f)) % 1f + 1f) % 1f
+        } else {
+            out.phaseAt2 = 0f; out.phaseAt4 = 0f; out.phaseAt8 = 0f; out.phaseAt16 = 0f
+            out.phase1bar = 0f; out.phase4bar = 0f; out.phase16bar = 0f
+        }
+    }
+
+    /** Dispatch helper: return cached phase for a supported rate without an extra
+     *  System.currentTimeMillis() call. Falls back to phaseAt(rate) only if the
+     *  rate is unsupported (which is never, for our 2/4/8/16 scheme). */
+    fun phaseAtSnap(s: FrameSnapshot, rate: Int): Float = when (rate) {
+        2 -> s.phaseAt2
+        4 -> s.phaseAt4
+        8 -> s.phaseAt8
+        16 -> s.phaseAt16
+        else -> phaseAt(rate)
     }
 }

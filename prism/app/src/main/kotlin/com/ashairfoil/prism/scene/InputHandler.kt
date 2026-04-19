@@ -64,6 +64,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
     // Laser / selection (preallocated, written in-place)
     val laserHandPos = floatArrayOf(0f, 0f, 0f)
+    // Tier2-pivot: last laser ray direction in world space, stashed each frame
+    // so the markAnatomy capture has access to it outside the hit-test scope.
+    val laserRayDir = floatArrayOf(0f, 0f, -1f)
     val laserAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     // Scratch buffers for per-frame math (avoid alloc in hot path)
     private val scratchPanelRot = FloatArray(4)
@@ -418,6 +421,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
             laserAimRot[0] = rightAimRotX; laserAimRot[1] = rightAimRotY; laserAimRot[2] = rightAimRotZ; laserAimRot[3] = rightAimRotW
 
             val rayDir = renderer.quatForward(laserAimRot)
+            laserRayDir[0] = rayDir[0]; laserRayDir[1] = rayDir[1]; laserRayDir[2] = rayDir[2]
 
             // ── Menu panel hit test ──
             hoveredMenuParam = -1
@@ -572,6 +576,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         bx in 246f..555f -> 133 // DANCE
                                         bx in 561f..770f -> 138 // EASE
                                         bx in 776f..994f -> 139 // IMPROV
+                                        else -> -1
+                                    }
+                                } else if (by in 1116f..1132f) {
+                                    // Row C (Tier1.5): INTENSITY | GAZE | ROLL | TAP TEMPO
+                                    hoveredActionButton = when {
+                                        bx in 30f..270f -> 144 // INTENSITY
+                                        bx in 280f..520f -> 145 // GAZE toggle
+                                        bx in 530f..770f -> 146 // ROLL rate
+                                        bx in 780f..994f -> 147 // TAP TEMPO
                                         else -> -1
                                     }
                                 } else if (by in 1133f..1180f) {
@@ -796,7 +809,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 }
 
                                 // Param rows with section headers (rowH=46px, 10px section pad)
-                                val paramRowHit = 46f
+                                val paramRowHit = 34f  // must match UiRenderer rowH
                                 val sectionPadHit = 10f
                                 if (by in 164f..1100f) {
                                     // Lock hover to dragged slider while trigger is held
@@ -989,6 +1002,51 @@ class InputHandler(private val activity: FilamentModelActivity) {
         // Trigger press (edge-detected) = select/deselect or menu select
         val rightTriggerPressed = rightTrigger > 0.5f
         if (rightTriggerPressed && !lastRightTriggerState && !grabbing) {
+            // ── Tier2-pivot: anatomy mark capture ──
+            // When markAnatomyMode is armed (1=hip, 2=shldr), this trigger click
+            // captures the laser hit Y onto the targeted model and exits the mode.
+            // Placed at the TOP so it preempts selection / button routing.
+            if (activity.markAnatomyMode > 0) {
+                val tgtIdx = if (hoveredModelIndex >= 0) hoveredModelIndex
+                    else activity.sceneManager.selectedModelIndex
+                val m = activity.sceneManager.models.getOrNull(tgtIdx)
+                val gm = if (m != null) activity.glesRenderer?.getModel(m.gpuModelId) else null
+                if (m != null && gm != null && hitDistance > 0f) {
+                    val hitY = laserHandPos[1] + laserRayDir[1] * hitDistance
+                    val bbMin = gm.boundsMinY
+                    val bbCenter = gm.boundsCenterY
+                    val bbHeight = 2f * (bbCenter - bbMin)
+                    val modelBottomY = m.posY + bbMin * m.scale
+                    val modelHeightWorld = bbHeight * m.scale
+                    if (modelHeightWorld > 0.01f) {
+                        val frac = ((hitY - modelBottomY) / modelHeightWorld).coerceIn(0f, 1f)
+                        when (activity.markAnatomyMode) {
+                            1 -> {
+                                m.markedHipFrac = frac
+                                Log.i(TAG, "Marked hip at ${(frac*100).toInt()}% on ${m.file.name}")
+                                activity.uiRenderer.showMessage("Hip marked at ${(frac*100).toInt()}%")
+                            }
+                            2 -> {
+                                m.markedShoulderFrac = frac
+                                Log.i(TAG, "Marked shoulder at ${(frac*100).toInt()}% on ${m.file.name}")
+                                activity.uiRenderer.showMessage("Shoulder marked at ${(frac*100).toInt()}%")
+                            }
+                            3 -> {
+                                m.markedKneeFrac = frac
+                                Log.i(TAG, "Marked knee at ${(frac*100).toInt()}% on ${m.file.name}")
+                                activity.uiRenderer.showMessage("Knee marked at ${(frac*100).toInt()}%")
+                            }
+                        }
+                    }
+                } else {
+                    activity.uiRenderer.showMessage("No hit — aim at the model body")
+                }
+                activity.markAnatomyMode = 0
+                activity.uiNeedsRefresh = true
+                lastRightTriggerState = rightTriggerPressed
+                return
+            }
+
             // ── Audio Player trigger handling ──
             if (activity.menuVisible && activity.audioPlayerMode && activity.audioPickerMode) {
                 when {
@@ -1148,10 +1206,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
                             m.danceYawDeg = 10f  // gentle default booty shake — user can dial up
                         }
+                        activity.armGazeCapture(m)
                         Log.i(TAG, "Dance armed on ${m.file.name} (yaw=${m.danceYawDeg}° pitch=${m.dancePitchDeg}° bob=${m.danceYMeters}m)")
                     } else {
                         m.animHasBase = false
                         m.danceYawDeg = 0f; m.dancePitchDeg = 0f; m.danceYMeters = 0f
+                        activity.clearGazeCapture(m)
                         Log.i(TAG, "Dance cleared on ${m.file.name}")
                     }
                     activity.uiNeedsRefresh = true
@@ -1166,6 +1226,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
                         m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
                         m.animHasBase = true
+                        activity.armGazeCapture(m)
                     }
                     activity.shuffleDance(m)
                     Log.i(TAG, "Dance shuffled: yaw=${m.danceYawDeg.toInt()}°@1/${m.danceYawRate} pitch=${m.dancePitchDeg.toInt()}°@1/${m.dancePitchRate} bob=${"%.2f".format(m.danceYMeters)}m@1/${m.danceYRate} ease=${m.danceEase}")
@@ -1191,6 +1252,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
                         m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
                         m.animHasBase = true
+                        activity.armGazeCapture(m)
                     }
                     Log.i(TAG, "IMPROV: ${if (m.danceImprov) "ON (every ${m.improvBars} bars)" else "OFF"}")
                     activity.uiNeedsRefresh = true
@@ -1339,6 +1401,71 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 sm.hapticScriptMode = next
                 activity.hapticScriptPlayer?.setMode(next)
                 Log.i(TAG, "Haptic script mode: $next")
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 144) {
+                // INTENSITY cycle: 0.25 → 0.5 → 1.0 → 1.5 → 2.0 → 0.25. Added the
+                // lower steps because the default 1.0× reads as "spaz" for many
+                // GLBs; 0.25-0.5× is the sweet spot for subtle realism.
+                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                if (m != null) {
+                    val next = when {
+                        m.danceIntensity < 0.38f -> 0.5f
+                        m.danceIntensity < 0.75f -> 1.0f
+                        m.danceIntensity < 1.25f -> 1.5f
+                        m.danceIntensity < 1.75f -> 2.0f
+                        else -> 0.25f
+                    }
+                    m.danceIntensity = next
+                    Log.i(TAG, "Dance intensity: ${"%.2f".format(next)}x on ${m.file.name}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 145) {
+                // GAZE follow toggle (per-model)
+                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                if (m != null) {
+                    m.danceGazeFollow = !m.danceGazeFollow
+                    if (!m.danceGazeFollow) {
+                        // Clear current bias so she snaps back to base facing
+                        m.gazeCurrentBiasRad = 0f
+                        m.gazeState = 0
+                    } else if (m.animHasBase) {
+                        // Re-arm the capture so she tracks from the current heading
+                        activity.armGazeCapture(m)
+                    }
+                    Log.i(TAG, "Gaze follow: ${if (m.danceGazeFollow) "ON" else "OFF"} on ${m.file.name}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 146) {
+                // ROLL rate cycle. First tap arms with 4° default; subsequent taps cycle rate;
+                // long-cycle back to zero after 1/16.
+                val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                if (m != null) {
+                    if (m.danceRollDeg < 0.01f) {
+                        m.danceRollDeg = 4f
+                        m.danceRollRate = 4
+                        m.danceRollPhase = 0.5f  // offset from yaw so axes don't all peak together
+                    } else {
+                        m.danceRollRate = when (m.danceRollRate) {
+                            2 -> 4; 4 -> 8; 8 -> 16; 16 -> { m.danceRollDeg = 0f; 4 }
+                            else -> 4
+                        }
+                    }
+                    // Clamp to sweep-speed law (amp × rate ≤ 64 for roll, using yaw K as bank proxy)
+                    m.danceRollDeg = kotlin.math.min(m.danceRollDeg, 64f / m.danceRollRate)
+                    if (!m.animHasBase) {
+                        m.animBasePose[0] = m.posX; m.animBasePose[1] = m.posY; m.animBasePose[2] = m.posZ
+                        m.animBasePose[3] = m.rotX; m.animBasePose[4] = m.rotY
+                        m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
+                        m.animHasBase = true
+                        activity.armGazeCapture(m)
+                    }
+                    Log.i(TAG, "Roll: ${m.danceRollDeg.toInt()}° @ 1/${m.danceRollRate}")
+                    activity.uiNeedsRefresh = true
+                }
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 147) {
+                // TAP TEMPO — each tap feeds AudioReactor's tap-BPM averager. Three taps → lock.
+                activity.audioReactor?.tapTempo()
+                Log.i(TAG, "TAP TEMPO")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.lightingPresetMode && hoveredLightingPresetIndex >= 0) {
                 val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
@@ -1605,6 +1732,41 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.selectedPlaneIndex = -1
                         Log.i(TAG, "Room edit OFF")
                     }
+                } else if (hoveredMenuParam == 19) {
+                    activity.centerModelsToView()
+                } else if (hoveredMenuParam == 20) {
+                    // Mark Hip → enter mark mode. Next trigger click on the model
+                    // captures the laser-hit Y as the hip anchor fraction.
+                    activity.markAnatomyMode = 1
+                    Log.i(TAG, "Mark Hip armed — aim laser at model hip and trigger-click")
+                    activity.uiRenderer.showMessage("Aim at hip, then trigger-click")
+                } else if (hoveredMenuParam == 21) {
+                    activity.markAnatomyMode = 2
+                    Log.i(TAG, "Mark Shldr armed — aim laser at model shoulder and trigger-click")
+                    activity.uiRenderer.showMessage("Aim at shoulder, then trigger-click")
+                } else if (hoveredMenuParam == 22) {
+                    // Mark Knee — cheapest way to give BOUNCE / SQUAT PULSE a
+                    // real hinge point. On a rigid mesh we can't bend the knees;
+                    // marking them lets the pivot system use knee-height as the
+                    // crouch anchor instead of a generic 25% proportion.
+                    activity.markAnatomyMode = 3
+                    Log.i(TAG, "Mark Knee armed — aim laser at model knee and trigger-click")
+                    activity.uiRenderer.showMessage("Aim at knee, then trigger-click")
+                } else if (hoveredMenuParam == 23) {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) {
+                        m.markedHipFrac = -1f
+                        m.markedShoulderFrac = -1f
+                        m.markedKneeFrac = -1f
+                        activity.markAnatomyMode = 0
+                        Log.i(TAG, "Anatomy marks reset on ${m.file.name}")
+                        activity.uiRenderer.showMessage("Marks reset")
+                    }
+                } else if (hoveredMenuParam == 24) {
+                    // Auto Light: re-enable XR light estimation on ambient channel.
+                    activity.autoAmbient = !activity.autoAmbient
+                    Log.i(TAG, "Auto Light: ${if (activity.autoAmbient) "ON" else "OFF"}")
+                    activity.uiRenderer.showMessage("Auto Light ${if (activity.autoAmbient) "ON" else "OFF"}")
                 }
                 activity.uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -1618,7 +1780,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     }
                 }
                 activity.uiNeedsRefresh = true
-            } else {
+            } else if (!activity.menuVisible) {
+                // Click into empty world space with nothing hovered = deselect.
+                // When the menu is visible we never deselect as a fallback —
+                // trigger-clicks on non-button panel areas are just no-ops.
                 selectedModelIndex = -1
                 if (renderer != null) {
                     for (placed in models) {
