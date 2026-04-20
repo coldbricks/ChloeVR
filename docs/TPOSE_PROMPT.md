@@ -62,9 +62,17 @@ Photorealistic, preserve identity exactly.
 1. Generate image with this prompt (Gemini / Seedance / Nano Banana)
 2. Run through Tripo with **Humanoid rig** (v2.5 autorig, PBR on)
 3. Export as GLB (Quad retopo if desired — keeps weights intact at ~100K tris)
-4. Optionally Mixamo naming if dropping Mixamo animations later; otherwise
+4. **⚠ IMPORTANT: Turn ON "Bottom Center Pivot"** in the Tripo export dialog.
+   Default OFF places the mesh origin at the pelvis/center, making
+   `boundsMinY ≈ -0.48` relative to origin. Our A-snap and floor-plant
+   code then has to offset every Y calculation by `boundsMinY * scale`,
+   which is fragile and makes the model hover above detected floors if
+   any piece of that math is off. Bottom Center Pivot ON puts origin at
+   the foot base, so `posY` directly equals the feet's world Y. Snap just
+   works. Floor-re-plant on room change just works.
+5. Optionally Mixamo naming if dropping Mixamo animations later; otherwise
    Tripo's native bone names work with our loader (maps by topology)
-5. Drop the GLB into `/sdcard/RIGGED/` on device (or local Downloads folder —
+6. Drop the GLB into `/sdcard/RIGGED/` on device (or local Downloads folder —
    ChloeVR auto-scans) and the RIGGED filter in the picker will surface it.
 
 ## Notes

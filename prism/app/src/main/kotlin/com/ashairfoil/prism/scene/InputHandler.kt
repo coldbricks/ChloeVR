@@ -2799,19 +2799,59 @@ class InputHandler(private val activity: FilamentModelActivity) {
             if (model != null && gr != null) {
                 val gpuModel = gr.getModel(model.gpuModelId)
                 if (gpuModel != null) {
-                    var snapY = gr.gridHeight
+                    // Floor priority:
+                    //   (1) closest labeled horizontal plane near the model's XZ
+                    //   (2) gr.gridHeight — the Y the floor shadow renders at
+                    //       (trustworthy: if shadow draws at real floor, this is
+                    //       it, even when the planes list has since emptied)
+                    //   (3) camPosY − 1.6 live fallback when gridHeight is the
+                    //       untouched default of 0
+                    //
+                    // Previous attempt used camY-1.6 whenever the live planes
+                    // list was empty, but plane trackers sometimes drop planes
+                    // after initial detection — gridHeight sticks around, the
+                    // shadow still renders correctly, but my snap was falling
+                    // back to a camY-1.6 guess that over-estimated floor height.
                     val planes = gr.shadowPlanes
+                    var snapY: Float
+                    var floorSource: String
+                    var bestDist = Float.MAX_VALUE
+                    var planeY = Float.NaN
+                    var lowestNonCeilingY = Float.NaN
                     if (planes.isNotEmpty()) {
-                        var bestDist = Float.MAX_VALUE
                         for (p in planes) {
-                            if (p.label != 2 && p.label != 4) continue
+                            if (p.label == 3) continue  // skip ceilings only (matches renderShadowPlanes)
+                            // Track the globally-lowest non-ceiling plane as a
+                            // catch-all — XR runtimes sometimes label the floor
+                            // as 0 (unknown) when boundary is off, so filtering
+                            // on label==2 alone misses real floors.
+                            if (lowestNonCeilingY.isNaN() || p.posY < lowestNonCeilingY) {
+                                lowestNonCeilingY = p.posY
+                            }
                             val dx = model.posX - p.posX
                             val dz = model.posZ - p.posZ
                             val hDist = kotlin.math.sqrt(dx*dx + dz*dz)
                             if (hDist < maxOf(p.extentX, p.extentY) * 1.5f && hDist < bestDist) {
                                 bestDist = hDist
-                                snapY = p.posY
+                                planeY = p.posY
                             }
+                        }
+                    }
+                    when {
+                        !planeY.isNaN() -> {
+                            snapY = planeY; floorSource = "plane-near(${planes.size})"
+                        }
+                        !lowestNonCeilingY.isNaN() -> {
+                            // No plane under the model, but some plane exists —
+                            // take the lowest one. Matches what the shadow is
+                            // actually rendering on.
+                            snapY = lowestNonCeilingY; floorSource = "plane-lowest"
+                        }
+                        gr.gridHeight != 0f -> {
+                            snapY = gr.gridHeight; floorSource = "gridHeight"
+                        }
+                        else -> {
+                            snapY = activity.camPosY - 1.6f; floorSource = "camY-1.6"
                         }
                     }
                     val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
@@ -2834,7 +2874,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     model.rotZ = 0f
                     model.rotW = kotlin.math.cos(halfYaw)
                     activity.updateModelTransform(model)
-                    Log.i(TAG, "Snap to surface: posY=${model.posY} (minY=${gpuModel.boundsMinY}, snapY=$snapY), leveled to yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°")
+                    Log.i(TAG, "SNAP: posY=${"%.3f".format(model.posY)} (floor=$floorSource Y=${"%.3f".format(snapY)}, camY=${"%.3f".format(activity.camPosY)}, boundsMinY=${"%.3f".format(gpuModel.boundsMinY)}, scale=${"%.3f".format(model.scale)}, yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°)")
                 }
             }
         }
