@@ -289,6 +289,9 @@ class SceneManager(
         // and absent from the rig. Int.MIN_VALUE = not yet cached.
         var kneeLJointIdx: Int = Int.MIN_VALUE,
         var kneeRJointIdx: Int = Int.MIN_VALUE,
+        var thighLJointIdx: Int = Int.MIN_VALUE,
+        var thighRJointIdx: Int = Int.MIN_VALUE,
+        var rootJointIdx: Int = Int.MIN_VALUE,
         // Per-side enables — lets the user isolate glute L or R, or run alt-step.
         var gluteLeftEnabled: Boolean = true,
         var gluteRightEnabled: Boolean = true,

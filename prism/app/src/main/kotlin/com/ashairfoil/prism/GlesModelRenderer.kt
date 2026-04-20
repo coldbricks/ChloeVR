@@ -1208,11 +1208,21 @@ class GlesModelRenderer {
             // Mesh grows ~3× in vertex count; memory is cheap on XR, correct
             // shading is not. The old posCnt ≤ 500000 cap is removed — unweld
             // is safe at any density.
-            // Skip the triangle-soup unweld for skinned meshes — the 3× vertex
-            // expansion would require replicating JOINTS_0/WEIGHTS_0 too, which
-            // is extra work and risks breaking weights. Skinned meshes trade
-            // UV-seam tangent correctness for skinning. Visible as slightly
-            // flatter normal-map shading near seams; fine for character GLBs.
+            // Skip the triangle-soup unweld for skinned meshes. The 3× vertex
+            // expansion would require replicating JOINTS_0/WEIGHTS_0 across the
+            // soup — extra work + risks breaking weights. Instead we disable
+            // tangent-space normal mapping on the skinned model (set
+            // hasNormalMap=false below) so the shader's TBN path never runs.
+            // Without baked tangents + no unweld, tan would read as (0,0,0) →
+            // normalize(zero)=NaN → fragment normal NaN → pitch-black lighting.
+            // Trade: flat PBR on rigged meshes. Basecolor + metallic-roughness
+            // still applied. Future: compute per-vertex averaged tangents for
+            // skinned meshes (no unweld needed) if bump detail becomes critical.
+            if (model.isSkinned && model.normalMapTexId != 0) {
+                Log.w(TAG, "Tier 4: disabling normal-map tangent-space shading on skinned model " +
+                    "(no baked TANGENT, unweld skipped) — flat PBR only")
+                model.hasNormalMap = false
+            }
             if (!model.isSkinned && model.hasNormalMap && tangents == null && texCoords != null) {
                 val unweld = unweldWithTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
                 Log.i(TAG, "Unweld tangent fix: $posCnt verts / ${idxCnt/3} tris → ${unweld.vertCount} verts (triangle-soup)")
@@ -2647,7 +2657,14 @@ void main() {
         // Tripo rigs are rotation-translation only, so 3x3(S) is orthogonal. If
         // future rigs bake non-uniform scale into IBMs, swap to transpose(inverse(S3)).
         nrm = normalize(S3 * nrm);
-        tan = normalize(S3 * tan);
+        // Only skin the tangent when a normal map is actually in use — skinned
+        // Tripo rigs currently have no baked TANGENT attribute, so tan reads as
+        // zero and normalize(S3 * 0) = NaN. Gating prevents the NaN from leaking
+        // into downstream TBN math (and eventually the fragment color) even if
+        // the compiler hoists this computation outside the conditional below.
+        if (uHasNormalMap > 0.5) {
+            tan = normalize(S3 * tan);
+        }
     }
 
     // ── Tier 3: Glute push (AFTER skin so anchors track posed cheeks) ──

@@ -2083,32 +2083,63 @@ class FilamentModelActivity : ComponentActivity() {
                                             } else bob
                                             py += m.danceYMeters * effInt * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bobFinal
 
-                                            // ── Tier 4: knee bend driven by bob phase ──
-                                            // On skinned rigs, rotate L_Calf + R_Calf around their local X axis.
-                                            // phase01 = 0 at bob-top (straight legs), 1 at bob-bottom (max flex).
-                                            // effInt caps the flex so INTENSITY controls the squat depth.
+                                            // ── Tier 4: squat motion driven by bob phase ──
+                                            // Real squat requires three coordinated motions:
+                                            //   1. Calf rotates BACK (so shin pivots, foot goes behind heel)
+                                            //   2. Thigh rotates FORWARD about half as much (thigh tilts,
+                                            //      knee moves forward, hip drops)
+                                            //   3. Root Y translates down to anchor the motion vertically
+                                            //      (without it, only the legs move — body hovers)
+                                            //
+                                            // First-pass fix report (from on-device): user saw ONLY the
+                                            // calf bend (shins pivoting, body static above the knee).
+                                            // Correct — rotating Calf alone doesn't propagate to anything
+                                            // above it in the joint hierarchy. Thigh + root drop fixes that.
+                                            //
+                                            // phase01 = 0 at bob-top (standing), 1 at bob-bottom (deep squat).
+                                            // effInt caps the amplitude so INTENSITY controls squat depth.
                                             val gpuM = glesRenderer?.getModel(m.gpuModelId)
                                             val skel = gpuM?.skeleton
                                             if (gpuM?.isSkinned == true && skel != null) {
                                                 if (m.kneeLJointIdx == Int.MIN_VALUE) {
                                                     m.kneeLJointIdx = skel.indexOf("L_Calf")
                                                     m.kneeRJointIdx = skel.indexOf("R_Calf")
-                                                    android.util.Log.i(TAG, "Knee joints cached: L=${m.kneeLJointIdx} R=${m.kneeRJointIdx}")
+                                                    m.thighLJointIdx = skel.indexOf("L_Thigh")
+                                                    m.thighRJointIdx = skel.indexOf("R_Thigh")
+                                                    m.rootJointIdx = skel.indexOf("Root")
+                                                    android.util.Log.i(TAG, "Squat joints cached: knee=${m.kneeLJointIdx}/${m.kneeRJointIdx} " +
+                                                        "thigh=${m.thighLJointIdx}/${m.thighRJointIdx} root=${m.rootJointIdx}")
                                                 }
                                                 if (m.kneeLJointIdx >= 0 && m.kneeRJointIdx >= 0) {
-                                                    val maxKneeDeg = 40f
-                                                    val kneeDeg = phase01 * maxKneeDeg * effInt.coerceIn(0f, 1f) * bassGate
+                                                    val gate = effInt.coerceIn(0f, 1f) * bassGate
+                                                    val squat = phase01 * gate
+                                                    val kneeDeg = squat * 40f   // shin rotates back
+                                                    val thighDeg = -squat * 20f // thigh tilts forward (half)
                                                     skel.setJointEulerX(m.kneeLJointIdx, kneeDeg)
                                                     skel.setJointEulerX(m.kneeRJointIdx, kneeDeg)
+                                                    if (m.thighLJointIdx >= 0) skel.setJointEulerX(m.thighLJointIdx, thighDeg)
+                                                    if (m.thighRJointIdx >= 0) skel.setJointEulerX(m.thighRJointIdx, thighDeg)
+                                                    // Root Y drop: approximate hip sag from the thigh+calf
+                                                    // angles. At 20° thigh / 40° shin, hip sags ~12% of leg
+                                                    // length. Scale gives ~8cm at full squat on a 1.6m model.
+                                                    if (m.rootJointIdx >= 0) {
+                                                        skel.resetJointToBind(m.rootJointIdx)
+                                                        val dropMeters = squat * 0.08f
+                                                        skel.localPose[m.rootJointIdx * 16 + 13] -= dropMeters
+                                                    }
                                                 }
                                             }
                                         } else {
-                                            // Bob off: restore knees to bind-pose if we previously drove them.
+                                            // Bob off: restore every squat joint to bind so the rig doesn't
+                                            // freeze at the last frame's posed angles.
                                             val gpuM = glesRenderer?.getModel(m.gpuModelId)
                                             val skel = gpuM?.skeleton
                                             if (gpuM?.isSkinned == true && skel != null && m.kneeLJointIdx != Int.MIN_VALUE) {
                                                 if (m.kneeLJointIdx >= 0) skel.resetJointToBind(m.kneeLJointIdx)
                                                 if (m.kneeRJointIdx >= 0) skel.resetJointToBind(m.kneeRJointIdx)
+                                                if (m.thighLJointIdx >= 0) skel.resetJointToBind(m.thighLJointIdx)
+                                                if (m.thighRJointIdx >= 0) skel.resetJointToBind(m.thighRJointIdx)
+                                                if (m.rootJointIdx >= 0) skel.resetJointToBind(m.rootJointIdx)
                                             }
                                         }
 
