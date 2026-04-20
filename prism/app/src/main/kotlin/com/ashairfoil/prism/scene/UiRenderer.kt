@@ -390,17 +390,37 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val lockText = if (bpmLocked && bpmVal > 0) "LOCK $bpmVal" else "LOCK BPM"
             canvas.drawText(lockText, 902f, 126f, p)
             p.isFakeBoldText = false
-            // RATE cycle button (second row)
+            // RATE cycle button (second row). Meaningless without BPM lock —
+            // render faded + "(LOCK)" hint so user knows why nothing happens.
             p.color = when {
                 rateHover -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
                 bpmLocked -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x60000000
-                else -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x20000000
+                else -> (ThemeManager.GREEN and 0x00FFFFFF) or 0x08000000
             }
             canvas.drawRoundRect(820f, 137f, 984f, 157f, 6f, 6f, p)
-            p.color = if (rateHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+            p.color = when {
+                rateHover -> ThemeManager.TEXT_BRIGHT
+                bpmLocked -> ThemeManager.TEXT_MID
+                else -> (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x55000000
+            }
             p.textSize = 14f; p.isFakeBoldText = false
-            canvas.drawText("RATE $rateLabel", 902f, 152f, p)
+            val rateText = if (bpmLocked) "RATE $rateLabel" else "rate \u2014"
+            canvas.drawText(rateText, 902f, 152f, p)
             p.textAlign = Paint.Align.LEFT
+
+            // Big RECENTER button — teleport all models in front of the user AND
+            // re-snap the floor under their feet. Prominent placement after
+            // user feedback ("not sure how to do recenter, floor is still way
+            // outside my operating area"). Sits in the empty left slot of the
+            // mode-button row so it's a one-tap away the moment the panel opens.
+            val recenterHover = hoveredActionButton == 148
+            p.color = if (recenterHover) (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x90000000.toInt()
+                else (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x55000000
+            canvas.drawRoundRect(50f, 108f, 290f, 133f, 6f, 6f, p)
+            p.color = if (recenterHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
+            p.isFakeBoldText = true; p.textSize = 18f; p.textAlign = Paint.Align.CENTER
+            canvas.drawText("RECENTER", 170f, 126f, p)
+            p.isFakeBoldText = false; p.textAlign = Paint.Align.LEFT
 
             // Roll-off mode buttons
             val curMode = reactor?.rolloff ?: AudioReactor.Rolloff.SOFT_KNEE
@@ -720,8 +740,11 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             p.textAlign = Paint.Align.LEFT
 
             // ── SLIDERS (below spectrum) ──
+            // Row height 25 fits 23 sliders in the 575px area between specBot+20
+            // and Row A at y=1030 (23*25=575 exact). Added SYNCOPATION master
+            // in the main list — if you add another row, bump height to 24.
             val sliderAreaTop = specBot + 20f
-            val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 24f
+            val trackLeft = 260f; val trackRight = uiW - 40f; val trackH = 18f
             val labelP = tmpPaint2.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_BRIGHT; isFakeBoldText = false }
             val valP = pText.apply { textSize = 20f; color = ThemeManager.TEXT_MID; isFakeBoldText = false; textAlign = Paint.Align.LEFT }
             var sy = sliderAreaTop
@@ -768,17 +791,17 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     hsvScratch[0] = value
                     val rgb = Color.HSVToColor(hsvScratch)
                     p.color = rgb
-                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
+                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 13f else 10f, p)
                     p.color = ThemeManager.TEXT_BRIGHT
                     p.style = Paint.Style.STROKE; p.strokeWidth = 2f
-                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
+                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 13f else 10f, p)
                     p.style = Paint.Style.FILL
                 } else {
                     p.color = Color.WHITE
-                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 16f else 12f, p)
+                    canvas.drawCircle(fillEnd, sy + trackH / 2f, if (isHovered) 13f else 10f, p)
                 }
 
-                sy += 28f
+                sy += 25f
             }
 
             // ── Chloe Vibes presets + script mode (row above the main buttons) ──
@@ -825,18 +848,58 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val selModel = activity.sceneManager.models.getOrNull(selIdx)
 
             // ── Row A: per-axis rates + SHUFFLE ──
+            // Rates are BPM-relative — without lock they fall back to a 500ms
+            // generic period which reads as arbitrary. Fade them when !bpmLocked
+            // so the user sees they're inert until LOCK is engaged.
             fun drawRateCell(x0: Float, x1: Float, label: String, rate: Int, hoverId: Int) {
                 val hov = hoveredActionButton == hoverId
-                p.color = if (hov) (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
-                    else (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x30000000
+                p.color = when {
+                    hov -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x80000000.toInt()
+                    bpmLocked -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x30000000
+                    else -> (ThemeManager.PURPLE_DEEP and 0x00FFFFFF) or 0x0C000000
+                }
                 canvas.drawRoundRect(x0, 1030f, x1, 1065f, 8f, 8f, p)
                 p.textAlign = Paint.Align.CENTER; p.textSize = 16f
-                p.color = if (hov) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+                p.color = when {
+                    hov -> ThemeManager.TEXT_BRIGHT
+                    bpmLocked -> ThemeManager.TEXT_MID
+                    else -> (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x50000000
+                }
                 canvas.drawText("$label 1/$rate", (x0 + x1) / 2f, 1053f, p)
             }
-            drawRateCell(30f, 270f, "YAW", selModel?.danceYawRate ?: 8, 135)
-            drawRateCell(280f, 520f, "PITCH", selModel?.dancePitchRate ?: 4, 136)
-            drawRateCell(530f, 770f, "BOB", selModel?.danceYRate ?: 2, 137)
+            if (activity.characterMode) {
+                // In CHARACTER mode, Row A becomes the glute-marking row — the
+                // user can't see the mark-glute action anywhere else and was
+                // asking "how do I select where the ass cheeks are."
+                fun drawGluteMarkCell(x0: Float, x1: Float, label: String, isMarked: Boolean, hoverId: Int, hot: Int) {
+                    val hov = hoveredActionButton == hoverId
+                    p.color = when {
+                        hov -> (hot and 0x00FFFFFF) or 0x90000000.toInt()
+                        isMarked -> (hot and 0x00FFFFFF) or 0x70000000
+                        else -> (hot and 0x00FFFFFF) or 0x28000000
+                    }
+                    canvas.drawRoundRect(x0, 1030f, x1, 1065f, 8f, 8f, p)
+                    p.textAlign = Paint.Align.CENTER; p.textSize = 16f
+                    p.color = if (hov || isMarked) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
+                    p.isFakeBoldText = isMarked
+                    canvas.drawText(label, (x0 + x1) / 2f, 1053f, p)
+                    p.isFakeBoldText = false
+                }
+                val mL = selModel?.let { !it.markedGluteL_x.isNaN() } ?: false
+                val mR = selModel?.let { !it.markedGluteR_x.isNaN() } ?: false
+                drawGluteMarkCell(30f, 310f, if (mL) "MARK L \u25CF" else "MARK GLUTE L", mL, 135, 0xFF33DDFF.toInt())
+                drawGluteMarkCell(320f, 600f, if (mR) "MARK R \u25CF" else "MARK GLUTE R", mR, 136, 0xFFFF44CC.toInt())
+                // GLUTE RATE cycle — 1/4, 1/8, 1/16. Label reflects the current
+                // subdivision. BPM-lock required for it to actually subdivide
+                // (otherwise the legacy per-beat trigger fires).
+                val gRate = selModel?.gluteRate ?: 1
+                val gRateLabel = when (gRate) { 1 -> "GLUTE 1/4"; 2 -> "GLUTE 1/8"; 4 -> "GLUTE 1/16"; else -> "GLUTE 1/$gRate" }
+                drawGluteMarkCell(610f, 770f, gRateLabel, gRate > 1, 137, 0xFFFFAA33.toInt())
+            } else {
+                drawRateCell(30f, 270f, "YAW", selModel?.danceYawRate ?: 8, 135)
+                drawRateCell(280f, 520f, "PITCH", selModel?.dancePitchRate ?: 4, 136)
+                drawRateCell(530f, 770f, "BOB", selModel?.danceYRate ?: 2, 137)
+            }
             val shufHov = hoveredActionButton == 134
             p.color = if (shufHov) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x80000000.toInt()
                 else (ThemeManager.ORANGE and 0x00FFFFFF) or 0x35000000
@@ -962,14 +1025,38 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText(charLabel, 650f, rowCY + 11f, p)
             p.isFakeBoldText = false
 
-            // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
+            // Rightmost Row C button: TAP TEMPO normally, but flips to
+            // GLUTE cycle while the CHARACTER panel is open. Lets the user
+            // pick L / R / BOTH / ALT without opening yet another sub-panel.
             val tapHover = hoveredActionButton == 147
-            p.color = if (tapHover) (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
-                else (ThemeManager.GREEN and 0x00FFFFFF) or 0x35000000
-            canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
-            p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GREEN
-            p.isFakeBoldText = tapHover
-            canvas.drawText("TAP TEMPO", 887f, rowCY + 11f, p)
+            if (charOn) {
+                val gLeft = selModel?.gluteLeftEnabled == true
+                val gRight = selModel?.gluteRightEnabled == true
+                val gAlt = selModel?.gluteAltStep == true
+                val gShaker = selModel?.gluteShakerMode == true
+                val gluteLabel = when {
+                    gShaker                  -> "SHAKER \u26A1"
+                    gAlt && gLeft && gRight  -> "GLUTE \u25C0\u25B6"
+                    gLeft && !gRight         -> "GLUTE L"
+                    !gLeft && gRight         -> "GLUTE R"
+                    gLeft && gRight          -> "GLUTE L+R"
+                    else                     -> "GLUTE OFF"
+                }
+                p.color = if (tapHover) (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x80000000.toInt()
+                    else (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x35000000
+                canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
+                p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
+                p.isFakeBoldText = tapHover
+                canvas.drawText(gluteLabel, 887f, rowCY + 11f, p)
+            } else {
+                // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
+                p.color = if (tapHover) (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
+                    else (ThemeManager.GREEN and 0x00FFFFFF) or 0x35000000
+                canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
+                p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GREEN
+                p.isFakeBoldText = tapHover
+                canvas.drawText("TAP TEMPO", 887f, rowCY + 11f, p)
+            }
             p.isFakeBoldText = false
             p.textAlign = Paint.Align.LEFT
 
@@ -978,13 +1065,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             val fifthW = (uiW - 130f) / 5f
             p.textSize = 20f; p.textAlign = Paint.Align.CENTER; p.isFakeBoldText = true
 
-            // BOOM button
+            // AUTO BOX button — one-tap snap to the most rhythmic frequency
+            // band and its amplitude envelope. Renamed from BOOM after user
+            // feedback "the box is sooooo tiny"; now also sets vertical bounds.
             val boomReady = reactor?.boomReady ?: false
             p.color = if (hoveredActionButton == 127) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x80000000.toInt()
                 else if (boomReady) (ThemeManager.ORANGE and 0x00FFFFFF) or 0x40000000 else (ThemeManager.ORANGE and 0x00FFFFFF) or 0x15000000
             canvas.drawRoundRect(30f, btnY, 30f + fifthW, btnY + btnH, 10f, 10f, p)
             p.color = if (boomReady) ThemeManager.ORANGE else ThemeManager.TEXT_DIM
-            canvas.drawText("BOOM", 30f + fifthW / 2f, btnY + 33f, p)
+            canvas.drawText(if (boomReady) "AUTO BOX" else "AUTO…", 30f + fifthW / 2f, btnY + 33f, p)
 
             // VIBES button
             val vibesColor = if (hapticConnected) ThemeManager.PURPLE_DEEP else ThemeManager.PINK_SOFT

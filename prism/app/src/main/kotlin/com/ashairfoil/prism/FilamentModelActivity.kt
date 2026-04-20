@@ -115,9 +115,9 @@ class FilamentModelActivity : ComponentActivity() {
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
         "Light Height", "Shadow Dark", "Shadow Soft", "Shadow Spread",
         "BeatReactor", "Foveation", "Tex Quality", "Show Planes", "Room Track",
-        "Room Edit", "Center Here",
+        "Room Edit", "RECENTER",
         "Mark Hip", "Mark Shldr", "Mark Knee", "Reset Marks",
-        "Auto Light")
+        "Auto Light", "Mark Glute L", "Mark Glute R")
 
     // Tier2-pivot: user-marking mode. 0 = off. 1 = next laser-trigger captures
     // the hit Y as the selected model's hip anchor. 2 = shoulder. After capture
@@ -205,6 +205,17 @@ class FilamentModelActivity : ComponentActivity() {
     private var beatBaseLight = 2f
     private var beatBaseFill = 0.5f
     private var beatBaseShadow = 0.7f
+    // Tier 3.1 — lighting uses its own slow attack/release envelope on top of
+    // the reactor's snappy pct. Mimics real concert/club lighting where cans
+    // warm up over a quarter-note and fade across a bar. Default 250ms attack
+    // / 900ms release — close enough to the "hang" of halogen lamps. User
+    // feedback: "the ATTACK AND RELEASE of the LIGHTING should have a slower
+    // attack (check my screenshots) because this simulates concert/club
+    // lighting in real life".
+    @Volatile internal var lightAttackMs = 250f
+    @Volatile internal var lightReleaseMs = 900f
+    private var lightLevelSmooth = 0f
+    private var lightLevelLastNs = 0L
     private var beatWashAlpha = 0f
     @Volatile internal var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
     @Volatile internal var foveationAvailable = false
@@ -567,11 +578,25 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     /** Teleport all (non-preview) models to an arm's-length position in front of
-     *  the user. Preserves inter-model offsets + any dance anchors so the dance
-     *  survives. Used when the XR floor origin was set up in a different room. */
+     *  the user AND re-snap the floor grid under the user's feet. Preserves
+     *  inter-model offsets + any dance anchors so the dance survives. Used
+     *  when the XR reference space was set up in a different room and the
+     *  scene is sitting in the wrong place. Also drops each model to the new
+     *  floor level so they don't float after the re-snap. */
     internal fun centerModelsToView() {
         val list = sceneManager.models.filter { !it.isPreview }
-        if (list.isEmpty()) return
+        val gr = glesRenderer
+        // Floor reset — assume ~1.6m standing head height. If the user is
+        // sitting, the floor will land a bit too high, but they can still
+        // stick-adjust with right-click-drag on gridHeight afterward.
+        val newFloor = (camPosY - 1.6f).coerceIn(-3f, 3f)
+        val floorDelta = if (gr != null) newFloor - gr.gridHeight else 0f
+        gr?.gridHeight = newFloor
+        detectedFloorY = newFloor
+        if (list.isEmpty()) {
+            Log.i(TAG, "Recenter: no models, floor reset to y=${"%.2f".format(newFloor)}")
+            return
+        }
         var cx = 0f; var cz = 0f
         for (m in list) { cx += m.posX; cz += m.posZ }
         cx /= list.size; cz /= list.size
@@ -580,14 +605,17 @@ class FilamentModelActivity : ComponentActivity() {
         val targetZ = camPosZ + (camFwdZ / hLen) * 1.5f
         val dx = targetX - cx
         val dz = targetZ - cz
+        // Follow the floor: if the floor moved, slide all models by the same
+        // delta so their relationship to the ground stays intact.
+        val dy = floorDelta
         for (m in list) {
-            m.posX += dx; m.posZ += dz
-            if (m.animHasBase) { m.animBasePose[0] += dx; m.animBasePose[2] += dz }
-            if (m.animHasA) { m.animPoseA[0] += dx; m.animPoseA[2] += dz }
-            if (m.animHasB) { m.animPoseB[0] += dx; m.animPoseB[2] += dz }
+            m.posX += dx; m.posY += dy; m.posZ += dz
+            if (m.animHasBase) { m.animBasePose[0] += dx; m.animBasePose[1] += dy; m.animBasePose[2] += dz }
+            if (m.animHasA) { m.animPoseA[0] += dx; m.animPoseA[1] += dy; m.animPoseA[2] += dz }
+            if (m.animHasB) { m.animPoseB[0] += dx; m.animPoseB[1] += dy; m.animPoseB[2] += dz }
             sceneManager.updateModelTransform(m)
         }
-        Log.i(TAG, "Recentered ${list.size} model(s) to current view (Δx=${"%.2f".format(dx)} Δz=${"%.2f".format(dz)})")
+        Log.i(TAG, "Recentered ${list.size} model(s) to view (Δx=${"%.2f".format(dx)} Δy=${"%.2f".format(dy)} Δz=${"%.2f".format(dz)}); floor=${"%.2f".format(newFloor)}")
     }
 
     /** Named dance-style presets. IMPROV / SHUFFLE pick from these rather than
@@ -742,7 +770,9 @@ class FilamentModelActivity : ComponentActivity() {
 
     /** Shuffle a model's dance parameters — now picks a named style preset so
      *  motion actually looks like a style (wind / bounce / grind / twerk…)
-     *  rather than random parameter noise. */
+     *  rather than random parameter noise. Called by the SHUFFLE button and
+     *  also by IMPROV every N bars. Preserves user-customised character/glute
+     *  fields so IMPROV doesn't stomp manual tweaks on each bar boundary. */
     internal fun shuffleDance(m: SceneManager.PlacedModel) {
         // Deterministic cycle through the 7 presets so the user can walk the
         // library (TWERK, GRIND, BODY ROLL, ...) by repeated taps. Previously
@@ -751,17 +781,23 @@ class FilamentModelActivity : ComponentActivity() {
         val currentIdx = dancePresets.indexOfFirst { it.name == m.currentPresetName }
         val nextIdx = if (currentIdx < 0) 0 else (currentIdx + 1) % dancePresets.size
         val p = dancePresets[nextIdx]
-        m.danceYawDeg = p.yawDeg.coerceIn(0f, 30f)
+        // Amp fields — preserved when user has dialled in their own values.
+        // This was the "beat panel sometimes resets" bug: IMPROV re-shuffles
+        // every N bars, and pre-Tier 3.1 that silently overwrote the user's
+        // YAW/PITCH/BOB/PHYSICS dial-ins. Now IMPROV only shifts rhythm.
+        if (!m.dancingCustomized) {
+            m.danceYawDeg = p.yawDeg.coerceIn(0f, 15f)
+            m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 10f)
+            m.danceYMeters = p.bobM.coerceIn(0f, 0.04f)
+            m.physicsAmount = p.physics
+        }
         m.danceYawRate = p.yawRate
         m.danceYawPhase = p.yawPhase
-        m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 20f)
         m.dancePitchRate = p.pitchRate
         m.dancePitchPhase = p.pitchPhase
-        m.danceYMeters = p.bobM.coerceIn(0f, 0.08f)
         m.danceYRate = p.yRate
         m.danceYPhase = p.yPhase
         m.danceEase = p.ease
-        m.physicsAmount = p.physics
         // Tier2-pivot: bake biomechanical pivot heights from the preset so
         // hips actually isolate (pivot at shoulders for TWERK, shoulders stay
         // for SWAY via high roll pivot, thighs anchor for SQUAT PULSE, etc.).
@@ -770,40 +806,50 @@ class FilamentModelActivity : ComponentActivity() {
         m.rollPivotFrac = p.rollPivot
         m.counterRollPivotFrac = p.counterRollPivot
         m.counterRollGain = p.counterRollGain
-        // Tier 3 — per-preset motion character.
-        m.yawSharpness = p.yawSharp; m.yawComplexity = p.yawCmplx
-        m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
-        m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
+        // Tier 3 — per-preset motion character. Only applied when the user
+        // has NOT customised these fields; otherwise IMPROV's per-bar reshuffle
+        // would erase their tweaks. setDancePreset() (explicit style pick)
+        // still overwrites them — that's a deliberate user action.
+        if (!m.characterCustomized) {
+            m.yawSharpness = p.yawSharp; m.yawComplexity = p.yawCmplx
+            m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
+            m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
+        }
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset: ${p.name} (pP=${p.pitchPivot} rP=${p.rollPivot} crG=${p.counterRollGain})")
     }
 
     /** Set a specific preset by index 0..6 (order matches dancePresets list).
      *  Used by the PRESET cycle button to walk through presets deterministically
-     *  instead of rolling random. */
+     *  instead of rolling random. Explicit user action — clears the character
+     *  customisation lock so presets paint the full style (user can then retweak). */
     internal fun setDancePreset(m: SceneManager.PlacedModel, index: Int) {
         val i = ((index % dancePresets.size) + dancePresets.size) % dancePresets.size
         val p = dancePresets[i]
-        m.danceYawDeg = p.yawDeg.coerceIn(0f, 30f)
+        // Explicit pick → paint full preset (amps + rhythm + character).
+        m.danceYawDeg = p.yawDeg.coerceIn(0f, 15f)
         m.danceYawRate = p.yawRate
         m.danceYawPhase = p.yawPhase
-        m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 20f)
+        m.dancePitchDeg = p.pitchDeg.coerceIn(0f, 10f)
         m.dancePitchRate = p.pitchRate
         m.dancePitchPhase = p.pitchPhase
-        m.danceYMeters = p.bobM.coerceIn(0f, 0.08f)
+        m.danceYMeters = p.bobM.coerceIn(0f, 0.04f)
         m.danceYRate = p.yRate
         m.danceYPhase = p.yPhase
         m.danceEase = p.ease
         m.physicsAmount = p.physics
+        m.dancingCustomized = false
         m.pivotEnabled = true
         m.pitchPivotFrac = p.pitchPivot
         m.rollPivotFrac = p.rollPivot
         m.counterRollPivotFrac = p.counterRollPivot
         m.counterRollGain = p.counterRollGain
-        // Tier 3 — per-preset motion character.
+        // Tier 3 — per-preset motion character. Explicit pick → paint the
+        // preset and clear the customised flag so IMPROV can evolve from here.
         m.yawSharpness = p.yawSharp; m.yawComplexity = p.yawCmplx
         m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
         m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
+        m.characterCustomized = false
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset (direct): ${p.name}")
     }
@@ -1381,6 +1427,24 @@ class FilamentModelActivity : ComponentActivity() {
 
                                 val pct = reactor.boxFillPct
                                 val bi = beatIntensity
+
+                                // Concert-light envelope: slow attack, slower release.
+                                // Only the LIGHTING uses this — haptic + dance keep the
+                                // reactor's snap. Track real wall time so values decay
+                                // correctly even when this code path runs at variable dt.
+                                run {
+                                    val nowNs = System.nanoTime()
+                                    val dtSec = if (lightLevelLastNs > 0L)
+                                        ((nowNs - lightLevelLastNs) / 1_000_000_000f).coerceIn(0.001f, 0.1f)
+                                        else 0.016f
+                                    lightLevelLastNs = nowNs
+                                    val tau = if (pct > lightLevelSmooth)
+                                        (lightAttackMs / 1000f).coerceAtLeast(0.01f)
+                                        else (lightReleaseMs / 1000f).coerceAtLeast(0.01f)
+                                    val alpha = (1f - kotlin.math.exp(-dtSec / tau)).coerceIn(0f, 1f)
+                                    lightLevelSmooth += (pct - lightLevelSmooth) * alpha
+                                }
+                                val lightPct = lightLevelSmooth
                                 val c = reactor.getBeatColor()
                                 val bass = reactor.bass
                                 // Musical "breath" — 0..1 loudness envelope. Scales beat-driven
@@ -1436,16 +1500,19 @@ class FilamentModelActivity : ComponentActivity() {
                                     // Shadows soften proportionally — floor at 20% of base so
                                     // the beat wash can't zero or invert shadow darkness when the
                                     // user cranks beatIntensity > 2.5. Wash amount tracks musical
-                                    // loudness (ml) so quiet passages don't push shadows as hard.
-                                    gr.shadowDarkness = (beatBaseShadow * (1f - pct * 0.4f * bi * ml))
+                                    // loudness (ml) AND the slow-smoothed lightPct so we get
+                                    // concert-style hang instead of reactor's snappy attack.
+                                    gr.shadowDarkness = (beatBaseShadow * (1f - lightPct * 0.4f * bi * ml))
                                         .coerceAtLeast(beatBaseShadow * 0.2f)
                                 }
 
                                 // Bloom: direct from box fill, scaled by musical level so quiet
-                                // passages don't bloom at full magnitude.
+                                // passages don't bloom at full magnitude. Uses the slow lightPct
+                                // envelope (lightAttackMs / lightReleaseMs) so kicks ramp in like
+                                // a stage blinder warming up, not a snappy digital flash.
                                 if (gr.bloomEnabled) {
-                                    gr.bloomThreshold = (0.8f - pct * bi * 0.3f * ml).coerceAtLeast(0.2f)
-                                    gr.bloomIntensity = 0.3f + pct * bi * 0.5f * ml
+                                    gr.bloomThreshold = (0.8f - lightPct * bi * 0.3f * ml).coerceAtLeast(0.2f)
+                                    gr.bloomIntensity = 0.3f + lightPct * bi * 0.5f * ml
                                 }
 
                                 // Room wash: direct from box fill
@@ -1527,6 +1594,8 @@ class FilamentModelActivity : ComponentActivity() {
                                 gr.bloomThreshold = 0.8f
                                 gr.bloomIntensity = 0.3f
                                 beatBaseStored = false
+                                lightLevelSmooth = 0f
+                                lightLevelLastNs = 0L
                                 // Safety: zero haptic output when reactor disabled
                                 if (hapticConnected) {
                                     val hm2 = hapticManager
@@ -1623,39 +1692,159 @@ class FilamentModelActivity : ComponentActivity() {
                                     if (inputHandler.grabbing && i == selectedModelIndex) continue
 
                                     // ── Tier 3 Feature 4: glute deformation sync ──
-                                    // Runs BEFORE the dance check so a non-dancing model with a
-                                    // positive basePush still gets the static push. Bass kicks
-                                    // spike the push amount; exp decay to baseline over ~250ms.
-                                    // Positions auto-derive from bbox + hip mark — no separate
-                                    // glute marking flow needed for the MVP.
+                                    // Runs BEFORE the dance check so a non-dancing model with
+                                    // positive basePush still gets a static push. On every beat,
+                                    // the push ramps up over `reactor.attackMs` then exp-decays
+                                    // over `reactor.releaseMs`, so the pop lives inside the same
+                                    // attack/release envelope as kicks/haptics/bloom — the whole
+                                    // reactor breathes in unison. `musicalLevel` scales each hit
+                                    // so breakdowns don't blast the same magnitude as the drop.
+                                    //
+                                    // Per-side: gluteLeftEnabled / gluteRightEnabled gate A (left)
+                                    // and B (right) independently. gluteAltStep fires them on
+                                    // alternating beats for a true walking-jiggle pattern.
+                                    //
+                                    // A positions = left glute (bounds X - sideOff).
+                                    // B positions = right glute (bounds X + sideOff).
                                     val gluteGpu = glesRenderer?.getModel(m.gpuModelId)
                                     if (gluteGpu != null) {
                                         if (m.gluteBasePush > 0.0001f) {
-                                            if (snap.beatCounter != m.gluteLastBeatSeen && snap.beatCounter > 0L) {
-                                                m.gluteKickLastMs = snap.nowMs
-                                                m.gluteLastBeatSeen = snap.beatCounter
+                                            // Pulse trigger: subdivision + bar-locked syncopation
+                                            // when BPM is locked; legacy beatCounter fallback when
+                                            // BPM is free-running.
+                                            //
+                                            // gluteRate chooses the grid (1 = per beat, 2 = 8ths,
+                                            // 4 = 16ths). Syncopation (pulled from the SYNCOPATION
+                                            // slider's avg-complexity value) gives each bar a
+                                            // deterministic "random" mask — different bars feel
+                                            // different, same bar replayed is identical.
+                                            val beatPeriodMsG = if (snap.autoBpm && snap.bpm > 0f) 60000f / snap.bpm else 0f
+                                            val syncAmt = ((m.yawComplexity + m.pitchComplexity + m.bobComplexity) / 3f).coerceIn(0f, 1f)
+                                            // BOOTY SHAKER mode: rapid L-R alternation on last beat
+                                            // of each bar, silent on first 3 beats. Overrides the
+                                            // regular subdivision/syncopation path when active.
+                                            val useShaker = m.gluteShakerMode && beatPeriodMsG > 0f
+                                            val useSubdivision = !useShaker && beatPeriodMsG > 0f && (m.gluteRate > 1 || syncAmt > 0.01f)
+                                            if (useShaker) {
+                                                val shakeRate = 8 // 8 subs/beat = 1/32 note
+                                                val subBeatMs = beatPeriodMsG / shakeRate
+                                                val subBeatNow = (snap.nowMs / subBeatMs).toLong()
+                                                if (subBeatNow != m.gluteLastSubBeat) {
+                                                    if (m.gluteLastSubBeat != 0L) {
+                                                        val subsPerBar = (shakeRate * 4).toLong() // 32
+                                                        val posInBar = subBeatNow % subsPerBar
+                                                        // Burst window = last beat (positions 24..31)
+                                                        val inBurst = posInBar >= 24L
+                                                        if (inBurst) {
+                                                            m.gluteKickLastMs = snap.nowMs
+                                                            val leftTurn = (subBeatNow and 1L) == 0L
+                                                            m.gluteShakerSideL = leftTurn
+                                                            m.gluteShakerSideR = !leftTurn
+                                                        } else {
+                                                            m.gluteShakerSideL = false
+                                                            m.gluteShakerSideR = false
+                                                        }
+                                                    }
+                                                    m.gluteLastSubBeat = subBeatNow
+                                                }
+                                            } else if (useSubdivision) {
+                                                val subBeatMs = beatPeriodMsG / m.gluteRate
+                                                val subBeatNow = (snap.nowMs / subBeatMs).toLong()
+                                                if (subBeatNow != m.gluteLastSubBeat) {
+                                                    // Skip the very first sub-beat transition so
+                                                    // we don't fire spuriously on mode toggle.
+                                                    if (m.gluteLastSubBeat != 0L) {
+                                                        val isDownBeat = (subBeatNow % m.gluteRate.toLong()) == 0L
+                                                        val subsPerBar = (m.gluteRate * 4).toLong()
+                                                        val posInBar = (subBeatNow % subsPerBar)
+                                                        val barIdx = subBeatNow / subsPerBar
+                                                        // Bar-locked hash: golden-ratio constant ⊕ position.
+                                                        val hash = ((barIdx * 2654435761L) xor (posInBar * 40503L)) and 0xFFFFL
+                                                        val fireSync = syncAmt > 0.01f &&
+                                                            hash < (syncAmt * 65535f).toLong()
+                                                        if (isDownBeat || fireSync) {
+                                                            m.gluteKickLastMs = snap.nowMs
+                                                        }
+                                                    }
+                                                    m.gluteLastSubBeat = subBeatNow
+                                                }
+                                            } else {
+                                                if (snap.beatCounter != m.gluteLastBeatSeen && snap.beatCounter > 0L) {
+                                                    m.gluteKickLastMs = snap.nowMs
+                                                    m.gluteLastBeatSeen = snap.beatCounter
+                                                }
                                             }
                                             val elapsedMs = if (m.gluteKickLastMs > 0L) (snap.nowMs - m.gluteKickLastMs).toFloat() else 1_000_000f
-                                            val spike = kotlin.math.exp(-elapsedMs * 3f / 250f).coerceIn(0f, 1f)
-                                            val boost = 1f + m.gluteShakeIntensity * spike
-                                            m.gluteCurrentPush = m.gluteBasePush * boost
-                                            val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
-                                            val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
-                                            val hipY = gluteGpu.boundsMinY + hipFrac * height
-                                            val sideOff = 0.18f * gluteGpu.boundsRadius
-                                            val rearOff = 0.10f * gluteGpu.boundsRadius
-                                            gluteGpu.gluteAPos[0] = gluteGpu.boundsCenterX - sideOff
-                                            gluteGpu.gluteAPos[1] = hipY
-                                            gluteGpu.gluteAPos[2] = gluteGpu.boundsCenterZ - rearOff
-                                            gluteGpu.gluteBPos[0] = gluteGpu.boundsCenterX + sideOff
-                                            gluteGpu.gluteBPos[1] = hipY
-                                            gluteGpu.gluteBPos[2] = gluteGpu.boundsCenterZ - rearOff
-                                            gluteGpu.gluteARadius = m.gluteRadius
-                                            gluteGpu.gluteBRadius = m.gluteRadius
-                                            gluteGpu.gluteAPush = m.gluteCurrentPush
-                                            gluteGpu.gluteBPush = m.gluteCurrentPush
+                                            // Decay time: prefer beat-period-derived when BPM is
+                                            // locked so the pop naturally hangs for most of the
+                                            // beat and resets just in time for the next kick. Falls
+                                            // back to reactor.releaseMs if no BPM lock.
+                                            val beatPeriodMs = if (snap.autoBpm && snap.bpm > 0f) 60000f / snap.bpm else 0f
+                                            val atkMs = ar.attackMs.coerceAtLeast(4f)
+                                            val relMs = if (beatPeriodMs > 0f) (beatPeriodMs * 0.8f).coerceIn(80f, 900f)
+                                                else ar.releaseMs.coerceAtLeast(40f)
+                                            val env = when {
+                                                elapsedMs < atkMs -> elapsedMs / atkMs
+                                                else -> kotlin.math.exp(-(elapsedMs - atkMs) * 3f / relMs)
+                                            }.coerceIn(0f, 1f)
+                                            val shake = m.gluteShakeIntensity * env * snap.musicalLevel
+                                            val pushAmt = m.gluteBasePush * (1f + shake)
+                                            m.gluteCurrentPush = pushAmt
+                                            // Per-side gating. Shaker mode uses its per-subBeat
+                                            // side flags (set above). Non-shaker: alt-step fires L
+                                            // on even beats and R on odd; otherwise both fire.
+                                            val beatIsEven = (snap.beatCounter % 2L) == 0L
+                                            val leftFires = if (m.gluteShakerMode) m.gluteShakerSideL
+                                                else m.gluteLeftEnabled && (!m.gluteAltStep || beatIsEven)
+                                            val rightFires = if (m.gluteShakerMode) m.gluteShakerSideR
+                                                else m.gluteRightEnabled && (!m.gluteAltStep || !beatIsEven)
+                                            val pushL = if (leftFires) pushAmt else m.gluteBasePush  // baseline when gated
+                                            val pushR = if (rightFires) pushAmt else m.gluteBasePush
+                                            m.gluteLeftCurrentPush = pushL
+                                            m.gluteRightCurrentPush = pushR
+                                            // Glute positions — prefer explicit user marks (world
+                                            // raycast captured in model-local space); fall back to
+                                            // bbox-derived estimate. The estimate was wrong for
+                                            // models whose forward isn't local +Z — now we let the
+                                            // user tap exactly where the glutes sit.
+                                            if (!m.markedGluteL_x.isNaN()) {
+                                                gluteGpu.gluteAPos[0] = m.markedGluteL_x
+                                                gluteGpu.gluteAPos[1] = m.markedGluteL_y
+                                                gluteGpu.gluteAPos[2] = m.markedGluteL_z
+                                            } else {
+                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
+                                                val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
+                                                val hipY = gluteGpu.boundsMinY + hipFrac * height
+                                                val sideOff = 0.18f * gluteGpu.boundsRadius
+                                                val rearOff = 0.10f * gluteGpu.boundsRadius
+                                                gluteGpu.gluteAPos[0] = gluteGpu.boundsCenterX - sideOff
+                                                gluteGpu.gluteAPos[1] = hipY
+                                                gluteGpu.gluteAPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                            }
+                                            if (!m.markedGluteR_x.isNaN()) {
+                                                gluteGpu.gluteBPos[0] = m.markedGluteR_x
+                                                gluteGpu.gluteBPos[1] = m.markedGluteR_y
+                                                gluteGpu.gluteBPos[2] = m.markedGluteR_z
+                                            } else {
+                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
+                                                val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
+                                                val hipY = gluteGpu.boundsMinY + hipFrac * height
+                                                val sideOff = 0.18f * gluteGpu.boundsRadius
+                                                val rearOff = 0.10f * gluteGpu.boundsRadius
+                                                gluteGpu.gluteBPos[0] = gluteGpu.boundsCenterX + sideOff
+                                                gluteGpu.gluteBPos[1] = hipY
+                                                gluteGpu.gluteBPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                            }
+                                            // In shaker mode both radii stay active so the static
+                                            // push renders on both cheeks between burst pops.
+                                            gluteGpu.gluteARadius = if (m.gluteShakerMode || m.gluteLeftEnabled) m.gluteRadius else 0f
+                                            gluteGpu.gluteBRadius = if (m.gluteShakerMode || m.gluteRightEnabled) m.gluteRadius else 0f
+                                            gluteGpu.gluteAPush = pushL
+                                            gluteGpu.gluteBPush = pushR
                                         } else {
                                             m.gluteCurrentPush = 0f
+                                            m.gluteLeftCurrentPush = 0f
+                                            m.gluteRightCurrentPush = 0f
                                             gluteGpu.gluteARadius = 0f
                                             gluteGpu.gluteBRadius = 0f
                                             gluteGpu.gluteAPush = 0f
@@ -1712,7 +1901,12 @@ class FilamentModelActivity : ComponentActivity() {
                                         // Quarter-scale intensity internally so the UI's "1.0x" feels
                                         // like the previous "0.25x" (which the user settled on as correct).
                                         // Labels stay familiar; the gain just shifted down two notches.
-                                        val effInt = m.danceIntensity * 0.25f
+                                        // Tier 3 — user felt 5x was too timid ("1x should be what
+                                        // 2x is"). Doubled the internal multiplier so every labeled
+                                        // step hits roughly twice as hard. Label 1.0x now ≈ old 2.0x,
+                                        // and the new 10.0x slot (see InputHandler cycle) gives real
+                                        // blowout headroom.
+                                        val effInt = m.danceIntensity * 0.5f
                                         val fbmYaw = fbmMod(tSec, seed, 0f)
                                         val fbmPitch = fbmMod(tSec, seed, 1.7f)
                                         val fbmBob = fbmMod(tSec, seed, 3.1f)
@@ -1877,6 +2071,34 @@ class FilamentModelActivity : ComponentActivity() {
                                                 bob + bobC * 0.4f * (g01 * g01 * (3f - 2f * g01))
                                             } else bob
                                             py += m.danceYMeters * effInt * ampGain * fbmBob * bassGate * proxMacro * gazeGain * bobFinal
+
+                                            // ── Tier 4: knee bend driven by bob phase ──
+                                            // On skinned rigs, rotate L_Calf + R_Calf around their local X axis.
+                                            // phase01 = 0 at bob-top (straight legs), 1 at bob-bottom (max flex).
+                                            // effInt caps the flex so INTENSITY controls the squat depth.
+                                            val gpuM = glesRenderer?.getModel(m.gpuModelId)
+                                            val skel = gpuM?.skeleton
+                                            if (gpuM?.isSkinned == true && skel != null) {
+                                                if (m.kneeLJointIdx == Int.MIN_VALUE) {
+                                                    m.kneeLJointIdx = skel.indexOf("L_Calf")
+                                                    m.kneeRJointIdx = skel.indexOf("R_Calf")
+                                                    android.util.Log.i(TAG, "Knee joints cached: L=${m.kneeLJointIdx} R=${m.kneeRJointIdx}")
+                                                }
+                                                if (m.kneeLJointIdx >= 0 && m.kneeRJointIdx >= 0) {
+                                                    val maxKneeDeg = 40f
+                                                    val kneeDeg = phase01 * maxKneeDeg * effInt.coerceIn(0f, 1f) * bassGate
+                                                    skel.setJointEulerX(m.kneeLJointIdx, kneeDeg)
+                                                    skel.setJointEulerX(m.kneeRJointIdx, kneeDeg)
+                                                }
+                                            }
+                                        } else {
+                                            // Bob off: restore knees to bind-pose if we previously drove them.
+                                            val gpuM = glesRenderer?.getModel(m.gpuModelId)
+                                            val skel = gpuM?.skeleton
+                                            if (gpuM?.isSkinned == true && skel != null && m.kneeLJointIdx != Int.MIN_VALUE) {
+                                                if (m.kneeLJointIdx >= 0) skel.resetJointToBind(m.kneeLJointIdx)
+                                                if (m.kneeRJointIdx >= 0) skel.resetJointToBind(m.kneeRJointIdx)
+                                            }
                                         }
 
                                         // ROLL around LOCAL Z (Tier1.5) — banking axis. Completes the 3-axis
@@ -2296,6 +2518,35 @@ class FilamentModelActivity : ComponentActivity() {
                                         gr.renderFacingMarker(leftProj, leftView, m.posX, projY, m.posZ, 0.22f, 1f, 1f, 0.1f)
                                     }
                                 }
+                                // Glute L/R markers — render when user is adjusting so
+                                // they can SEE where the ass cheeks are set. L = cyan,
+                                // R = magenta. Positions are model-local, transformed
+                                // to world via the model's full pose (pos + rot + scale).
+                                val showGluteMarkers = characterMode ||
+                                    markAnatomyMode == 4 || markAnatomyMode == 5 ||
+                                    m.gluteBasePush > 0.0001f
+                                if (showGluteMarkers) {
+                                    val localL = floatArrayOf(
+                                        gmF.gluteAPos[0] * m.scale,
+                                        gmF.gluteAPos[1] * m.scale,
+                                        gmF.gluteAPos[2] * m.scale)
+                                    val localR = floatArrayOf(
+                                        gmF.gluteBPos[0] * m.scale,
+                                        gmF.gluteBPos[1] * m.scale,
+                                        gmF.gluteBPos[2] * m.scale)
+                                    val qModel = floatArrayOf(m.rotX, m.rotY, m.rotZ, m.rotW)
+                                    val worldL = gr.rotateVecByQuat(localL, qModel)
+                                    val worldR = gr.rotateVecByQuat(localR, qModel)
+                                    val pulse = 0.85f + 0.15f * kotlin.math.sin(
+                                        (System.currentTimeMillis() % 1000L) / 1000f * 2f * Math.PI.toFloat())
+                                    val sz = 0.06f * pulse
+                                    gr.renderFacingMarker(leftProj, leftView,
+                                        m.posX + worldL[0], m.posY + worldL[1], m.posZ + worldL[2],
+                                        sz, 0.2f, 0.95f, 1f)  // L = cyan
+                                    gr.renderFacingMarker(leftProj, leftView,
+                                        m.posX + worldR[0], m.posY + worldR[1], m.posZ + worldR[2],
+                                        sz, 1f, 0.25f, 0.85f) // R = magenta
+                                }
                             }
                             if (ih.laserActive) gr.renderLaser(leftTexId, width, height, leftProj, leftView,
                                 ih.laserHandPos, ih.laserAimRot, ih.hitDistance,
@@ -2351,6 +2602,32 @@ class FilamentModelActivity : ComponentActivity() {
                                             m.posY + (gmF.boundsMinY + hLocal) * m.scale)
                                         gr.renderFacingMarker(rightProj, rightView, m.posX, projY, m.posZ, 0.22f, 1f, 1f, 0.1f)
                                     }
+                                }
+                                // Glute L/R markers (see left-eye block for rationale).
+                                val showGluteMarkersR = characterMode ||
+                                    markAnatomyMode == 4 || markAnatomyMode == 5 ||
+                                    m.gluteBasePush > 0.0001f
+                                if (showGluteMarkersR) {
+                                    val localL = floatArrayOf(
+                                        gmF.gluteAPos[0] * m.scale,
+                                        gmF.gluteAPos[1] * m.scale,
+                                        gmF.gluteAPos[2] * m.scale)
+                                    val localR = floatArrayOf(
+                                        gmF.gluteBPos[0] * m.scale,
+                                        gmF.gluteBPos[1] * m.scale,
+                                        gmF.gluteBPos[2] * m.scale)
+                                    val qModel = floatArrayOf(m.rotX, m.rotY, m.rotZ, m.rotW)
+                                    val worldL = gr.rotateVecByQuat(localL, qModel)
+                                    val worldR = gr.rotateVecByQuat(localR, qModel)
+                                    val pulse = 0.85f + 0.15f * kotlin.math.sin(
+                                        (System.currentTimeMillis() % 1000L) / 1000f * 2f * Math.PI.toFloat())
+                                    val sz = 0.06f * pulse
+                                    gr.renderFacingMarker(rightProj, rightView,
+                                        m.posX + worldL[0], m.posY + worldL[1], m.posZ + worldL[2],
+                                        sz, 0.2f, 0.95f, 1f)
+                                    gr.renderFacingMarker(rightProj, rightView,
+                                        m.posX + worldR[0], m.posY + worldR[1], m.posZ + worldR[2],
+                                        sz, 1f, 0.25f, 0.85f)
                                 }
                             }
                             if (ih.laserActive) gr.renderLaser(rightTexId, width, height, rightProj, rightView,

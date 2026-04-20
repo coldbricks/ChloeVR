@@ -268,8 +268,50 @@ class SceneManager(
         var gluteRadius: Float = 0.15f,       // meters influence radius
         var gluteShakeIntensity: Float = 0.5f,// 0..1 kick-spike multiplier
         var gluteCurrentPush: Float = 0f,     // per-frame (basePush × boost)
+        var gluteLeftCurrentPush: Float = 0f, // per-side scratch (alt-step support)
+        var gluteRightCurrentPush: Float = 0f,
         var gluteKickLastMs: Long = 0L,       // timestamp of most recent spike
-        var gluteLastBeatSeen: Long = 0L      // tracks snap.beatCounter
+        var gluteLastBeatSeen: Long = 0L,     // tracks snap.beatCounter
+        // Tier 3.2 — glute rhythm controls.
+        // gluteRate: 1 = every beat, 2 = every 8th note, 4 = every 16th.
+        // When > 1, we use a sub-beat counter (BPM-derived) instead of the
+        // blunt snap.beatCounter so the pop fires at the right subdivision.
+        var gluteRate: Int = 1,
+        var gluteLastSubBeat: Long = 0L,
+        // BOOTY SHAKER — override mode. When true, fires rapid L-R-L-R
+        // alternation during the last beat of every 4-beat bar (1/32 rate →
+        // 8 pops in one beat, then 3 beats silent). Per-frame scratch fields
+        // hold which side should fire THIS frame.
+        var gluteShakerMode: Boolean = false,
+        var gluteShakerSideL: Boolean = false,
+        var gluteShakerSideR: Boolean = false,
+        // Tier 4 — cached joint indices for the dance driver. -1 = looked up
+        // and absent from the rig. Int.MIN_VALUE = not yet cached.
+        var kneeLJointIdx: Int = Int.MIN_VALUE,
+        var kneeRJointIdx: Int = Int.MIN_VALUE,
+        // Per-side enables — lets the user isolate glute L or R, or run alt-step.
+        var gluteLeftEnabled: Boolean = true,
+        var gluteRightEnabled: Boolean = true,
+        var gluteAltStep: Boolean = false,    // L on even beat, R on odd
+        // Set true when the user drags a CHARACTER-panel slider (sharpness /
+        // complexity). While true, shuffleDance (auto IMPROV) preserves
+        // the user's custom values. setDancePreset (explicit pick) clears it.
+        var characterCustomized: Boolean = false,
+        // Set true when the user drags a main-panel AMP slider (YAW, PITCH,
+        // BOB, PHYSICS). IMPROV's per-bar shuffleDance then leaves the amp
+        // fields alone — only rates/phases/easing shuffle. Explicit preset
+        // pick via setDancePreset clears the flag.
+        var dancingCustomized: Boolean = false,
+        // Explicit glute marks (model-local mesh coordinates — same frame
+        // as the vertex shader's aPosition). When set, override the auto-
+        // derived bbox approximation that put glutes in the wrong place on
+        // models whose "front" isn't local +Z. NaN = unmarked.
+        var markedGluteL_x: Float = Float.NaN,
+        var markedGluteL_y: Float = Float.NaN,
+        var markedGluteL_z: Float = Float.NaN,
+        var markedGluteR_x: Float = Float.NaN,
+        var markedGluteR_y: Float = Float.NaN,
+        var markedGluteR_z: Float = Float.NaN
     )
 
     /** Easing curves available for dance motion — mirrors ShapesXR's options. */

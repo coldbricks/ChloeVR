@@ -19,6 +19,12 @@ class GlesModelRenderer {
         const val GIZMO_LENGTH = 0.25f
         const val GIZMO_HIT_RADIUS = 0.04f
         const val LASER_BASE_LENGTH = 5.0f
+        // Tier 4 — must match the `mat4 uJoint[N]` size in VERTEX_SHADER and
+        // SHADOW_VERTEX_SHADER. 64 * 64 bytes = 4KB per model UBO. std140
+        // guarantees 16KB minimum — we're well under.
+        const val MAX_JOINTS_SHADER = 64
+        // Shared joint UBO binding point, referenced by both programs.
+        const val JOINT_UBO_BINDING = 0
         private val DEFAULT_LASER_COLOR = floatArrayOf(0f, 0.8f, 1f)
         private val GIZMO_AXES = arrayOf(
             floatArrayOf(1f, 0f, 0f),
@@ -72,7 +78,19 @@ class GlesModelRenderer {
         var gluteARadius: Float = 0f,
         var gluteBRadius: Float = 0f,
         var gluteAPush: Float = 0f,
-        var gluteBPush: Float = 0f
+        var gluteBPush: Float = 0f,
+        // Tier 4 — skeletal skinning state. Populated by loadGlb() when the
+        // GLB contains a skin (skins[0].joints + inverseBindMatrices + the
+        // mesh primitive's JOINTS_0 + WEIGHTS_0 attributes). If any piece is
+        // missing, isSkinned stays false and the vertex shader's skin block
+        // is gated off via the uSkinned uniform. All Tier 3 infrastructure
+        // (glute deform, rigid-body dance) continues to work on unskinned
+        // meshes — skinning is purely additive.
+        var isSkinned: Boolean = false,
+        var vboJoints: Int = 0,        // JOINTS_0 (UNSIGNED_BYTE vec4)
+        var vboWeights: Int = 0,       // WEIGHTS_0 (FLOAT vec4)
+        var uboJoints: Int = 0,        // per-model std140 UBO holding joint palette
+        var skeleton: com.ashairfoil.prism.scene.SkeletonRuntime? = null
     )
 
     data class ShadowPlane(
@@ -212,6 +230,11 @@ class GlesModelRenderer {
     private var uGluteBRadius = -1
     private var uGluteAPush = -1
     private var uGluteBPush = -1
+    // Tier 4 — skinning uniforms (main + shadow programs)
+    private var uSkinned = -1
+    private var uShadowDepthSkinned = -1
+    // Scratch palette buffer for UBO upload — sized for MAX_JOINTS_SHADER.
+    private val jointPaletteScratch = FloatArray(MAX_JOINTS_SHADER * 16)
     // PBR map uniforms
     private var uHasNormalMap = -1
     private var uNormalMap = -1
@@ -358,6 +381,12 @@ class GlesModelRenderer {
         uGluteBRadius = GLES30.glGetUniformLocation(programId, "uGluteBRadius")
         uGluteAPush = GLES30.glGetUniformLocation(programId, "uGluteAPush")
         uGluteBPush = GLES30.glGetUniformLocation(programId, "uGluteBPush")
+        // Tier 4 — skinning uniforms + UBO block binding
+        uSkinned = GLES30.glGetUniformLocation(programId, "uSkinned")
+        val mainJointsBlock = GLES30.glGetUniformBlockIndex(programId, "Joints")
+        if (mainJointsBlock != GLES30.GL_INVALID_INDEX) {
+            GLES30.glUniformBlockBinding(programId, mainJointsBlock, JOINT_UBO_BINDING)
+        }
 
         // Main FBO
         val fboBuf = intArrayOf(0)
@@ -371,6 +400,11 @@ class GlesModelRenderer {
         shadowDepthProgramId = createProgram(SHADOW_VERTEX_SHADER, SHADOW_FRAGMENT_SHADER)
         if (shadowDepthProgramId == 0) { Log.e(TAG, "Failed to create shadow shader"); return false }
         uShadowDepthMVP = GLES30.glGetUniformLocation(shadowDepthProgramId, "uMVP")
+        uShadowDepthSkinned = GLES30.glGetUniformLocation(shadowDepthProgramId, "uSkinned")
+        val shadowJointsBlock = GLES30.glGetUniformBlockIndex(shadowDepthProgramId, "Joints")
+        if (shadowJointsBlock != GLES30.GL_INVALID_INDEX) {
+            GLES30.glUniformBlockBinding(shadowDepthProgramId, shadowJointsBlock, JOINT_UBO_BINDING)
+        }
         initShadowMap()
 
         // Color wash overlay
@@ -960,6 +994,203 @@ class GlesModelRenderer {
             model.emissiveTexId = loadGltfTex(emissiveTexIdx, "Emissive map")
             model.hasNormalMap = model.normalMapTexId != 0
 
+            // ── Tier 4: SKIN PARSE ─────────────────────────────────────────
+            // Extract joint indices + weights + bind pose from skins[0]. If
+            // anything is missing the model falls back to unskinned rendering
+            // and Tier 3 rigid-body dance still works.
+            //
+            // Simplification vs full glTF compliance: we assume every ancestor
+            // of a joint in the node tree is ALSO a joint (which is true for
+            // Tripo v2.5+ rigs — Thigh/Calf/Foot are all joints). Old rigs
+            // with intermediate non-joint nodes between joints will render
+            // with slight skeleton drift; fine for unskinned fallback.
+            var jointIndicesBytes: ByteArray? = null
+            var jointWeightsFloats: FloatArray? = null
+            if (json.has("skins") && attrs.has("JOINTS_0") && attrs.has("WEIGHTS_0")) {
+                try {
+                    val skinsArr = json.getJSONArray("skins")
+                    if (skinsArr.length() > 0) {
+                        val skinObj = skinsArr.getJSONObject(0)
+                        val jointNodes = skinObj.getJSONArray("joints")
+                        val jointCount = jointNodes.length()
+                        Log.i(TAG, "Tier 4 skin: $jointCount joints detected")
+
+                        // ── JOINTS_0 (per-vert 4 joint indices) ──
+                        val jAccIdx = attrs.getInt("JOINTS_0")
+                        val jAcc = accessors.getJSONObject(jAccIdx)
+                        val jCompType = jAcc.getInt("componentType")
+                        val jCnt = jAcc.getInt("count")
+                        val jBvIdx = jAcc.getInt("bufferView")
+                        val (jOff, _) = bv(jBvIdx)
+                        jointIndicesBytes = ByteArray(jCnt * 4)
+                        when (jCompType) {
+                            5121 -> { // UNSIGNED_BYTE (Tripo default)
+                                System.arraycopy(glbBytes, jOff, jointIndicesBytes, 0, jCnt * 4)
+                            }
+                            5123 -> { // UNSIGNED_SHORT — decimate to byte (assume <256 joints)
+                                for (i in 0 until jCnt) {
+                                    for (c in 0 until 4) {
+                                        val lo = glbBytes[jOff + i * 8 + c * 2].toInt() and 0xFF
+                                        val hi = glbBytes[jOff + i * 8 + c * 2 + 1].toInt() and 0xFF
+                                        val jn = ((hi shl 8) or lo).coerceAtMost(255)
+                                        jointIndicesBytes!![i * 4 + c] = jn.toByte()
+                                    }
+                                }
+                            }
+                            else -> {
+                                Log.e(TAG, "Unsupported JOINTS_0 componentType $jCompType")
+                                jointIndicesBytes = null
+                            }
+                        }
+
+                        // ── WEIGHTS_0 (per-vert 4 weights) ──
+                        val wAccIdx = attrs.getInt("WEIGHTS_0")
+                        val wAcc = accessors.getJSONObject(wAccIdx)
+                        val wCompType = wAcc.getInt("componentType")
+                        val wCnt = wAcc.getInt("count")
+                        val wBvIdx = wAcc.getInt("bufferView")
+                        val (wOff, _) = bv(wBvIdx)
+                        jointWeightsFloats = FloatArray(wCnt * 4)
+                        when (wCompType) {
+                            5126 -> { // FLOAT (Tripo default)
+                                val fb = extractFloats(glbBytes, wOff, wCnt * 4)
+                                fb.position(0)
+                                fb.get(jointWeightsFloats!!)
+                            }
+                            5121 -> { // UNSIGNED_BYTE normalized
+                                for (i in 0 until wCnt * 4) {
+                                    jointWeightsFloats!![i] = (glbBytes[wOff + i].toInt() and 0xFF) / 255f
+                                }
+                            }
+                            5123 -> { // UNSIGNED_SHORT normalized
+                                for (i in 0 until wCnt * 4) {
+                                    val lo = glbBytes[wOff + i * 2].toInt() and 0xFF
+                                    val hi = glbBytes[wOff + i * 2 + 1].toInt() and 0xFF
+                                    jointWeightsFloats!![i] = ((hi shl 8) or lo) / 65535f
+                                }
+                            }
+                            else -> {
+                                Log.e(TAG, "Unsupported WEIGHTS_0 componentType $wCompType")
+                                jointWeightsFloats = null
+                            }
+                        }
+
+                        // ── Inverse-bind matrices (one 4x4 per joint) ──
+                        val ibmAccIdx = skinObj.optInt("inverseBindMatrices", -1)
+                        val invBind = FloatArray(jointCount * 16)
+                        if (ibmAccIdx >= 0) {
+                            val ibmAcc = accessors.getJSONObject(ibmAccIdx)
+                            val ibmBvIdx = ibmAcc.getInt("bufferView")
+                            val (ibmOff, _) = bv(ibmBvIdx)
+                            val ibmFb = extractFloats(glbBytes, ibmOff, jointCount * 16)
+                            ibmFb.position(0)
+                            ibmFb.get(invBind)
+                        } else {
+                            for (jj in 0 until jointCount) android.opengl.Matrix.setIdentityM(invBind, jj * 16)
+                        }
+
+                        // ── Node hierarchy + bind-pose local transforms ──
+                        val nodesArr = json.getJSONArray("nodes")
+                        val nodeParent = IntArray(nodesArr.length()) { -1 }
+                        for (nIdx in 0 until nodesArr.length()) {
+                            val node = nodesArr.getJSONObject(nIdx)
+                            if (node.has("children")) {
+                                val ch = node.getJSONArray("children")
+                                for (ci in 0 until ch.length()) nodeParent[ch.getInt(ci)] = nIdx
+                            }
+                        }
+                        val nodeToJoint = HashMap<Int, Int>(jointCount * 2)
+                        for (jj in 0 until jointCount) nodeToJoint[jointNodes.getInt(jj)] = jj
+
+                        val parents = IntArray(jointCount) { -1 }
+                        val bindLocal = FloatArray(jointCount * 16)
+                        val names = Array(jointCount) { "" }
+                        val scratchTRS = FloatArray(16)
+                        val scratchR = FloatArray(16)
+                        for (jj in 0 until jointCount) {
+                            val nIdx = jointNodes.getInt(jj)
+                            val node = nodesArr.getJSONObject(nIdx)
+                            names[jj] = node.optString("name", "joint$jj")
+
+                            // Walk up the node tree to find nearest joint ancestor
+                            var walk = nodeParent[nIdx]
+                            while (walk >= 0 && !nodeToJoint.containsKey(walk)) walk = nodeParent[walk]
+                            parents[jj] = if (walk >= 0) nodeToJoint[walk]!! else -1
+
+                            // Bind-pose local: matrix OR compose(T, R, S)
+                            if (node.has("matrix")) {
+                                val mArr = node.getJSONArray("matrix")
+                                for (k in 0 until 16) bindLocal[jj * 16 + k] = mArr.getDouble(k).toFloat()
+                            } else {
+                                var tx = 0f; var ty = 0f; var tz = 0f
+                                var rx = 0f; var ry = 0f; var rz = 0f; var rw = 1f
+                                var sx = 1f; var sy = 1f; var sz = 1f
+                                if (node.has("translation")) {
+                                    val t = node.getJSONArray("translation")
+                                    tx = t.getDouble(0).toFloat(); ty = t.getDouble(1).toFloat(); tz = t.getDouble(2).toFloat()
+                                }
+                                if (node.has("rotation")) {
+                                    val r = node.getJSONArray("rotation")
+                                    rx = r.getDouble(0).toFloat(); ry = r.getDouble(1).toFloat()
+                                    rz = r.getDouble(2).toFloat(); rw = r.getDouble(3).toFloat()
+                                }
+                                if (node.has("scale")) {
+                                    val s = node.getJSONArray("scale")
+                                    sx = s.getDouble(0).toFloat(); sy = s.getDouble(1).toFloat(); sz = s.getDouble(2).toFloat()
+                                }
+                                // Compose: M = T * R * S into bindLocal[jj]
+                                android.opengl.Matrix.setIdentityM(scratchTRS, 0)
+                                scratchTRS[12] = tx; scratchTRS[13] = ty; scratchTRS[14] = tz
+                                // Quaternion → rotation matrix
+                                val xx = rx * rx; val yy = ry * ry; val zz = rz * rz
+                                val xy = rx * ry; val xz = rx * rz; val yz = ry * rz
+                                val wx = rw * rx; val wy = rw * ry; val wz = rw * rz
+                                android.opengl.Matrix.setIdentityM(scratchR, 0)
+                                scratchR[0] = 1f - 2f * (yy + zz); scratchR[1] = 2f * (xy + wz); scratchR[2]  = 2f * (xz - wy)
+                                scratchR[4] = 2f * (xy - wz);      scratchR[5] = 1f - 2f * (xx + zz); scratchR[6]  = 2f * (yz + wx)
+                                scratchR[8] = 2f * (xz + wy);      scratchR[9] = 2f * (yz - wx);      scratchR[10] = 1f - 2f * (xx + yy)
+                                // Apply scale
+                                scratchR[0] *= sx; scratchR[1] *= sx; scratchR[2]  *= sx
+                                scratchR[4] *= sy; scratchR[5] *= sy; scratchR[6]  *= sy
+                                scratchR[8] *= sz; scratchR[9] *= sz; scratchR[10] *= sz
+                                // T * R (translation baked in)
+                                android.opengl.Matrix.multiplyMM(bindLocal, jj * 16, scratchTRS, 0, scratchR, 0)
+                            }
+                        }
+
+                        // Verify topo order — bail to unskinned if violated.
+                        var topoOk = true
+                        for (jj in 0 until jointCount) {
+                            if (parents[jj] >= jj) {
+                                Log.w(TAG, "Joint $jj (${names[jj]}) has parent ${parents[jj]} >= $jj — topo violation, disabling skin")
+                                topoOk = false
+                                break
+                            }
+                        }
+                        if (topoOk && jointIndicesBytes != null && jointWeightsFloats != null) {
+                            model.skeleton = com.ashairfoil.prism.scene.SkeletonRuntime(
+                                jointCount = jointCount,
+                                parents = parents,
+                                bindLocal = bindLocal,
+                                invBind = invBind,
+                                names = names
+                            )
+                            model.isSkinned = true
+                            Log.i(TAG, "Tier 4 skin: initialised ${jointCount}-joint skeleton (Root='${names[0]}')")
+                        } else {
+                            jointIndicesBytes = null
+                            jointWeightsFloats = null
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Skin parse failed: ${e.message} — falling back to unskinned", e)
+                    jointIndicesBytes = null
+                    jointWeightsFloats = null
+                    model.isSkinned = false
+                    model.skeleton = null
+                }
+            }
+
             // Tier1.5 FIX: normal-map tangents via MESH UNWELD.
             //
             // Prior implementation called computeTangents() which accumulated
@@ -977,7 +1208,12 @@ class GlesModelRenderer {
             // Mesh grows ~3× in vertex count; memory is cheap on XR, correct
             // shading is not. The old posCnt ≤ 500000 cap is removed — unweld
             // is safe at any density.
-            if (model.hasNormalMap && tangents == null && texCoords != null) {
+            // Skip the triangle-soup unweld for skinned meshes — the 3× vertex
+            // expansion would require replicating JOINTS_0/WEIGHTS_0 too, which
+            // is extra work and risks breaking weights. Skinned meshes trade
+            // UV-seam tangent correctness for skinning. Visible as slightly
+            // flatter normal-map shading near seams; fine for character GLBs.
+            if (!model.isSkinned && model.hasNormalMap && tangents == null && texCoords != null) {
                 val unweld = unweldWithTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
                 Log.i(TAG, "Unweld tangent fix: $posCnt verts / ${idxCnt/3} tris → ${unweld.vertCount} verts (triangle-soup)")
 
@@ -1013,6 +1249,52 @@ class GlesModelRenderer {
                 model.vboTangents = createVBO(tangents, 3, 4)
                 GLES30.glBindVertexArray(0)
             }
+
+            // ── Tier 4: Upload JOINTS_0 + WEIGHTS_0 VBOs, create palette UBO ──
+            if (model.isSkinned && jointIndicesBytes != null && jointWeightsFloats != null) {
+                GLES30.glBindVertexArray(model.vao)
+
+                // JOINTS_0 at location 4 — integer attribute (uvec4 UNSIGNED_BYTE).
+                // MUST use glVertexAttribIPointer, not the normalized-float path,
+                // or the shader reads zeros on most drivers.
+                val jBuf = java.nio.ByteBuffer.allocateDirect(jointIndicesBytes!!.size)
+                    .order(java.nio.ByteOrder.nativeOrder())
+                jBuf.put(jointIndicesBytes!!); jBuf.position(0)
+                val jVboBuf = intArrayOf(0)
+                GLES30.glGenBuffers(1, jVboBuf, 0)
+                model.vboJoints = jVboBuf[0]
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, model.vboJoints)
+                GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, jointIndicesBytes!!.size, jBuf, GLES30.GL_STATIC_DRAW)
+                GLES30.glEnableVertexAttribArray(4)
+                GLES30.glVertexAttribIPointer(4, 4, GLES30.GL_UNSIGNED_BYTE, 4, 0)
+
+                // WEIGHTS_0 at location 5 — FLOAT vec4.
+                val wByteLen = jointWeightsFloats!!.size * 4
+                val wBuf = java.nio.ByteBuffer.allocateDirect(wByteLen)
+                    .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+                wBuf.put(jointWeightsFloats!!); wBuf.position(0)
+                val wVboBuf = intArrayOf(0)
+                GLES30.glGenBuffers(1, wVboBuf, 0)
+                model.vboWeights = wVboBuf[0]
+                GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, model.vboWeights)
+                GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, wByteLen, wBuf, GLES30.GL_STATIC_DRAW)
+                GLES30.glEnableVertexAttribArray(5)
+                GLES30.glVertexAttribPointer(5, 4, GLES30.GL_FLOAT, false, 16, 0)
+
+                GLES30.glBindVertexArray(0)
+
+                // Per-model UBO for joint palette. std140, 64 mat4s = 4KB. Well
+                // under the 16KB guaranteed minimum for MAX_UNIFORM_BLOCK_SIZE.
+                val uboBufArr = intArrayOf(0)
+                GLES30.glGenBuffers(1, uboBufArr, 0)
+                model.uboJoints = uboBufArr[0]
+                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, model.uboJoints)
+                GLES30.glBufferData(GLES30.GL_UNIFORM_BUFFER, MAX_JOINTS_SHADER * 64, null, GLES30.GL_DYNAMIC_DRAW)
+                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, 0)
+
+                Log.i(TAG, "Tier 4 skin VBOs + UBO uploaded for model #${model.id}")
+            }
+
             models.add(model)
             modelIndex[model.id] = model
             Log.i(TAG, "GLB loaded #${model.id}: $posCnt verts, $idxCnt idx")
@@ -1208,6 +1490,17 @@ class GlesModelRenderer {
             if (m.indexCount == 0) continue
             multiplyMat4(shadowLightMatrix, m.modelMatrix, scratchMat4A)
             GLES30.glUniformMatrix4fv(uShadowDepthMVP, 1, false, scratchMat4A, 0)
+            // Tier 4 — shadow pass needs the same skinning as the color pass
+            // or the silhouette detaches from the posed body. Bind the already-
+            // uploaded UBO (color pass did the glBufferSubData) to the shared
+            // binding point and toggle the skin gate.
+            val skel = m.skeleton
+            if (m.isSkinned && skel != null && m.uboJoints != 0) {
+                GLES30.glBindBufferBase(GLES30.GL_UNIFORM_BUFFER, JOINT_UBO_BINDING, m.uboJoints)
+                GLES30.glUniform1f(uShadowDepthSkinned, 1f)
+            } else {
+                GLES30.glUniform1f(uShadowDepthSkinned, 0f)
+            }
             GLES30.glBindVertexArray(m.vao)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, m.indexCount, GLES30.GL_UNSIGNED_INT, 0)
         }
@@ -1339,6 +1632,32 @@ class GlesModelRenderer {
             GLES30.glUniform1f(uGluteBRadius, m.gluteBRadius)
             GLES30.glUniform1f(uGluteAPush, m.gluteAPush)
             GLES30.glUniform1f(uGluteBPush, m.gluteBPush)
+            // Tier 4 — joint palette upload + shader skin gate. Scratch-buffer
+            // upload: clamp to MAX_JOINTS_SHADER so a rig exceeding the palette
+            // size doesn't overflow (we warn at parse time).
+            val skel = m.skeleton
+            if (m.isSkinned && skel != null && m.uboJoints != 0) {
+                // Refresh the palette from the dance loop's joint writes.
+                // Safe to call every frame — at bind pose this produces identity
+                // jointMatrices (and the shader's LBS degenerates to pass-through).
+                skel.update()
+                val uploadJoints = kotlin.math.min(skel.jointCount, MAX_JOINTS_SHADER)
+                System.arraycopy(skel.palette, 0, jointPaletteScratch, 0, uploadJoints * 16)
+                if (uploadJoints < MAX_JOINTS_SHADER) {
+                    // Zero-pad to avoid leaking a prior model's palette into unused slots.
+                    java.util.Arrays.fill(jointPaletteScratch, uploadJoints * 16, MAX_JOINTS_SHADER * 16, 0f)
+                }
+                val fb = java.nio.ByteBuffer.allocateDirect(MAX_JOINTS_SHADER * 64)
+                    .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+                fb.put(jointPaletteScratch); fb.position(0)
+                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, m.uboJoints)
+                GLES30.glBufferSubData(GLES30.GL_UNIFORM_BUFFER, 0, MAX_JOINTS_SHADER * 64, fb)
+                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, 0)
+                GLES30.glBindBufferBase(GLES30.GL_UNIFORM_BUFFER, JOINT_UBO_BINDING, m.uboJoints)
+                GLES30.glUniform1f(uSkinned, 1f)
+            } else {
+                GLES30.glUniform1f(uSkinned, 0f)
+            }
             GLES30.glBindVertexArray(m.vao)
             GLES30.glDrawElements(GLES30.GL_TRIANGLES, m.indexCount, GLES30.GL_UNSIGNED_INT, 0)
         }
@@ -2282,15 +2601,22 @@ layout(location=0) in vec3 aPosition;
 layout(location=1) in vec3 aNormal;
 layout(location=2) in vec2 aTexCoord;
 layout(location=3) in vec4 aTangent;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4 aWeights;
+layout(std140) uniform Joints {
+    mat4 uJoint[64];
+};
 uniform mat4 uMVP, uModelView, uModel;
 uniform mat3 uNormalMatrix;
 uniform float uHasNormalMap;
+uniform float uSkinned;
 // Tier 3 Feature 4 — glute deformation. Two influence spheres in model-local
 // space; vertices inside a radius displace outward along their own normal,
 // smoothstep-falloff from inner 30% to edge. Radius = 0 disables the pair
-// entirely (the CPU zeroes the radius when the feature is off). Lighting
-// normals are NOT recomputed — for small pushes (<5cm on human-scale meshes)
-// the error is imperceptible; defer rederivation unless visibly wrong.
+// entirely (the CPU zeroes the radius when the feature is off). For skinned
+// meshes the CPU updates uGluteA/BPos to POSED space each frame so falloff
+// tracks the moving cheek; for unskinned meshes the anchors stay in model-
+// local bind space (same as before Tier 4).
 uniform vec3 uGluteAPos;
 uniform vec3 uGluteBPos;
 uniform float uGluteARadius;
@@ -2303,28 +2629,50 @@ out float vWorldY;
 out mat3 vTBN;
 void main() {
     vec3 pos = aPosition;
+    vec3 nrm = aNormal;
+    vec3 tan = aTangent.xyz;
+
+    // ── Tier 4: Skeletal skinning (LBS) ──
+    // Gated by uSkinned so unskinned GLBs route through the identity path
+    // with zero extra cost. Joint palette = globalPose * inverseBind; the
+    // CPU walks the hierarchy once per frame then uploads to the UBO.
+    if (uSkinned > 0.5) {
+        mat4 S = uJoint[aJoints.x] * aWeights.x
+               + uJoint[aJoints.y] * aWeights.y
+               + uJoint[aJoints.z] * aWeights.z
+               + uJoint[aJoints.w] * aWeights.w;
+        pos = (S * vec4(pos, 1.0)).xyz;
+        mat3 S3 = mat3(S);
+        // Normals survive rigid rotation + uniform scale without inverse-transpose.
+        // Tripo rigs are rotation-translation only, so 3x3(S) is orthogonal. If
+        // future rigs bake non-uniform scale into IBMs, swap to transpose(inverse(S3)).
+        nrm = normalize(S3 * nrm);
+        tan = normalize(S3 * tan);
+    }
+
+    // ── Tier 3: Glute push (AFTER skin so anchors track posed cheeks) ──
     if (uGluteARadius > 0.0001) {
-        float dA = distance(aPosition, uGluteAPos);
+        float dA = distance(pos, uGluteAPos);
         if (dA < uGluteARadius) {
             float fA = 1.0 - smoothstep(uGluteARadius * 0.3, uGluteARadius, dA);
-            pos += aNormal * (uGluteAPush * fA);
+            pos += nrm * (uGluteAPush * fA);
         }
     }
     if (uGluteBRadius > 0.0001) {
-        float dB = distance(aPosition, uGluteBPos);
+        float dB = distance(pos, uGluteBPos);
         if (dB < uGluteBRadius) {
             float fB = 1.0 - smoothstep(uGluteBRadius * 0.3, uGluteBRadius, dB);
-            pos += aNormal * (uGluteBPush * fB);
+            pos += nrm * (uGluteBPush * fB);
         }
     }
     gl_Position = uMVP * vec4(pos, 1.0);
-    vec3 N = normalize(uNormalMatrix * aNormal);
+    vec3 N = normalize(uNormalMatrix * nrm);
     vNormal = N;
     vTexCoord = aTexCoord;
     vPosition = (uModelView * vec4(pos, 1.0)).xyz;
     vWorldY = (uModel * vec4(pos, 1.0)).y;
     if (uHasNormalMap > 0.5) {
-        vec3 T = normalize(uNormalMatrix * aTangent.xyz);
+        vec3 T = normalize(uNormalMatrix * tan);
         T = normalize(T - dot(T, N) * N);
         vec3 B = cross(N, T) * aTangent.w;
         vTBN = mat3(T, B, N);
@@ -2450,8 +2798,24 @@ void main() {
 
 private const val SHADOW_VERTEX_SHADER = """#version 300 es
 layout(location=0) in vec3 aPosition;
+layout(location=4) in uvec4 aJoints;
+layout(location=5) in vec4 aWeights;
+layout(std140) uniform Joints {
+    mat4 uJoint[64];
+};
 uniform mat4 uMVP;
-void main() { gl_Position = uMVP * vec4(aPosition, 1.0); }
+uniform float uSkinned;
+void main() {
+    vec3 p = aPosition;
+    if (uSkinned > 0.5) {
+        mat4 S = uJoint[aJoints.x] * aWeights.x
+               + uJoint[aJoints.y] * aWeights.y
+               + uJoint[aJoints.z] * aWeights.z
+               + uJoint[aJoints.w] * aWeights.w;
+        p = (S * vec4(p, 1.0)).xyz;
+    }
+    gl_Position = uMVP * vec4(p, 1.0);
+}
 """
 
 private const val SHADOW_FRAGMENT_SHADER = """#version 300 es

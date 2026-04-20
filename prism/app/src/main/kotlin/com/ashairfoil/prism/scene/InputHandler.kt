@@ -210,6 +210,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
             BeatSlider("COLOR", "\u00B0", 0f, 360f,
                 { activity.audioReactor?.beatHue ?: 330f },
                 { activity.audioReactor?.beatHue = it }),
+            // Amp sliders — halved maxes after user feedback ("anything over 5%
+            // looks ridiculous"). Old range was 0..30° YAW etc; with the 2×
+            // intensity bump the top end turned cartoonish. New ceiling is
+            // 15°/10°/4cm which lines up with natural dance micro-motion when
+            // combined with INTENSITY 1–3×. Crank intensity past that for
+            // big-move presets. Dragging any of these sets dancingCustomized
+            // so IMPROV's per-bar shuffleDance leaves the amps alone.
             BeatSlider("SHAKE", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
@@ -217,34 +224,34 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.animResponse = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.animResponse = (v / 100f).coerceIn(0f, 1f); m.dancingCustomized = true }
                 }),
-            BeatSlider("YAW", "\u00B0", 0f, 30f,
+            BeatSlider("YAW", "\u00B0", 0f, 15f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     m?.danceYawDeg ?: 0f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.danceYawDeg = v.coerceIn(0f, 30f)
+                    if (m != null) { m.danceYawDeg = v.coerceIn(0f, 15f); m.dancingCustomized = true }
                 }),
-            BeatSlider("PITCH", "\u00B0", 0f, 20f,
+            BeatSlider("PITCH", "\u00B0", 0f, 10f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     m?.dancePitchDeg ?: 0f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.dancePitchDeg = v.coerceIn(0f, 20f)
+                    if (m != null) { m.dancePitchDeg = v.coerceIn(0f, 10f); m.dancingCustomized = true }
                 }),
-            BeatSlider("BOB", "cm", 0f, 8f,
+            BeatSlider("BOB", "cm", 0f, 4f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.danceYMeters ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.danceYMeters = (v / 100f).coerceIn(0f, 0.08f)
+                    if (m != null) { m.danceYMeters = (v / 100f).coerceIn(0f, 0.04f); m.dancingCustomized = true }
                 }),
             BeatSlider("PHYSICS", "%", 0f, 100f,
                 {
@@ -253,7 +260,23 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.physicsAmount = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.physicsAmount = (v / 100f).coerceIn(0f, 1f); m.dancingCustomized = true }
+                }),
+            // Master SYNCOPATION — drives all three Complexity fields at once
+            // so the user has a single "how syncopated" knob in the main panel.
+            // Per-axis fine control still lives in the CHARACTER sub-panel.
+            BeatSlider("SYNCOPATION", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m == null) 0f else ((m.yawComplexity + m.pitchComplexity + m.bobComplexity) / 3f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) {
+                        val norm = (v / 100f).coerceIn(0f, 1f)
+                        m.yawComplexity = norm; m.pitchComplexity = norm; m.bobComplexity = norm
+                        m.characterCustomized = true
+                    }
                 }),
             BeatSlider("MIX", "%", 0f, 100f,
                 { activity.beatIntensity * 50f },
@@ -298,59 +321,59 @@ class InputHandler(private val activity: FilamentModelActivity) {
     // selected model's fields (same pattern as YAW/PITCH/BOB amp sliders).
     val characterSliders by lazy {
         arrayOf(
-            BeatSlider("YAW SHARP", "%", 0f, 100f,
+            BeatSlider("HIP SNAP", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.yawSharpness ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.yawSharpness = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.yawSharpness = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
-            BeatSlider("YAW CMPLX", "%", 0f, 100f,
+            BeatSlider("HIP GROOVE", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.yawComplexity ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.yawComplexity = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.yawComplexity = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
-            BeatSlider("PITCH SHARP", "%", 0f, 100f,
+            BeatSlider("TILT SNAP", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.pitchSharpness ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.pitchSharpness = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.pitchSharpness = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
-            BeatSlider("PITCH CMPLX", "%", 0f, 100f,
+            BeatSlider("TILT WEAVE", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.pitchComplexity ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.pitchComplexity = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.pitchComplexity = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
-            BeatSlider("BOB SHARP", "%", 0f, 100f,
+            BeatSlider("BOUNCE PUNCH", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.bobSharpness ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.bobSharpness = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.bobSharpness = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
-            BeatSlider("BOB CMPLX", "%", 0f, 100f,
+            BeatSlider("BOUNCE LAYER", "%", 0f, 100f,
                 {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     (m?.bobComplexity ?: 0f) * 100f
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.bobComplexity = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) { m.bobComplexity = (v / 100f).coerceIn(0f, 1f); m.characterCustomized = true }
                 }),
             // Tier 3 Feature 4 — glute deformation sliders. Live on the
             // CHARACTER sub-panel (plenty of room at 6 → 9 sliders) rather
@@ -662,10 +685,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 hoveredActionButton = -1
 
                                 // Layout: spectrum 140..390, sliders 418..786, buttons 920+
+                                // Row height 25 mirrors UiRenderer's sy += 25f — keeps
+                                // all 23 sliders in the 575px strip before Row A.
                                 val specTopHit = 155f; val specBotHit = 435f
                                 val specLeftHit = 40f; val specRightHit = 984f
                                 val sliderAreaTopHit = 465f
-                                val sliderRowH = 28f
+                                val sliderRowH = 25f
 
                                 if (by > 1205f) {
                                     // Match UiRenderer: fifthW = (1024-130)/5, buttons at 30,40+fw,50+fw*2,...
@@ -712,8 +737,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         else -> 143
                                     }
                                 } else if (by in 108f..135f) {
-                                    // Rolloff mode buttons + BPM LOCK
-                                    if (bx in 300f..420f) hoveredActionButton = 113
+                                    // Rolloff mode buttons + BPM LOCK + RECENTER (left slot)
+                                    if (bx in 50f..290f) hoveredActionButton = 148 // RECENTER
+                                    else if (bx in 300f..420f) hoveredActionButton = 113
                                     else if (bx in 430f..550f) hoveredActionButton = 114
                                     else if (bx in 560f..680f) hoveredActionButton = 115
                                     else if (bx in 690f..810f) hoveredActionButton = 116
@@ -1160,6 +1186,40 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 Log.i(TAG, "Marked knee at ${(frac*100).toInt()}% on ${m.file.name}")
                                 activity.uiRenderer.showMessage("Knee marked at ${(frac*100).toInt()}%")
                             }
+                            4, 5 -> {
+                                // Full 3D capture for glute L/R. Use the laser hit point at
+                                // hitDistance (or fall back to distance from hand to model
+                                // center), then transform world → model-local so the stored
+                                // coords match the vertex shader's aPosition frame. Allocates
+                                // two tiny FloatArrays — acceptable, this runs once per
+                                // trigger-click, not per frame.
+                                val hitT = if (hoveredModelIndex == tgtIdx && hitDistance > 0f) hitDistance
+                                    else kotlin.math.sqrt(
+                                        (m.posX - laserHandPos[0]) * (m.posX - laserHandPos[0]) +
+                                        (m.posY - laserHandPos[1]) * (m.posY - laserHandPos[1]) +
+                                        (m.posZ - laserHandPos[2]) * (m.posZ - laserHandPos[2]))
+                                val wx = laserHandPos[0] + laserRayDir[0] * hitT
+                                val wy = laserHandPos[1] + laserRayDir[1] * hitT
+                                val wz = laserHandPos[2] + laserRayDir[2] * hitT
+                                val worldDelta = floatArrayOf(wx - m.posX, wy - m.posY, wz - m.posZ)
+                                // Inverse (conjugate) of unit quaternion.
+                                val invQ = floatArrayOf(-m.rotX, -m.rotY, -m.rotZ, m.rotW)
+                                val renderer = activity.glesRenderer
+                                val local = renderer?.rotateVecByQuat(worldDelta, invQ) ?: worldDelta
+                                val invScale = if (m.scale > 0.001f) 1f / m.scale else 1f
+                                val lx = local[0] * invScale
+                                val ly = local[1] * invScale
+                                val lz = local[2] * invScale
+                                if (activity.markAnatomyMode == 4) {
+                                    m.markedGluteL_x = lx; m.markedGluteL_y = ly; m.markedGluteL_z = lz
+                                    Log.i(TAG, "Marked Glute L at local (${"%.2f".format(lx)}, ${"%.2f".format(ly)}, ${"%.2f".format(lz)}) on ${m.file.name}")
+                                    activity.uiRenderer.showMessage("Glute L marked")
+                                } else {
+                                    m.markedGluteR_x = lx; m.markedGluteR_y = ly; m.markedGluteR_z = lz
+                                    Log.i(TAG, "Marked Glute R at local (${"%.2f".format(lx)}, ${"%.2f".format(ly)}, ${"%.2f".format(lz)}) on ${m.file.name}")
+                                    activity.uiRenderer.showMessage("Glute R marked")
+                                }
+                            }
                         }
                     }
                 } else {
@@ -1280,8 +1340,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.audioReactor?.colorMode = AudioReactor.ColorMode.FLASH
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 127) {
-                activity.audioReactor?.lockBoom()
-                Log.i(TAG, "BOOM: locked box to ${activity.audioReactor?.boomLeft}-${activity.audioReactor?.boomRight}")
+                val snapped = activity.audioReactor?.autoSnapBox() ?: false
+                if (snapped) {
+                    activity.uiRenderer.showMessage("Box snapped to rhythm")
+                    Log.i(TAG, "AUTO BOX: snapped to ${activity.audioReactor?.boxLeft}-${activity.audioReactor?.boxRight} × ${activity.audioReactor?.boxBottom}-${activity.audioReactor?.boxTop}")
+                } else {
+                    activity.uiRenderer.showMessage("Waiting for audio…")
+                }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton in 120..122) {
                 activity.audioReactor?.washScope = AudioReactor.WashScope.entries[hoveredActionButton - 120]
@@ -1383,10 +1448,35 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode &&
                 (hoveredActionButton == 135 || hoveredActionButton == 136 || hoveredActionButton == 137)) {
-                // Per-axis rate cycle (1/2 -> 1/4 -> 1/8 -> 1/16 -> 1/2).
                 val mIdx = activity.sceneManager.selectedModelIndex
                 val m = activity.sceneManager.models.getOrNull(mIdx)
-                if (m != null) {
+                if (activity.characterMode) {
+                    // Character mode repurposes Row A for glute marking + rate.
+                    when (hoveredActionButton) {
+                        135 -> {
+                            activity.markAnatomyMode = 4
+                            activity.uiRenderer.showMessage("Aim at LEFT glute, then trigger-click")
+                            Log.i(TAG, "Mark Glute L armed (character panel Row A)")
+                        }
+                        136 -> {
+                            activity.markAnatomyMode = 5
+                            activity.uiRenderer.showMessage("Aim at RIGHT glute, then trigger-click")
+                            Log.i(TAG, "Mark Glute R armed (character panel Row A)")
+                        }
+                        137 -> {
+                            // GLUTE RATE cycle: 1 (1/4) → 2 (1/8) → 4 (1/16) → 1
+                            if (m != null) {
+                                m.gluteRate = when (m.gluteRate) { 1 -> 2; 2 -> 4; else -> 1 }
+                                m.gluteLastSubBeat = 0L  // resync on next tick
+                                val label = when (m.gluteRate) { 1 -> "1/4"; 2 -> "1/8"; 4 -> "1/16"; else -> "1/${m.gluteRate}" }
+                                activity.uiRenderer.showMessage("Glute pulse: $label")
+                                Log.i(TAG, "Glute rate → $label")
+                            }
+                        }
+                    }
+                    activity.uiNeedsRefresh = true
+                } else if (m != null) {
+                    // Normal mode: per-axis rate cycle (1/2 -> 1/4 -> 1/8 -> 1/16 -> 1/2).
                     fun next(r: Int) = when (r) { 2 -> 4; 4 -> 8; 8 -> 16; 16 -> 2; else -> 4 }
                     when (hoveredActionButton) {
                         135 -> m.danceYawRate = next(m.danceYawRate)
@@ -1527,10 +1617,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 Log.i(TAG, "Haptic script mode: $next")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 144) {
-                // INTENSITY cycle: 0.25 → 0.5 → 1.0 → 2.0 → 3.0 → 5.0 → 0.25.
-                // Low end (0.25-0.5×) is sweet spot for subtle realism on most
-                // GLBs; upper end (3-5×) is explicit "go wild" headroom for
-                // moments where the user wants cartoon-level motion.
+                // INTENSITY cycle: 0.25 → 0.5 → 1.0 → 2.0 → 3.0 → 5.0 → 10.0 → 0.25.
+                // After user feedback ("5x is not enough, feels like 2x"), the
+                // internal multiplier doubled (see effInt in FilamentModelActivity)
+                // AND the max step extended to 10× — cartoon-level blowout for
+                // explicit "go wild" moments. 1× is now the real calm default.
                 val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                 if (m != null) {
                     val next = when {
@@ -1539,6 +1630,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.danceIntensity < 1.5f  -> 2.0f
                         m.danceIntensity < 2.5f  -> 3.0f
                         m.danceIntensity < 4.0f  -> 5.0f
+                        m.danceIntensity < 7.5f  -> 10.0f
                         else -> 0.25f
                     }
                     m.danceIntensity = next
@@ -1586,10 +1678,44 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.characterMode = !activity.characterMode
                 Log.i(TAG, "Character panel: ${if (activity.characterMode) "open" else "closed"}")
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 148) {
+                // Prominent RECENTER — teleport all models to arm's length in
+                // front of the user AND re-snap the floor to their foot height.
+                activity.centerModelsToView()
+                activity.uiRenderer.showMessage("Recentered scene")
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 147) {
-                // TAP TEMPO — each tap feeds AudioReactor's tap-BPM averager. Three taps → lock.
-                activity.audioReactor?.tapTempo()
-                Log.i(TAG, "TAP TEMPO")
+                // Dual-purpose button: TAP TEMPO normally, GLUTE MODE cycle
+                // while CHARACTER panel is open. Cycle order:
+                //  L+R → L → R → ALT (walking step) → SHAKER (rapid L-R burst
+                //  last beat of each bar) → OFF → L+R
+                if (activity.characterMode) {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) {
+                        val state = when {
+                            m.gluteShakerMode -> 4 // SHAKER
+                            !m.gluteLeftEnabled && !m.gluteRightEnabled -> 5 // OFF
+                            m.gluteAltStep && m.gluteLeftEnabled && m.gluteRightEnabled -> 3 // ALT
+                            m.gluteLeftEnabled && !m.gluteRightEnabled -> 1 // L ONLY
+                            !m.gluteLeftEnabled && m.gluteRightEnabled -> 2 // R ONLY
+                            else -> 0 // L+R (both)
+                        }
+                        val next = (state + 1) % 6
+                        m.gluteShakerMode = (next == 4)
+                        m.gluteAltStep = (next == 3)
+                        m.gluteLeftEnabled = next != 2 && next != 5
+                        m.gluteRightEnabled = next != 1 && next != 5
+                        // Re-seed the subBeat tracker so burst starts aligned.
+                        if (m.gluteShakerMode) m.gluteLastSubBeat = 0L
+                        val label = arrayOf("L+R", "L ONLY", "R ONLY", "ALT", "SHAKER", "OFF")[next]
+                        Log.i(TAG, "Glute mode → $label")
+                        activity.uiNeedsRefresh = true
+                    }
+                } else {
+                    // TAP TEMPO — each tap feeds AudioReactor's tap-BPM averager. Three taps → lock.
+                    activity.audioReactor?.tapTempo()
+                    Log.i(TAG, "TAP TEMPO")
+                }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.lightingPresetMode && hoveredLightingPresetIndex >= 0) {
                 val presets = com.ashairfoil.prism.settings.LightingPresets.getAllPresets()
@@ -1894,8 +2020,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.markedHipFrac = -1f
                         m.markedShoulderFrac = -1f
                         m.markedKneeFrac = -1f
+                        m.markedGluteL_x = Float.NaN; m.markedGluteL_y = Float.NaN; m.markedGluteL_z = Float.NaN
+                        m.markedGluteR_x = Float.NaN; m.markedGluteR_y = Float.NaN; m.markedGluteR_z = Float.NaN
                         activity.markAnatomyMode = 0
-                        Log.i(TAG, "Anatomy marks reset on ${m.file.name}")
+                        Log.i(TAG, "Anatomy marks reset on ${m.file.name} (incl. glute L/R)")
                         activity.uiRenderer.showMessage("Marks reset")
                     }
                 } else if (hoveredMenuParam == 24) {
@@ -1903,6 +2031,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     activity.autoAmbient = !activity.autoAmbient
                     Log.i(TAG, "Auto Light: ${if (activity.autoAmbient) "ON" else "OFF"}")
                     activity.uiRenderer.showMessage("Auto Light ${if (activity.autoAmbient) "ON" else "OFF"}")
+                } else if (hoveredMenuParam == 25) {
+                    // Mark Glute L — aim laser at left glute and trigger-click.
+                    // Capture is world-hit → model-local in markAnatomyMode == 4 path.
+                    activity.markAnatomyMode = 4
+                    Log.i(TAG, "Mark Glute L armed — aim laser at her LEFT glute, then trigger-click")
+                    activity.uiRenderer.showMessage("Aim at LEFT glute, then trigger-click")
+                } else if (hoveredMenuParam == 26) {
+                    activity.markAnatomyMode = 5
+                    Log.i(TAG, "Mark Glute R armed — aim laser at her RIGHT glute, then trigger-click")
+                    activity.uiRenderer.showMessage("Aim at RIGHT glute, then trigger-click")
                 }
                 activity.uiNeedsRefresh = true
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
@@ -2341,9 +2479,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.requestUiRender()
             }
             lastRightStickClick = rightStickClick
-            return
+            // Allow grip-grab to fall through while the menu is open — solves
+            // the "annoying" SHAKE B flow where the user would have to close
+            // the menu to reposition between captures. Any grip squeeze now
+            // lets the grab code below run concurrently with menu interaction.
+            val gripForGrab = (leftSqueeze > 0.5f && leftHandValid) ||
+                              (rightSqueeze > 0.5f && rightHandValid)
+            if (!gripForGrab) return
+        } else {
+            lastRightStickClick = rightStickClick
         }
-        lastRightStickClick = rightStickClick
 
         if (activity.handsLocked) return
         if (blockGripInteractionsUntilRelease) return
@@ -2545,10 +2690,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
             whipSampleIdx = 0
         }
 
-        // Free thumbstick = rotate/height. Menu-visible no longer blocks — lets
-        // the user rotate the selected model to face them while the beat panel
-        // is open (common flow: open menu, pick preset, spin to face the viewer).
-        if (!isGrabbing) {
+        // Free thumbstick = rotate/height. Skipped when menu is visible because
+        // right stick X is already bound to selected-param adjustment there —
+        // running both consumers made rotation feel "wonky". Close the menu
+        // (B button) to rotate the selected model.
+        if (!isGrabbing && !activity.menuVisible) {
             val hAxis = if (kotlin.math.abs(rightThumbX) > kotlin.math.abs(leftThumbX))
                 rightThumbX else leftThumbX
             if (kotlin.math.abs(hAxis) > STICK_DEADZONE) {

@@ -752,6 +752,39 @@ class AudioReactor {
         }
     }
 
+    /** Full auto-snap: horizontal (BOOM zone) PLUS vertical bounds derived
+     *  from the peak bin's mean and stddev. Gives the user a one-tap "find
+     *  the rhythm" when manual drag is too fiddly. Requires ~1.2s of audio
+     *  history so the EMA has stabilized. */
+    fun autoSnapBox(): Boolean {
+        if (!boomReady) return false
+        // Horizontal from BOOM expansion
+        boxLeft = boomLeft
+        boxRight = boomRight
+        // Vertical from the peak-variance bin's stats — span mean ± 1.2σ.
+        // Floor the bottom slightly below the trough so the threshold catches
+        // the full kick cycle, top just above peak so dynamic tips trigger.
+        var maxVar = 0f
+        var peakBin = 0
+        for (j in 0 until DISPLAY_BINS) {
+            if (binVariance[j] > maxVar) { maxVar = binVariance[j]; peakBin = j }
+        }
+        val peakMean = binMean[peakBin]
+        val peakStd = kotlin.math.sqrt(maxVar)
+        val top = (peakMean + peakStd * 1.2f).coerceIn(0.1f, 1f)
+        val bot = (peakMean - peakStd * 0.8f).coerceIn(0f, 0.9f)
+        // Guarantee at least a 15% tall box so the trigger has headroom.
+        if (top - bot < 0.15f) {
+            val mid = (top + bot) * 0.5f
+            boxTop = (mid + 0.09f).coerceAtMost(1f)
+            boxBottom = (mid - 0.09f).coerceAtLeast(0f)
+        } else {
+            boxTop = top
+            boxBottom = bot
+        }
+        return true
+    }
+
     /** Apply graphic limiter: soft-clip so pinned bars still show detail */
     fun limitDisplay(rawLevel: Float): Float {
         if (!graphicLimiter) return rawLevel
