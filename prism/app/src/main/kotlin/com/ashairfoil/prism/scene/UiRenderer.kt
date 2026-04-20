@@ -1772,7 +1772,39 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         }
 
         // ── Status chips ──
-        var y = 110f
+        // ── RIGGED quick-shortcut: full-width gold banner at top of main menu.
+        // Previously a 260px top-right pill which the user missed entirely.
+        // Expanded to a 42px-tall full-width button with glow + bold label.
+        run {
+            val rigHover = hoveredActionButton == 152
+            val rigX0 = 30f; val rigX1 = uiW - 30f
+            val rigY0 = 86f; val rigY1 = 128f
+            // Outer glow
+            tmpPaint2.apply {
+                style = Paint.Style.FILL; shader = null
+                color = (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x30000000
+                maskFilter = blurOuter8
+            }
+            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
+            tmpPaint2.maskFilter = null
+            // Fill
+            tmpPaint2.color = if (rigHover) (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x90000000.toInt()
+                else (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x66000000
+            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
+            // Border
+            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = ThemeManager.GOLD_WARM }
+            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
+            tmpPaint2.style = Paint.Style.FILL
+            // Label
+            tmpPaint.apply {
+                textSize = 28f; textAlign = Paint.Align.CENTER
+                color = if (rigHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
+                isFakeBoldText = true; letterSpacing = 0.08f
+            }
+            canvas.drawText("+ RIGGED GLB LIBRARY", (rigX0 + rigX1) / 2f, rigY0 + 29f, tmpPaint)
+            tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false; tmpPaint.letterSpacing = 0f
+        }
+        var y = 140f
         val luxStr = when {
             !autoAmbient -> "Manual"
             xrLightEstimateAvailable && xrSHAvailable -> "XR+SH"

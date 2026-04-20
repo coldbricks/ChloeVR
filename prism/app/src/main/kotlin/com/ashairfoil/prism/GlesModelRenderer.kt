@@ -1158,6 +1158,67 @@ class GlesModelRenderer {
                             }
                         }
 
+                        // ── Fold non-joint ancestor transforms into bindLocal ──
+                        // If a joint has intermediate non-joint ancestors between
+                        // itself and its joint-parent (e.g., a rotated Armature
+                        // between the scene root and the skeleton Root joint),
+                        // those ancestors' transforms MUST compose into the
+                        // joint's bind-local or the palette will not be identity
+                        // at bind pose — producing the "model rendered on its
+                        // side" artifact seen with some Tripo exports where the
+                        // Armature has a -90° X rotation.
+                        val ancScratchT = FloatArray(16)
+                        val ancScratchR = FloatArray(16)
+                        val ancScratchMat = FloatArray(16)
+                        val ancComposeTmp = FloatArray(16)
+                        for (jj in 0 until jointCount) {
+                            val myNode = jointNodes.getInt(jj)
+                            val parentJNode = if (parents[jj] >= 0) jointNodes.getInt(parents[jj]) else -1
+                            var anc = nodeParent[myNode]
+                            while (anc >= 0 && anc != parentJNode && !nodeToJoint.containsKey(anc)) {
+                                val ancNode = nodesArr.getJSONObject(anc)
+                                // Read ancestor's local transform into ancScratchMat
+                                if (ancNode.has("matrix")) {
+                                    val mArr = ancNode.getJSONArray("matrix")
+                                    for (k in 0 until 16) ancScratchMat[k] = mArr.getDouble(k).toFloat()
+                                } else {
+                                    var atx = 0f; var aty = 0f; var atz = 0f
+                                    var arx = 0f; var ary = 0f; var arz = 0f; var arw = 1f
+                                    var asx = 1f; var asy = 1f; var asz = 1f
+                                    if (ancNode.has("translation")) {
+                                        val t = ancNode.getJSONArray("translation")
+                                        atx = t.getDouble(0).toFloat(); aty = t.getDouble(1).toFloat(); atz = t.getDouble(2).toFloat()
+                                    }
+                                    if (ancNode.has("rotation")) {
+                                        val r = ancNode.getJSONArray("rotation")
+                                        arx = r.getDouble(0).toFloat(); ary = r.getDouble(1).toFloat()
+                                        arz = r.getDouble(2).toFloat(); arw = r.getDouble(3).toFloat()
+                                    }
+                                    if (ancNode.has("scale")) {
+                                        val s = ancNode.getJSONArray("scale")
+                                        asx = s.getDouble(0).toFloat(); asy = s.getDouble(1).toFloat(); asz = s.getDouble(2).toFloat()
+                                    }
+                                    android.opengl.Matrix.setIdentityM(ancScratchT, 0)
+                                    ancScratchT[12] = atx; ancScratchT[13] = aty; ancScratchT[14] = atz
+                                    val xx = arx * arx; val yy = ary * ary; val zz = arz * arz
+                                    val xy = arx * ary; val xz = arx * arz; val yz = ary * arz
+                                    val wx = arw * arx; val wy = arw * ary; val wz = arw * arz
+                                    android.opengl.Matrix.setIdentityM(ancScratchR, 0)
+                                    ancScratchR[0] = 1f - 2f * (yy + zz); ancScratchR[1] = 2f * (xy + wz); ancScratchR[2]  = 2f * (xz - wy)
+                                    ancScratchR[4] = 2f * (xy - wz);      ancScratchR[5] = 1f - 2f * (xx + zz); ancScratchR[6]  = 2f * (yz + wx)
+                                    ancScratchR[8] = 2f * (xz + wy);      ancScratchR[9] = 2f * (yz - wx);      ancScratchR[10] = 1f - 2f * (xx + yy)
+                                    ancScratchR[0] *= asx; ancScratchR[1] *= asx; ancScratchR[2]  *= asx
+                                    ancScratchR[4] *= asy; ancScratchR[5] *= asy; ancScratchR[6]  *= asy
+                                    ancScratchR[8] *= asz; ancScratchR[9] *= asz; ancScratchR[10] *= asz
+                                    android.opengl.Matrix.multiplyMM(ancScratchMat, 0, ancScratchT, 0, ancScratchR, 0)
+                                }
+                                // bindLocal[jj] = ancScratchMat × bindLocal[jj]
+                                android.opengl.Matrix.multiplyMM(ancComposeTmp, 0, ancScratchMat, 0, bindLocal, jj * 16)
+                                System.arraycopy(ancComposeTmp, 0, bindLocal, jj * 16, 16)
+                                anc = nodeParent[anc]
+                            }
+                        }
+
                         // Verify topo order — bail to unskinned if violated.
                         var topoOk = true
                         for (jj in 0 until jointCount) {

@@ -250,7 +250,11 @@ class FilamentModelActivity : ComponentActivity() {
     internal var foveationToggleLatch = false
     internal var planeVisToggleLatch = false
     internal var roomTrackToggleLatch = false
-    @Volatile internal var roomTrackingEnabled = false
+    // Default ON so the floor is auto-detected at startup without requiring
+    // the user to dig into the room-track toggle. XrSensorPoller picks up
+    // horizontal planes; the lowest one seeds detectedFloorY which snaps
+    // every loaded model's boundsMinY (= heel bottom) to that Y.
+    @Volatile internal var roomTrackingEnabled = true
 
     // ── Room Edit (manual plane trim) ──
     @Volatile internal var roomEditMode = false
@@ -437,6 +441,20 @@ class FilamentModelActivity : ComponentActivity() {
                             floorSnappedOnce = true
                             val spaceType = if (nativeIsUsingStageSpace()) "STAGE" else "LOCAL"
                             Log.i(TAG, "Grid snap to lowest horizontal surface: $floorY (space=$spaceType, camY=$camPosY)")
+                            // Heel-plant: models may have loaded BEFORE the floor was
+                            // detected (plane tracking takes a second to converge). Now
+                            // that we know where the floor is, drop every non-preview
+                            // model so its boundsMinY (= lowest vertex = heel bottom)
+                            // sits exactly on floorY. User request: "the bottom of her
+                            // heels are on it".
+                            for (placed in sceneManager.models) {
+                                if (placed.isPreview) continue
+                                val gpuModel = gr.getModel(placed.gpuModelId) ?: continue
+                                val currentFootY = placed.posY + gpuModel.boundsMinY * placed.scale
+                                placed.posY += (floorY - currentFootY)
+                                sceneManager.updateModelTransform(placed)
+                            }
+                            Log.i(TAG, "Re-planted ${sceneManager.models.size} model heel(s) on floor y=$floorY")
                         } else if (floorY < detectedFloorY - 0.05f) {
                             gr.gridHeight = floorY
                             detectedFloorY = floorY
@@ -1918,6 +1936,85 @@ class FilamentModelActivity : ComponentActivity() {
                                         // and the new 10.0x slot (see InputHandler cycle) gives real
                                         // blowout headroom.
                                         val effInt = m.danceIntensity * 0.5f
+
+                                        // ── Tier 4: ARCH stance + pelvic thrust ──
+                                        // Skinned models only. Two jobs:
+                                        //   1. Apply stance baseline offsets (pelvic tilt, spine counter,
+                                        //      arm drop) scaled by stanceArch.
+                                        //   2. Oscillate pelvis X rotation with the BOB phase so her hips
+                                        //      THRUST even if the user hasn't cranked BOB translation amp.
+                                        //      That's the actual "she's dancing" read — ARCH without this
+                                        //      just freezes her in the stance like a doll.
+                                        val stanceGpu = glesRenderer?.getModel(m.gpuModelId)
+                                        val stanceSkel = stanceGpu?.skeleton
+                                        if (stanceGpu?.isSkinned == true && stanceSkel != null) {
+                                            if (m.pelvisJointIdx == Int.MIN_VALUE) {
+                                                m.pelvisJointIdx = stanceSkel.indexOf("Pelvis")
+                                                m.waistJointIdx = stanceSkel.indexOf("Waist")
+                                            }
+                                            val arch = m.stanceArch.coerceIn(0f, 1f)
+                                            // Pelvic thrust oscillates with BOB phase — BUT only when
+                                            // user has cranked BOB translation amp. Without that gate the
+                                            // pelvis rotation propagates down through the hip→thigh→calf
+                                            // hierarchy and shows up as shin swing (the bug user caught).
+                                            // With BOB > 0, the squat driver below ALSO runs on thighs /
+                                            // calves, so legs get independent control while pelvis thrusts.
+                                            val bobActive = m.danceYMeters > 0.001f
+                                            val pelvisThrustDeg = if (bobActive) {
+                                                val yRateS = m.danceYRate.coerceAtLeast(1)
+                                                val pelvisPh = ((ar.phaseAtSnap(snap, yRateS) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
+                                                val kSkewS = 0.5f - 0.2f * m.physicsAmount
+                                                val p01 = if (pelvisPh < kSkewS) pelvisPh / kSkewS else 1f - (pelvisPh - kSkewS) / (1f - kSkewS)
+                                                // musicalLevel replaces bassGate here — bassGate is computed
+                                                // in the pitch block below and not yet available. musicalLevel
+                                                // is close enough in spirit (loudness-driven amplitude modulation).
+                                                p01 * 12f * arch * snap.musicalLevel
+                                            } else 0f
+                                            val pelvicTiltX = 18f * arch + pelvisThrustDeg
+                                            if (m.pelvisJointIdx >= 0) {
+                                                stanceSkel.setJointEulerX(m.pelvisJointIdx, pelvicTiltX)
+                                            }
+                                            // Waist arches same direction as pelvis — creates an S-curve
+                                            // visible from the side (lordosis). First attempt had it
+                                            // counter-rotating which flattened the spine.
+                                            if (m.waistJointIdx >= 0) {
+                                                stanceSkel.setJointEulerX(m.waistJointIdx, 20f * arch + pelvisThrustDeg * 0.2f)
+                                            }
+                                            // ── Critical: counter-rotate thighs so legs stay world-stable ──
+                                            // Pelvis X rotation propagates down the hierarchy and rotates
+                                            // the thighs with it (children inherit parent transforms in
+                                            // global space). Without this counter, the feet swing forward/
+                                            // back as the pelvis tilts — exactly the "it's moving her
+                                            // FEET" artifact user caught. Setting thigh local-X to the
+                                            // negative of the pelvic rotation cancels the propagation at
+                                            // the thigh joint, keeping legs vertical. When the squat
+                                            // driver runs below (bob > 0), it OVERWRITES this with its own
+                                            // composed value that includes the same counter term.
+                                            val thighCounterDeg = -pelvicTiltX
+                                            if (!bobActive && m.thighLJointIdx == Int.MIN_VALUE) {
+                                                // Cache on first frame when bob is off — squat driver
+                                                // normally does the lookup, but without bob we need it here.
+                                                m.thighLJointIdx = stanceSkel.indexOf("L_Thigh")
+                                                m.thighRJointIdx = stanceSkel.indexOf("R_Thigh")
+                                            }
+                                            if (!bobActive) {
+                                                if (m.thighLJointIdx >= 0) stanceSkel.setJointEulerX(m.thighLJointIdx, thighCounterDeg)
+                                                if (m.thighRJointIdx >= 0) stanceSkel.setJointEulerX(m.thighRJointIdx, thighCounterDeg)
+                                            }
+                                            // Arms drop to her sides via clavicle Z rotation.
+                                            if (m.claviceLJointIdx == Int.MIN_VALUE) {
+                                                m.claviceLJointIdx = stanceSkel.indexOf("L_Clavicle")
+                                                m.claviceRJointIdx = stanceSkel.indexOf("R_Clavicle")
+                                            }
+                                            // Arm drop only applies when yaw counter-sway isn't driving the
+                                            // clavicles. Future: compose stance + sway in one place.
+                                            if (m.danceYawDeg == 0f) {
+                                                val armDrop = 75f * arch
+                                                if (m.claviceLJointIdx >= 0) stanceSkel.setJointEulerZ(m.claviceLJointIdx, -armDrop)
+                                                if (m.claviceRJointIdx >= 0) stanceSkel.setJointEulerZ(m.claviceRJointIdx, armDrop)
+                                            }
+                                        }
+
                                         val fbmYaw = fbmMod(tSec, seed, 0f)
                                         val fbmPitch = fbmMod(tSec, seed, 1.7f)
                                         val fbmBob = fbmMod(tSec, seed, 3.1f)
@@ -2031,6 +2128,57 @@ class FilamentModelActivity : ComponentActivity() {
                                                     pz += pivotRotScratch[2]
                                                 }
                                             }
+
+                                            // ── Tier 4: spine counter-twist + arm counter-sway ──
+                                            // The rigid yaw above rotates the WHOLE mesh. On a skinned rig
+                                            // we can partially unwind that at the spine joints so the
+                                            // shoulders lag behind the hips — classic "hips go, upper body
+                                            // stays more oriented at the viewer" dance read.
+                                            //
+                                            // Accumulation: Spine01 and Spine02 each counter by half of
+                                            // `counterFrac * yawMag`. Total counter at chest = full
+                                            // counterFrac × yaw. Setting counterFrac=0.7 leaves the upper
+                                            // body following about 30% of the hip yaw, which reads natural.
+                                            //
+                                            // Arms get an ADDITIONAL Z-opposition through clavicles so they
+                                            // swing slightly opposite the hips (gait mechanics).
+                                            val gpuMYaw = glesRenderer?.getModel(m.gpuModelId)
+                                            val skelYaw = gpuMYaw?.skeleton
+                                            if (gpuMYaw?.isSkinned == true && skelYaw != null) {
+                                                if (m.spine01JointIdx == Int.MIN_VALUE) {
+                                                    m.spine01JointIdx = skelYaw.indexOf("Spine01")
+                                                    m.spine02JointIdx = skelYaw.indexOf("Spine02")
+                                                    m.claviceLJointIdx = skelYaw.indexOf("L_Clavicle")
+                                                    m.claviceRJointIdx = skelYaw.indexOf("R_Clavicle")
+                                                    android.util.Log.i(TAG, "Yaw-chain joints cached: spine=${m.spine01JointIdx}/${m.spine02JointIdx} " +
+                                                        "clavicle=${m.claviceLJointIdx}/${m.claviceRJointIdx}")
+                                                }
+                                                // Magnitude used by the rigid yaw (degrees, not radians — we
+                                                // re-derive here instead of sharing `half` so the intent is
+                                                // readable and sign is explicit).
+                                                val yawMagDeg = m.danceYawDeg * effInt * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig
+                                                val counterFrac = 0.7f
+                                                val spineHalf = -yawMagDeg * counterFrac * 0.5f
+                                                if (m.spine01JointIdx >= 0) skelYaw.setJointEulerY(m.spine01JointIdx, spineHalf)
+                                                if (m.spine02JointIdx >= 0) skelYaw.setJointEulerY(m.spine02JointIdx, spineHalf)
+                                                // Arm counter-sway: clavicles rotate Z opposite to hip yaw,
+                                                // roughly 15% of the yaw magnitude. Left clavicle +Z when
+                                                // hips swing left = arm swings forward.
+                                                val armSway = yawMagDeg * 0.15f
+                                                if (m.claviceLJointIdx >= 0) skelYaw.setJointEulerZ(m.claviceLJointIdx, -armSway)
+                                                if (m.claviceRJointIdx >= 0) skelYaw.setJointEulerZ(m.claviceRJointIdx, armSway)
+                                            }
+                                        } else {
+                                            // Yaw off: reset spine + clavicle joints to bind so we don't
+                                            // freeze at the last twisted posed.
+                                            val gpuMYaw = glesRenderer?.getModel(m.gpuModelId)
+                                            val skelYaw = gpuMYaw?.skeleton
+                                            if (gpuMYaw?.isSkinned == true && skelYaw != null && m.spine01JointIdx != Int.MIN_VALUE) {
+                                                if (m.spine01JointIdx >= 0) skelYaw.resetJointToBind(m.spine01JointIdx)
+                                                if (m.spine02JointIdx >= 0) skelYaw.resetJointToBind(m.spine02JointIdx)
+                                                if (m.claviceLJointIdx >= 0) skelYaw.resetJointToBind(m.claviceLJointIdx)
+                                                if (m.claviceRJointIdx >= 0) skelYaw.resetJointToBind(m.claviceRJointIdx)
+                                            }
                                         }
                                         // PITCH around LOCAL X (right-multiply q * qX) — so pitch tilts
                                         // the model in its OWN forward-back axis regardless of base facing.
@@ -2113,18 +2261,28 @@ class FilamentModelActivity : ComponentActivity() {
                                                 if (m.kneeLJointIdx >= 0 && m.kneeRJointIdx >= 0) {
                                                     val gate = effInt.coerceIn(0f, 1f) * bassGate
                                                     val squat = phase01 * gate
-                                                    val kneeDeg = squat * 40f   // shin rotates back
-                                                    val thighDeg = -squat * 20f // thigh tilts forward (half)
+                                                    val arch = m.stanceArch.coerceIn(0f, 1f)
+                                                    // Stance baselines — composed with dynamic squat so a
+                                                    // full-arch booty pose already has bent knees and tilted
+                                                    // thighs at rest, and dance motion oscillates deeper.
+                                                    val stanceCalfDeg = 18f * arch
+                                                    val stanceThighDeg = -6f * arch
+                                                    val stanceRootDrop = 0.04f * arch
+                                                    val kneeDeg = stanceCalfDeg + squat * 40f
+                                                    val thighDeg = stanceThighDeg + (-squat * 20f)
                                                     skel.setJointEulerX(m.kneeLJointIdx, kneeDeg)
                                                     skel.setJointEulerX(m.kneeRJointIdx, kneeDeg)
                                                     if (m.thighLJointIdx >= 0) skel.setJointEulerX(m.thighLJointIdx, thighDeg)
                                                     if (m.thighRJointIdx >= 0) skel.setJointEulerX(m.thighRJointIdx, thighDeg)
-                                                    // Root Y drop: approximate hip sag from the thigh+calf
-                                                    // angles. At 20° thigh / 40° shin, hip sags ~12% of leg
-                                                    // length. Scale gives ~8cm at full squat on a 1.6m model.
+                                                    // Root Y drop — REDUCED from 0.08 → 0.04 after "stepping
+                                                    // through floor" report. Floor-snap places heel-bottom
+                                                    // on gridHeight at load; any root drop during dance puts
+                                                    // the heel below that Y. 4cm is tolerable for deep squat;
+                                                    // proper fix is IK-style compensation so feet stay planted
+                                                    // while hip drops via thigh/calf flexion alone.
                                                     if (m.rootJointIdx >= 0) {
                                                         skel.resetJointToBind(m.rootJointIdx)
-                                                        val dropMeters = squat * 0.08f
+                                                        val dropMeters = squat * 0.04f + stanceRootDrop * 0.5f
                                                         skel.localPose[m.rootJointIdx * 16 + 13] -= dropMeters
                                                     }
                                                 }

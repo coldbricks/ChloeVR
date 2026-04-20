@@ -130,11 +130,11 @@ class SceneManager(
         var animHasBase: Boolean = false,
         val animBasePose: FloatArray = FloatArray(7),
         var danceYawDeg: Float = 0f,
-        var danceYawRate: Int = 8,
+        var danceYawRate: Int = 2,
         var dancePitchDeg: Float = 0f,
-        var dancePitchRate: Int = 4,
+        var dancePitchRate: Int = 2,
         var danceYMeters: Float = 0f,
-        var danceYRate: Int = 2,
+        var danceYRate: Int = 4,
         // Per-axis phase offsets (0..1). Shuffle randomises these so moves
         // don't all peak at the exact same instant.
         var danceYawPhase: Float = 0f,
@@ -292,6 +292,21 @@ class SceneManager(
         var thighLJointIdx: Int = Int.MIN_VALUE,
         var thighRJointIdx: Int = Int.MIN_VALUE,
         var rootJointIdx: Int = Int.MIN_VALUE,
+        var spine01JointIdx: Int = Int.MIN_VALUE,
+        var spine02JointIdx: Int = Int.MIN_VALUE,
+        var claviceLJointIdx: Int = Int.MIN_VALUE,
+        var claviceRJointIdx: Int = Int.MIN_VALUE,
+        var pelvisJointIdx: Int = Int.MIN_VALUE,
+        var waistJointIdx: Int = Int.MIN_VALUE,
+        // Tier 4 — ARCH stance. 0 = bind pose (KNOWN GOOD), 1 = full booty
+        // stance. Default returned to 0 after on-device testing revealed
+        // sign-convention issues with the current stance math (pelvis rolls
+        // wrong direction, waist flattens instead of arching, feet drift
+        // through the floor via hierarchy propagation). The stance code is
+        // still in place for controlled testing — user dials up to see.
+        // Future fix: systematic sign probe on a spec-compliant rig to lock
+        // down the correct direction per joint, then bake constants.
+        var stanceArch: Float = 0f,
         // Per-side enables — lets the user isolate glute L or R, or run alt-step.
         var gluteLeftEnabled: Boolean = true,
         var gluteRightEnabled: Boolean = true,

@@ -406,6 +406,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
                     if (m != null) m.gluteRadius = (v / 100f).coerceIn(0.05f, 0.30f)
                 }),
+            // Tier 4 — ARCH stance. Drives pelvic anterior tilt + counter-
+            // arched spine + slight bent knees + arms dropped. 0 = T-pose,
+            // 100% = full dance-ready booty stance. Only applies on skinned
+            // rigs; unskinned models silently ignore (no joints to drive).
+            BeatSlider("ARCH", "%", 0f, 100f,
+                {
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    (m?.stanceArch ?: 0.5f) * 100f
+                },
+                { v ->
+                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
+                    if (m != null) m.stanceArch = (v / 100f).coerceIn(0f, 1f)
+                }),
         )
     }
 
@@ -927,6 +940,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     }
                                 }
                             } else {
+                                // + RIGGED GLB LIBRARY banner at y 86..128, full width x 30..994.
+                                // Jumps straight into the GLB picker with the RIGGED filter pre-engaged.
+                                if (by in 86f..128f && bx in 30f..994f) {
+                                    hoveredActionButton = 152
+                                }
                                 // Action buttons: 4 rows at bottom (UiRenderer: row1Y=1054, btnH=48, btnGap=8)
                                 // btn2W=478, btn3W=316; gap midpoints: row1=512, rows2-4=350/674
                                 if (by in 1054f..1102f) {
@@ -1941,6 +1959,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hoveredGlbIndex = -1
                 activity.glbPickerScrollOffset = 0
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 152) {
+                Log.i(TAG, "Action: Open GLB picker with RIGGED filter pre-engaged")
+                activity.riggedOnlyMode = true
+                activity.glbPickerMode = true
+                hoveredGlbIndex = -1
+                activity.glbPickerScrollOffset = 0
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredMenuParam in 0..12) {
                 activity.selectedParam = hoveredMenuParam
                 val sliderLeft = 240f; val sliderRight = 904f
@@ -2791,8 +2816,25 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     }
                     val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
                     model.posY += (snapY - worldMinY)
+                    // Zero out roll + pitch on snap — keep only yaw. User
+                    // feedback: "she locks to the floor with her bank/roll
+                    // still." A quick snap should level her upright.
+                    // Extract world-Y yaw from current quaternion, rebuild
+                    // as a pure Y-axis rotation. Numerically stable even at
+                    // extreme pitches.
+                    val qx0 = model.rotX; val qy0 = model.rotY
+                    val qz0 = model.rotZ; val qw0 = model.rotW
+                    val yawRad = kotlin.math.atan2(
+                        2f * (qw0 * qy0 + qx0 * qz0),
+                        1f - 2f * (qy0 * qy0 + qz0 * qz0)
+                    )
+                    val halfYaw = yawRad * 0.5f
+                    model.rotX = 0f
+                    model.rotY = kotlin.math.sin(halfYaw)
+                    model.rotZ = 0f
+                    model.rotW = kotlin.math.cos(halfYaw)
                     activity.updateModelTransform(model)
-                    Log.i(TAG, "Snap to surface: posY=${model.posY} (minY=${gpuModel.boundsMinY}, snapY=$snapY)")
+                    Log.i(TAG, "Snap to surface: posY=${model.posY} (minY=${gpuModel.boundsMinY}, snapY=$snapY), leveled to yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°")
                 }
             }
         }

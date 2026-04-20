@@ -34,7 +34,10 @@ class XrSensorPoller(
     @Volatile var handTrackingEnabled = false
     @Volatile var eyeTrackingEnabled = false
     @Volatile var faceTrackingEnabled = false
-    @Volatile var planeDetectionEnabled = false
+    // Plane detection ON by default — the floor auto-snaps heel-bottoms of
+    // loaded models onto the lowest detected horizontal surface. Cost is
+    // ~1ms every 10 frames, imperceptible for the floor-seeking payoff.
+    @Volatile var planeDetectionEnabled = true
 
     // Pre-allocated plane list to avoid allocation every 10 frames
     private val reusablePlanes = ArrayList<GlesModelRenderer.ShadowPlane>(32)

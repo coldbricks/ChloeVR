@@ -597,7 +597,8 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
                 null to "All",
                 "video" to "Video",
                 "image" to "Image",
-                "3d" to "3D Model"
+                "3d" to "3D Model",
+                "rigged" to "Rigged"
             ),
             selected = { it.first == filePickerTypeFilter }
         ) { chosen ->
@@ -938,6 +939,7 @@ class MainActivity : ComponentActivity(), OpenXRInput.ControllerListener {
             "video" -> if (FilePicker.isImageFile(file) || FilePicker.isModelFile(file)) return false
             "image" -> if (!FilePicker.isImageFile(file)) return false
             "3d" -> if (!FilePicker.isModelFile(file)) return false
+            "rigged" -> if (!FilePicker.isRiggedGlb(file)) return false
         }
 
         val metadata = filePickerMetadataCache.getOrPut(file.absolutePath) { FileNameParser.parse(file) }
