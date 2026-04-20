@@ -182,10 +182,19 @@ class SkeletonRuntime(
             return
         }
         val off = j * 16
-        // Column-major 4x4 * point (x,y,z,1) — OpenGL convention.
         val x = local[0]; val y = local[1]; val z = local[2]
-        out[0] = globalPose[off + 0] * x + globalPose[off + 4] * y + globalPose[off + 8] * z + globalPose[off + 12]
-        out[1] = globalPose[off + 1] * x + globalPose[off + 5] * y + globalPose[off + 9] * z + globalPose[off + 13]
-        out[2] = globalPose[off + 2] * x + globalPose[off + 6] * y + globalPose[off + 10] * z + globalPose[off + 14]
+        // Use PALETTE (globalPose × invBind), NOT globalPose alone.
+        //
+        // The vertex shader's skin op is `pos = palette[j] * v_bind` (for a
+        // vertex rigidly weighted to joint j). For this function's result to
+        // land at the same posed location as a bind-space point, we must
+        // apply the same `palette[j]` transform. Applying `globalPose[j]`
+        // would double-apply the joint's bind translation — the anchor
+        // then flies to e.g. `globalPose × v_bind` which for a glute
+        // anchor can end up by the head, exactly the "glute out of her
+        // head" artifact the user reported.
+        out[0] = palette[off + 0] * x + palette[off + 4] * y + palette[off + 8]  * z + palette[off + 12]
+        out[1] = palette[off + 1] * x + palette[off + 5] * y + palette[off + 9]  * z + palette[off + 13]
+        out[2] = palette[off + 2] * x + palette[off + 6] * y + palette[off + 10] * z + palette[off + 14]
     }
 }

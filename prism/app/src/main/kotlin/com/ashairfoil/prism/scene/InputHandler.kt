@@ -1727,10 +1727,20 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.gluteAltStep = (next == 3)
                         m.gluteLeftEnabled = next != 2 && next != 5
                         m.gluteRightEnabled = next != 1 && next != 5
+                        // Auto-seed a visible base push when enabling any non-OFF
+                        // mode. Without this, user cycles to SHAKER / L / R / ALT
+                        // and sees NOTHING because gluteBasePush defaults to 0 and
+                        // the whole shake pipeline is gated `if (basePush > 0.0001)`.
+                        // 3.5cm is a moderate default that clearly shows the pop
+                        // without being caricaturish — user can dial GLUTE PUSH
+                        // further on the character slider panel.
+                        if (next != 5 && m.gluteBasePush < 0.001f) {
+                            m.gluteBasePush = 0.035f
+                        }
                         // Re-seed the subBeat tracker so burst starts aligned.
                         if (m.gluteShakerMode) m.gluteLastSubBeat = 0L
                         val label = arrayOf("L+R", "L ONLY", "R ONLY", "ALT", "SHAKER", "OFF")[next]
-                        Log.i(TAG, "Glute mode → $label")
+                        Log.i(TAG, "Glute mode → $label push=${"%.3f".format(m.gluteBasePush)}")
                         activity.uiNeedsRefresh = true
                     }
                 } else {

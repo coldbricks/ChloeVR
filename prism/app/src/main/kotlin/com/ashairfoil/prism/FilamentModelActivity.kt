@@ -1797,7 +1797,27 @@ class FilamentModelActivity : ComponentActivity() {
                                                     }
                                                     m.gluteLastSubBeat = subBeatNow
                                                 }
+                                            } else if (beatPeriodMsG > 0f) {
+                                                // BPM is locked (via tap-tempo or auto-BPM) — tick
+                                                // the glute kick off the LOCKED CLOCK directly,
+                                                // don't wait for audio-detected bass kicks. This
+                                                // was the core "shake not firing in time" bug:
+                                                // the old fallback used `snap.beatCounter`, which
+                                                // only increments when the audio reactor detects
+                                                // a bass transient. Tap-tempo locks BPM without
+                                                // feeding beatCounter, so the glute kick never
+                                                // fired even with BPM locked.
+                                                val beatNow = (snap.nowMs / beatPeriodMsG).toLong()
+                                                if (beatNow != m.gluteLastBeatSeen) {
+                                                    if (m.gluteLastBeatSeen != 0L) {
+                                                        m.gluteKickLastMs = snap.nowMs
+                                                    }
+                                                    m.gluteLastBeatSeen = beatNow
+                                                }
                                             } else {
+                                                // No BPM lock AND no subdivision — fall back to
+                                                // audio-detected beatCounter (needs real bass
+                                                // kicks from playing audio).
                                                 if (snap.beatCounter != m.gluteLastBeatSeen && snap.beatCounter > 0L) {
                                                     m.gluteKickLastMs = snap.nowMs
                                                     m.gluteLastBeatSeen = snap.beatCounter
@@ -1831,39 +1851,62 @@ class FilamentModelActivity : ComponentActivity() {
                                             val pushR = if (rightFires) pushAmt else m.gluteBasePush
                                             m.gluteLeftCurrentPush = pushL
                                             m.gluteRightCurrentPush = pushR
-                                            // Glute positions — prefer explicit user marks (world
-                                            // raycast captured in model-local space); fall back to
-                                            // bbox-derived estimate. The estimate was wrong for
-                                            // models whose forward isn't local +Z — now we let the
-                                            // user tap exactly where the glutes sit.
+                                            // Glute positions — prefer explicit user marks; fall back to
+                                            // bbox-derived estimate.
+                                            //
+                                            // Axis convention on Tripo rigs (confirmed on-device via the
+                                            // floor forward arrow): local +X = her face, -X = her back,
+                                            // +Y = up, +Z = her left, -Z = her right. So the butt sits at
+                                            // negative X from center (rearOff on X), and L/R glutes split
+                                            // along Z (positive = left, negative = right). Previous code
+                                            // had these axes swapped — placed glute markers on her hips
+                                            // instead of her butt, which is why nothing ever looked right.
                                             if (!m.markedGluteL_x.isNaN()) {
                                                 gluteGpu.gluteAPos[0] = m.markedGluteL_x
                                                 gluteGpu.gluteAPos[1] = m.markedGluteL_y
                                                 gluteGpu.gluteAPos[2] = m.markedGluteL_z
                                             } else {
-                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
+                                                // Auto-hip height default bumped 0.45 → 0.52 after user
+                                                // saw the glutes landing on her hamstrings. Adult-female
+                                                // proportion: glutes centered at ~52% of total height.
+                                                // MARK HIP still overrides if user sets one explicitly.
+                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.52f
                                                 val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
                                                 val hipY = gluteGpu.boundsMinY + hipFrac * height
                                                 val sideOff = 0.18f * gluteGpu.boundsRadius
                                                 val rearOff = 0.10f * gluteGpu.boundsRadius
-                                                gluteGpu.gluteAPos[0] = gluteGpu.boundsCenterX - sideOff
+                                                gluteGpu.gluteAPos[0] = gluteGpu.boundsCenterX - rearOff  // -X = behind
                                                 gluteGpu.gluteAPos[1] = hipY
-                                                gluteGpu.gluteAPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                                gluteGpu.gluteAPos[2] = gluteGpu.boundsCenterZ + sideOff  // +Z = her LEFT
                                             }
                                             if (!m.markedGluteR_x.isNaN()) {
                                                 gluteGpu.gluteBPos[0] = m.markedGluteR_x
                                                 gluteGpu.gluteBPos[1] = m.markedGluteR_y
                                                 gluteGpu.gluteBPos[2] = m.markedGluteR_z
                                             } else {
-                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.45f
+                                                // Auto-hip height default bumped 0.45 → 0.52 after user
+                                                // saw the glutes landing on her hamstrings. Adult-female
+                                                // proportion: glutes centered at ~52% of total height.
+                                                // MARK HIP still overrides if user sets one explicitly.
+                                                val hipFrac = if (m.markedHipFrac >= 0f) m.markedHipFrac else 0.52f
                                                 val height = 2f * (gluteGpu.boundsCenterY - gluteGpu.boundsMinY)
                                                 val hipY = gluteGpu.boundsMinY + hipFrac * height
                                                 val sideOff = 0.18f * gluteGpu.boundsRadius
                                                 val rearOff = 0.10f * gluteGpu.boundsRadius
-                                                gluteGpu.gluteBPos[0] = gluteGpu.boundsCenterX + sideOff
+                                                gluteGpu.gluteBPos[0] = gluteGpu.boundsCenterX - rearOff  // -X = behind
                                                 gluteGpu.gluteBPos[1] = hipY
-                                                gluteGpu.gluteBPos[2] = gluteGpu.boundsCenterZ - rearOff
+                                                gluteGpu.gluteBPos[2] = gluteGpu.boundsCenterZ - sideOff  // -Z = her RIGHT
                                             }
+                                            // Glute anchor posing DISABLED — even with palette math
+                                            // corrected, the user saw NO glute shake at all (not just
+                                            // "disappears during motion", but invisible even at rest).
+                                            // Keeping anchor in bind-space for now so the static
+                                            // push at least registers visibly. Shader uses
+                                            // distance(posed_vertex, bind_anchor) and for a vertex
+                                            // near bind cheek location this should hit within the
+                                            // 0.15m radius.
+                                            // User can tap MARK GLUTE L + MARK GLUTE R at the actual
+                                            // cheek locations to override auto-position.
                                             // In shaker mode both radii stay active so the static
                                             // push renders on both cheeks between burst pops.
                                             gluteGpu.gluteARadius = if (m.gluteShakerMode || m.gluteLeftEnabled) m.gluteRadius else 0f
@@ -1953,66 +1996,242 @@ class FilamentModelActivity : ComponentActivity() {
                                                 m.waistJointIdx = stanceSkel.indexOf("Waist")
                                             }
                                             val arch = m.stanceArch.coerceIn(0f, 1f)
-                                            // Pelvic thrust oscillates with BOB phase — BUT only when
-                                            // user has cranked BOB translation amp. Without that gate the
-                                            // pelvis rotation propagates down through the hip→thigh→calf
-                                            // hierarchy and shows up as shin swing (the bug user caught).
-                                            // With BOB > 0, the squat driver below ALSO runs on thighs /
-                                            // calves, so legs get independent control while pelvis thrusts.
+
+                                            // ── Why arch lives at the WAIST, not the pelvis ──
+                                            // Rotating the pelvis joint around X propagates through the
+                                            // hierarchy: thigh origins ride on the pelvis transform, so
+                                            // even with a thigh counter-rotation cancelling ORIENTATION,
+                                            // the thigh origin translates in an arc (±dz · sin θ for
+                                            // the L/R offset — one foot drops below floor, the other
+                                            // lifts above). User kept seeing "HEELS floating above the
+                                            // floor" when arch went up — that's this exact effect.
+                                            // Solution: leave the pelvis at rest orientation (only
+                                            // sway Z + thrust X during bob, both small). Put the full
+                                            // lordosis arch at the WAIST where it only moves the upper
+                                            // body — legs stay planted, feet stay on the shadow.
+                                            //
+                                            // Waist sign: real lordosis = lumbar arches BACKWARD (chest
+                                            // goes back relative to pelvis), not forward tilt. So the
+                                            // waist uses NEGATIVE X here — opposite sign to what a
+                                            // "same-direction pelvis+waist" approach would use. User's
+                                            // earlier note "the arch flattened her back, not lordosis"
+                                            // was the +20° (same-direction) build; flipping the sign
+                                            // gives the butt-out / chest-back silhouette.
+
+                                            // ── BOOTY-MASTER HIP GYRATION (driven by YAW slider) ──
+                                            // YAW drives a true hip gyration: pelvis Z (sway) + pelvis X
+                                            // (thrust) phase-offset 90° so the pelvis traces a big circle
+                                            // in the XZ plane. Extras on top:
+                                            //   · Bass-triggered thrust POP: transient X spike on each
+                                            //     detected bass hit — that sharp "boop" on top of the
+                                            //     smooth circle is what separates "generic gyration" from
+                                            //     booty-master read.
+                                            //   · Figure-8 harmonic: when yawComplexity is cranked, a
+                                            //     2×-rate perturbation folds the circle into a figure-8
+                                            //     trace. Smooth blend so it only kicks in when the user
+                                            //     asks for it.
+                                            //
+                                            // Phase layout (at yawRate=1, one cycle per beat):
+                                            //   ph=0.00 → sway=0, thrust=+max   (hips forward)
+                                            //   ph=0.25 → sway=+max, thrust=0   (hips left)
+                                            //   ph=0.50 → sway=0, thrust=-max   (hips back)
+                                            //   ph=0.75 → sway=-max, thrust=0   (hips right)
+                                            //
+                                            // Amplitudes are deliberately big (18° sway, 14° thrust) —
+                                            // user asked for "booty in big circles". Thigh-origin drift
+                                            // at 14° thrust = ±dz·sin(14°) ≈ ±2.4cm asymmetric foot
+                                            // shift, which is visible but acceptable given the payoff.
                                             val bobActive = m.danceYMeters > 0.001f
-                                            val pelvisThrustDeg = if (bobActive) {
+                                            val yawDrivenStance = m.danceYawDeg > 0.001f
+                                            val gyrateScale = (m.danceYawDeg / 15f).coerceIn(0f, 1f)
+                                            val yawPh = if (yawDrivenStance)
+                                                ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase + phaseSlop) % 1f + 1f) % 1f
+                                            else 0f
+
+                                            // Figure-8 blend: yawComplexity drives how much the 2×-rate
+                                            // harmonic perturbs the pure circle. At 0 = clean circle, at
+                                            // 1 = full figure-8 trace. Cranked complexity is exactly the
+                                            // "she's putting flair on it" knob.
+                                            val fig8Blend = m.yawComplexity.coerceIn(0f, 1f)
+
+                                            // ── Power-biased "pop wave" ──
+                                            // Replace raw sin/cos with a sign-preserving power curve so
+                                            // the pelvis SNAPS to the extreme of each cycle then HANGS
+                                            // there before transitioning. Exponent < 1 accelerates the
+                                            // approach to ±1 — at 0.55 the wave spends ~30% of the cycle
+                                            // within 10% of the peak. That "hang-time" at the extreme is
+                                            // what turns math-ticking gyration into a sultry groove.
+                                            // At exponent 1.0 this degenerates to the original sine.
+                                            val hangExp = 0.55f
+                                            fun popWave(x: Float): Float {
+                                                val a = kotlin.math.abs(x).toDouble()
+                                                val p = Math.pow(a, hangExp.toDouble()).toFloat()
+                                                return if (x >= 0f) p else -p
+                                            }
+
+                                            // Hip sway: pelvis Z, pop-shaped fundamental + sine2 for fig-8
+                                            val hipSwayDeg = if (yawDrivenStance) {
+                                                val raw1 = kotlin.math.sin(2f * Math.PI.toFloat() * yawPh)
+                                                val pop1 = popWave(raw1)
+                                                val sine2 = kotlin.math.sin(4f * Math.PI.toFloat() * yawPh)
+                                                val swayShape = pop1 * (1f - 0.4f * fig8Blend) + sine2 * 0.4f * fig8Blend
+                                                swayShape * 12f * gyrateScale * snap.musicalLevel
+                                            } else 0f
+
+                                            // Hip thrust: pelvis X, pop-shaped cosine (90° ahead). The
+                                            // hang-time at the extremes is what reads as "she pushes
+                                            // forward... and sits there... and rolls back". 6° peak keeps
+                                            // asymmetric L/R thigh drift at ±1cm (foot-safe).
+                                            val yawThrustDeg = if (yawDrivenStance) {
+                                                val rawCos = kotlin.math.cos(2f * Math.PI.toFloat() * yawPh)
+                                                val popCos = popWave(rawCos)
+                                                popCos * 6f * gyrateScale * snap.musicalLevel
+                                            } else 0f
+                                            val bobThrustDeg = if (bobActive) {
                                                 val yRateS = m.danceYRate.coerceAtLeast(1)
                                                 val pelvisPh = ((ar.phaseAtSnap(snap, yRateS) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                                 val kSkewS = 0.5f - 0.2f * m.physicsAmount
                                                 val p01 = if (pelvisPh < kSkewS) pelvisPh / kSkewS else 1f - (pelvisPh - kSkewS) / (1f - kSkewS)
-                                                // musicalLevel replaces bassGate here — bassGate is computed
-                                                // in the pitch block below and not yet available. musicalLevel
-                                                // is close enough in spirit (loudness-driven amplitude modulation).
-                                                p01 * 12f * arch * snap.musicalLevel
+                                                p01 * 4f * snap.musicalLevel
                                             } else 0f
-                                            val pelvicTiltX = 18f * arch + pelvisThrustDeg
+                                            val pelvisThrustDeg = yawThrustDeg + bobThrustDeg
+
+                                            // Pelvis gets a SMALL Z sway back for visible hip motion.
+                                            // At 5° peak (40% of the base 12° sway signal), the
+                                            // asymmetric L/R foot drift is ~7mm — imperceptible.
+                                            // The full sway magnitude stays at the waist so upper
+                                            // body reads dramatic while hips rotate subtly.
+                                            val pelvisSwayZ = hipSwayDeg * 0.4f
                                             if (m.pelvisJointIdx >= 0) {
-                                                stanceSkel.setJointEulerX(m.pelvisJointIdx, pelvicTiltX)
+                                                stanceSkel.setJointEulerXYZ(m.pelvisJointIdx, 0f, 0f, pelvisSwayZ)
                                             }
-                                            // Waist arches same direction as pelvis — creates an S-curve
-                                            // visible from the side (lordosis). First attempt had it
-                                            // counter-rotating which flattened the spine.
+                                            // Waist X: arch sign reverted to POSITIVE. User's two data
+                                            // points bracketed the answer:
+                                            //   +20° → "flat back, not lordosis"  (too much backward arch,
+                                            //          overshoots and straightens the mesh's natural curve)
+                                            //   -25° → "forward lean"              (wrong direction entirely)
+                                            // So +X IS the backward-arch direction for this rig's waist
+                                            // bind frame — just needed a smaller magnitude. +12° should
+                                            // add a subtle lumbar curve without flattening. Tuning knob:
+                                            // bump toward +18° for more pronounced arch if user wants,
+                                            // drop toward +6° for subtler read.
+                                            // Waist carries EVERYTHING now:
+                                            //   X = arch + thrust  (forward-back pump)
+                                            //   Z = full sway      (lateral sway, no foot pendulum)
+                                            // Pelvis is at rest. Waist has no leg children, so waist
+                                            // rotations don't propagate to feet — arch/thrust/sway
+                                            // all land cleanly on the upper body. Her hips visually
+                                            // sway from mesh skinning-weight blending at the
+                                            // pelvis/waist boundary, but the skeleton itself is
+                                            // foot-planted.
+                                            val waistArchX = 12f * arch + pelvisThrustDeg
+                                            val waistSwayZ = hipSwayDeg
                                             if (m.waistJointIdx >= 0) {
-                                                stanceSkel.setJointEulerX(m.waistJointIdx, 20f * arch + pelvisThrustDeg * 0.2f)
+                                                stanceSkel.setJointEulerXYZ(m.waistJointIdx, waistArchX, 0f, waistSwayZ)
                                             }
-                                            // ── Critical: counter-rotate thighs so legs stay world-stable ──
-                                            // Pelvis X rotation propagates down the hierarchy and rotates
-                                            // the thighs with it (children inherit parent transforms in
-                                            // global space). Without this counter, the feet swing forward/
-                                            // back as the pelvis tilts — exactly the "it's moving her
-                                            // FEET" artifact user caught. Setting thigh local-X to the
-                                            // negative of the pelvic rotation cancels the propagation at
-                                            // the thigh joint, keeping legs vertical. When the squat
-                                            // driver runs below (bob > 0), it OVERWRITES this with its own
-                                            // composed value that includes the same counter term.
-                                            val thighCounterDeg = -pelvicTiltX
-                                            if (!bobActive && m.thighLJointIdx == Int.MIN_VALUE) {
-                                                // Cache on first frame when bob is off — squat driver
-                                                // normally does the lookup, but without bob we need it here.
+
+                                            // ── Thigh counter-rotation ──
+                                            // Pelvis rotation still propagates (thrust X + sway Z), so
+                                            // counter at the thighs to keep legs world-vertical. With
+                                            // arch removed from pelvis, magnitudes are tiny (thrust
+                                            // peaks at 6° · arch · level, sway at 12° · level) — but we
+                                            // still need the counter or feet wiggle on beat.
+                                            // Thigh Z counter MATCHES pelvis Z sway (pelvisSwayZ)
+                                            // so legs stay pointing same direction in world while
+                                            // pelvis rotates. Position drift is unavoidable (rigid
+                                            // hierarchy) but at 5° pelvis Z it's ~7mm per foot,
+                                            // below the visual threshold.
+                                            val thighCounterDegX = 0f
+                                            val thighCounterDegZ = -pelvisSwayZ
+                                            if (m.thighLJointIdx == Int.MIN_VALUE) {
                                                 m.thighLJointIdx = stanceSkel.indexOf("L_Thigh")
                                                 m.thighRJointIdx = stanceSkel.indexOf("R_Thigh")
                                             }
-                                            if (!bobActive) {
-                                                if (m.thighLJointIdx >= 0) stanceSkel.setJointEulerX(m.thighLJointIdx, thighCounterDeg)
-                                                if (m.thighRJointIdx >= 0) stanceSkel.setJointEulerX(m.thighRJointIdx, thighCounterDeg)
+                                            if (m.thighLJointIdx >= 0) {
+                                                stanceSkel.setJointEulerXYZ(m.thighLJointIdx, thighCounterDegX, 0f, thighCounterDegZ)
                                             }
-                                            // Arms drop to her sides via clavicle Z rotation.
-                                            if (m.claviceLJointIdx == Int.MIN_VALUE) {
-                                                m.claviceLJointIdx = stanceSkel.indexOf("L_Clavicle")
-                                                m.claviceRJointIdx = stanceSkel.indexOf("R_Clavicle")
+                                            if (m.thighRJointIdx >= 0) {
+                                                stanceSkel.setJointEulerXYZ(m.thighRJointIdx, thighCounterDegX, 0f, thighCounterDegZ)
                                             }
-                                            // Arm drop only applies when yaw counter-sway isn't driving the
-                                            // clavicles. Future: compose stance + sway in one place.
-                                            if (m.danceYawDeg == 0f) {
-                                                val armDrop = 75f * arch
-                                                if (m.claviceLJointIdx >= 0) stanceSkel.setJointEulerZ(m.claviceLJointIdx, -armDrop)
-                                                if (m.claviceRJointIdx >= 0) stanceSkel.setJointEulerZ(m.claviceRJointIdx, armDrop)
+                                            // ── ARM REWRITE — drive UPPER ARM, not clavicle ──
+                                            // Clavicle is the sternum→shoulder-socket bone. Rotating
+                                            // it moves the shoulder socket sideways into the ribcage
+                                            // (this is why 40° AND 75° BOTH clipped through the
+                                            // torso — the socket was being jammed into the chest,
+                                            // not the arm being swung down). Actual arm abduction/
+                                            // adduction happens at the glenohumeral joint, which
+                                            // in Tripo is the "L_Upperarm" (lowercase 'a' — case-
+                                            // insensitive lookup catches both spellings).
+                                            //
+                                            // Axis ground truth (from direct GLB inspection of 4
+                                            // Tripo rigs): Upperarm local +X points down in model
+                                            // space with a slight forward tilt. A rotation around
+                                            // local X sweeps the arm from out-to-the-side down
+                                            // toward the body. Left side uses NEGATIVE X to drop
+                                            // (−60° brings arm to side); right side uses POSITIVE
+                                            // (its +X is mirrored). Clavicle stays at bind.
+                                            //
+                                            // Forearm local +Z points sideways in model space
+                                            // (across the body). Rotation around Z flexes elbow
+                                            // forward-and-inward. Magnitudes ~45° give a natural
+                                            // rest where hands land at mid-thigh.
+                                            if (m.upperArmLJointIdx == Int.MIN_VALUE) {
+                                                m.upperArmLJointIdx = stanceSkel.indexOf("L_Upperarm")
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("L_UpperArm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("L_Arm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("L_Shoulder") }
+                                                m.upperArmRJointIdx = stanceSkel.indexOf("R_Upperarm")
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("R_UpperArm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("R_Arm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("R_Shoulder") }
+                                                m.forearmLJointIdx = stanceSkel.indexOf("L_Forearm")
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("L_LowerArm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("L_Elbow") }
+                                                m.forearmRJointIdx = stanceSkel.indexOf("R_Forearm")
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("R_LowerArm") }
+                                                    .let { if (it >= 0) it else stanceSkel.indexOf("R_Elbow") }
+                                                android.util.Log.i(TAG, "Arm joints: upperarm=${m.upperArmLJointIdx}/${m.upperArmRJointIdx} " +
+                                                    "forearm=${m.forearmLJointIdx}/${m.forearmRJointIdx}")
                                             }
+                                            // Upper arm drop + KINETIC CHAIN arm sway. Z axis confirmed
+                                            // as the abduction axis on this rig. Sway adds a phase-
+                                            // lagged (15% behind pelvis) oscillation so arms drag and
+                                            // swing THROUGH the hip motion rather than staying static.
+                                            // L side gets -(drop - sway) and R gets +(drop + sway) so
+                                            // positive sway lifts L / dips R = natural gait contra.
+                                            val armDropZ = 60f
+                                            val armSwayAmp = if (yawDrivenStance) {
+                                                val armLagPh = ((yawPh - 0.15f) % 1f + 1f) % 1f
+                                                val armLagSine = kotlin.math.sin(2f * Math.PI.toFloat() * armLagPh)
+                                                // Bumped 20° → 35° per user: "can we bring back
+                                                // the sexy... arm movements". Bigger swing-through
+                                                // on the back-half of each cycle; upper arms now
+                                                // visibly swoop through the drop range.
+                                                armLagSine * 35f * gyrateScale * snap.musicalLevel
+                                            } else 0f
+                                            if (m.upperArmLJointIdx >= 0) stanceSkel.setJointEulerZ(m.upperArmLJointIdx, -(armDropZ - armSwayAmp))
+                                            if (m.upperArmRJointIdx >= 0) stanceSkel.setJointEulerZ(m.upperArmRJointIdx, armDropZ + armSwayAmp)
+                                            // Forearm elbow with RANDOM STRAIGHTEN drift.
+                                            // Each arm has its own slow fBm signal (uncorrelated
+                                            // phases via seed offset). When signal peaks past ~0.3,
+                                            // the arm extends — elbow straightens from 45° bend
+                                            // down toward 0°. Smoothstep makes the transition feel
+                                            // gradual ("she's thinking about it"). L and R
+                                            // independent so she can have one arm out while the
+                                            // other rests — natural variety, not metronomic.
+                                            val elbowBendX = 45f
+                                            val lArmNoise = fbmMod(tSec, seed, 7.7f)
+                                            val rArmNoise = fbmMod(tSec, seed, 9.1f)
+                                            val lStraighten = kotlin.math.max(0f,
+                                                (lArmNoise - 0.3f) / 0.4f).coerceIn(0f, 1f)
+                                            val rStraighten = kotlin.math.max(0f,
+                                                (rArmNoise - 0.3f) / 0.4f).coerceIn(0f, 1f)
+                                            // At full straighten, elbow bend drops to 5° (slightly
+                                            // bent still — fully straight looks unnatural).
+                                            val lElbowDeg = elbowBendX * (1f - lStraighten) + 5f * lStraighten
+                                            val rElbowDeg = elbowBendX * (1f - rStraighten) + 5f * rStraighten
+                                            if (m.forearmLJointIdx >= 0) stanceSkel.setJointEulerX(m.forearmLJointIdx, lElbowDeg)
+                                            if (m.forearmRJointIdx >= 0) stanceSkel.setJointEulerX(m.forearmRJointIdx, rElbowDeg)
                                         }
 
                                         val fbmYaw = fbmMod(tSec, seed, 0f)
@@ -2084,50 +2303,46 @@ class FilamentModelActivity : ComponentActivity() {
                                         val pivotYCtrRoll = if (m.pivotEnabled) (pvMinY + fCtr * pvHeight) * m.scale else 0f
 
                                         var yawSig = 0f
-                                        // YAW around world Y — Gemini#2 phase-shear -0.09 (shoulders lag
-                                        // the hips, kinetic energy travels UP the block).
+                                        // YAW is now applied as a SPINE01 Y-joint rotation rather than a
+                                        // world-space quaternion twist. Why:
+                                        //   The previous impl rotated the whole model's quaternion by
+                                        //   yaw*sin(t). On a Bottom-Center-Pivot-OFF rig (model origin
+                                        //   at pelvis, feet ~1m below) that world rotation pivots
+                                        //   everything — including the feet — around pelvis height.
+                                        //   Feet sweep arcs of radius ≈ foot-to-pelvis-distance × sin(θ)
+                                        //   = 1m × sin(15°) = 26cm. Add bob's vertical drop and the
+                                        //   combined motion reads as "feet bobbing across the floor" /
+                                        //   pendulum.
+                                        //
+                                        //   Applying yaw at Spine01 instead (Spine01 sits above the
+                                        //   pelvis in the hierarchy; thighs / legs are siblings of the
+                                        //   subtree, not children) rotates ONLY the torso / head / arms.
+                                        //   Hips don't yaw, thighs don't yaw, feet stay planted.
+                                        //
+                                        //   We still compute yawSig here so downstream blocks that use
+                                        //   it (counter-roll, arm sway) keep their beat shaping. The
+                                        //   actual joint write moves to the spine-twist block below.
                                         if (m.danceYawDeg != 0f) {
                                             val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPh + phaseSlop) % 1f + 1f) % 1f
-                                            // Tier 3 — character shaping: sharpness cusps the wave
-                                            // toward a triangle; complexity layers a 2×-rate ghost.
                                             yawSig = SceneManager.shapedWaveAt(ph, easeYaw, m.yawSharpness, m.yawComplexity)
-                                            val half = Math.toRadians((m.danceYawDeg * effInt * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig).toDouble()).toFloat() * 0.5f
-                                            val sy = kotlin.math.sin(half); val cy = kotlin.math.cos(half)
-                                            val nx = cy * qx + sy * qz
-                                            val ny = cy * qy + sy * qw
-                                            val nz = cy * qz - sy * qx
-                                            val nw = cy * qw - sy * qy
-                                            qx = nx; qy = ny; qz = nz; qw = nw
 
-                                            // Counter-roll ribcage proxy: antiphase LOCAL Z-roll at
-                                            // per-preset gain (TWERK 0.10 / SWAY 0.50 / default 0.35) —
-                                            // reads as shoulders tilting opposite the hips. Right-multiplied
-                                            // (q * qZ). Pivots at hips (frac 0.50) by default so it looks
-                                            // like a spinal twist regardless of where the dance yaw pivots.
-                                            if (m.physicsAmount > 0.001f && m.counterRollGain > 0.001f) {
-                                                val rollDeg = -m.counterRollGain * m.danceYawDeg * effInt * yawSig * m.physicsAmount
-                                                val rh = Math.toRadians(rollDeg.toDouble()).toFloat() * 0.5f
-                                                val sr = kotlin.math.sin(rh); val cr = kotlin.math.cos(rh)
-                                                // Stash q BEFORE the counter-roll so pivot correction
-                                                // uses the pre-rotation frame.
-                                                val qxCR = qx; val qyCR = qy; val qzCR = qz; val qwCR = qw
-                                                val nnx = qx * cr + qy * sr
-                                                val nny = qy * cr - qx * sr
-                                                val nnz = qz * cr + qw * sr
-                                                val nnw = qw * cr - qz * sr
-                                                qx = nnx; qy = nny; qz = nnz; qw = nnw
-                                                // Pivot correction for local-Z roll about (0, pivotY, 0):
-                                                // local offset = (pivotY · sinθ, pivotY · (1-cosθ), 0)
-                                                if (m.pivotEnabled && pivotYCtrRoll != 0f) {
-                                                    val sTh = 2f * sr * cr
-                                                    val cTh = 1f - 2f * sr * sr
-                                                    rotateVecQ(qxCR, qyCR, qzCR, qwCR,
-                                                        pivotYCtrRoll * sTh, pivotYCtrRoll * (1f - cTh), 0f)
-                                                    px += pivotRotScratch[0]
-                                                    py += pivotRotScratch[1]
-                                                    pz += pivotRotScratch[2]
-                                                }
-                                            }
+                                            // Counter-roll ribcage proxy — now applied at the WAIST
+                                            // joint Z axis (upper body only) instead of the world
+                                            // quaternion. Before: q × qZ rolled the ENTIRE mesh,
+                                            // which meant feet ~1m below pelvis swung 1m·sin(θ) arcs.
+                                            // At the default 0.35 gain × 0.35 physics × 15° yaw × 1
+                                            // yawSig = 1.8° world roll → 3cm foot arc at beat rate.
+                                            // Classic pendulum contribution the user kept seeing.
+                                            // Applying at the waist joint keeps the "shoulders tilt
+                                            // opposite hips" visual (waist rolls in contra direction
+                                            // → chest tilts the other way from pelvis) without touching
+                                            // anything below pelvis.
+                                            //
+                                            // This value is stored here and applied in the stance
+                                            // block's waist XYZ composition at the end of yaw handling.
+                                            val counterRollDeg = if (m.physicsAmount > 0.001f && m.counterRollGain > 0.001f) {
+                                                -m.counterRollGain * m.danceYawDeg * effInt * yawSig * m.physicsAmount
+                                            } else 0f
 
                                             // ── Tier 4: spine counter-twist + arm counter-sway ──
                                             // The rigid yaw above rotates the WHOLE mesh. On a skinned rig
@@ -2153,31 +2368,43 @@ class FilamentModelActivity : ComponentActivity() {
                                                     android.util.Log.i(TAG, "Yaw-chain joints cached: spine=${m.spine01JointIdx}/${m.spine02JointIdx} " +
                                                         "clavicle=${m.claviceLJointIdx}/${m.claviceRJointIdx}")
                                                 }
-                                                // Magnitude used by the rigid yaw (degrees, not radians — we
-                                                // re-derive here instead of sharing `half` so the intent is
-                                                // readable and sign is explicit).
+                                                // ── Axis distribution across spine joints ──
+                                                // To avoid Euler-stack gimbal distortion, each joint
+                                                // carries ONE dance-axis rotation rather than stacking
+                                                // X/Y/Z on a single joint:
+                                                //   · Waist X  → lordosis arch  (stance block)
+                                                //   · Waist Z  → sway counter   (stance block)
+                                                //   · Spine01 Y → torso twist (contra-body yaw lag)
+                                                //   · Spine02 Z → counter-roll (shoulders tilt opp hips)
+                                                // Each of these is small enough that its isolated
+                                                // axis rotation composes naturally through the chain
+                                                // without the "diagonal bend" gimbal pathology that
+                                                // shows up when you stack Y+Z on the same joint.
                                                 val yawMagDeg = m.danceYawDeg * effInt * ampGain * fbmYaw * midGate * proxMacro * gazeGain * yawSig
-                                                val counterFrac = 0.7f
-                                                val spineHalf = -yawMagDeg * counterFrac * 0.5f
-                                                if (m.spine01JointIdx >= 0) skelYaw.setJointEulerY(m.spine01JointIdx, spineHalf)
-                                                if (m.spine02JointIdx >= 0) skelYaw.setJointEulerY(m.spine02JointIdx, spineHalf)
-                                                // Arm counter-sway: clavicles rotate Z opposite to hip yaw,
-                                                // roughly 15% of the yaw magnitude. Left clavicle +Z when
-                                                // hips swing left = arm swings forward.
-                                                val armSway = yawMagDeg * 0.15f
-                                                if (m.claviceLJointIdx >= 0) skelYaw.setJointEulerZ(m.claviceLJointIdx, -armSway)
-                                                if (m.claviceRJointIdx >= 0) skelYaw.setJointEulerZ(m.claviceRJointIdx, armSway)
+                                                // Spine01 carries ALL the torso twist (0.3 + 0.15 that
+                                                // used to be spread across both spines). Spine02 carries
+                                                // ONLY the counter-roll Z. Each joint = one axis =
+                                                // zero gimbal stack.
+                                                if (m.spine01JointIdx >= 0) skelYaw.setJointEulerY(m.spine01JointIdx, -yawMagDeg * 0.45f)
+                                                if (m.spine02JointIdx >= 0) skelYaw.setJointEulerZ(m.spine02JointIdx, counterRollDeg)
+                                                // Arm sway disabled temporarily — clavicle is no longer
+                                                // the arm-drop joint (upperarm took over in the stance
+                                                // block). Wiring sway onto upperarm X with phase lag is
+                                                // next pass; for now, arms rest at their stance pose
+                                                // without beat-sway so the primary "arms look right"
+                                                // fix lands cleanly first.
                                             }
                                         } else {
-                                            // Yaw off: reset spine + clavicle joints to bind so we don't
-                                            // freeze at the last twisted posed.
+                                            // Yaw off: clear the spine counter-twist so upper body
+                                            // returns to neutral. DO NOT reset clavicles — the stance
+                                            // block owns the arm-drop write and resetting to bind here
+                                            // would snap arms back to T-pose horizontal whenever yaw
+                                            // is zero.
                                             val gpuMYaw = glesRenderer?.getModel(m.gpuModelId)
                                             val skelYaw = gpuMYaw?.skeleton
                                             if (gpuMYaw?.isSkinned == true && skelYaw != null && m.spine01JointIdx != Int.MIN_VALUE) {
                                                 if (m.spine01JointIdx >= 0) skelYaw.resetJointToBind(m.spine01JointIdx)
                                                 if (m.spine02JointIdx >= 0) skelYaw.resetJointToBind(m.spine02JointIdx)
-                                                if (m.claviceLJointIdx >= 0) skelYaw.resetJointToBind(m.claviceLJointIdx)
-                                                if (m.claviceRJointIdx >= 0) skelYaw.resetJointToBind(m.claviceRJointIdx)
                                             }
                                         }
                                         // PITCH around LOCAL X (right-multiply q * qX) — so pitch tilts
@@ -2261,42 +2488,60 @@ class FilamentModelActivity : ComponentActivity() {
                                                 if (m.kneeLJointIdx >= 0 && m.kneeRJointIdx >= 0) {
                                                     val gate = effInt.coerceIn(0f, 1f) * bassGate
                                                     val squat = phase01 * gate
-                                                    val arch = m.stanceArch.coerceIn(0f, 1f)
-                                                    // Stance baselines — composed with dynamic squat so a
-                                                    // full-arch booty pose already has bent knees and tilted
-                                                    // thighs at rest, and dance motion oscillates deeper.
-                                                    val stanceCalfDeg = 18f * arch
-                                                    val stanceThighDeg = -6f * arch
-                                                    val stanceRootDrop = 0.04f * arch
-                                                    val kneeDeg = stanceCalfDeg + squat * 40f
-                                                    val thighDeg = stanceThighDeg + (-squat * 20f)
+
+                                                    // ── Stance baselines REMOVED ──
+                                                    // Previous: stanceCalfDeg=18°*arch, stanceThighDeg=-6°*arch,
+                                                    // stanceRootDrop=0.04*arch. Each rotated thighs/calves at
+                                                    // rest which shifted their children's world positions via
+                                                    // hierarchy arc — calf origin moves ±dy·sin(thighX) in Z,
+                                                    // foot likewise. User kept seeing "heels floating" and
+                                                    // "stepping through floor" whenever arch was up, even when
+                                                    // bob was quiet. Arch now only tilts the WAIST (handled in
+                                                    // the stance block above), which doesn't touch legs.
+
+                                                    // Recompute the SMALL pelvis Z sway here so we can
+                                                    // apply the matching Z counter on the thighs in
+                                                    // squat mode. Must match the stance block exactly
+                                                    // or pelvis rotation leaks into thighs during bob.
+                                                    val pelvisSwayZBob = if (m.danceYawDeg > 0.001f) {
+                                                        val yawPh = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase + phaseSlop) % 1f + 1f) % 1f
+                                                        val raw1 = kotlin.math.sin(2f * Math.PI.toFloat() * yawPh)
+                                                        val a = kotlin.math.abs(raw1).toDouble()
+                                                        val popped = Math.pow(a, 0.55).toFloat().let { if (raw1 >= 0f) it else -it }
+                                                        val gScale = (m.danceYawDeg / 15f).coerceIn(0f, 1f)
+                                                        popped * 12f * gScale * snap.musicalLevel * 0.4f
+                                                    } else 0f
+
+                                                    val kneeDeg = -squat * 40f
+                                                    val thighDeg = squat * 20f
                                                     skel.setJointEulerX(m.kneeLJointIdx, kneeDeg)
                                                     skel.setJointEulerX(m.kneeRJointIdx, kneeDeg)
-                                                    if (m.thighLJointIdx >= 0) skel.setJointEulerX(m.thighLJointIdx, thighDeg)
-                                                    if (m.thighRJointIdx >= 0) skel.setJointEulerX(m.thighRJointIdx, thighDeg)
-                                                    // Root Y drop — REDUCED from 0.08 → 0.04 after "stepping
-                                                    // through floor" report. Floor-snap places heel-bottom
-                                                    // on gridHeight at load; any root drop during dance puts
-                                                    // the heel below that Y. 4cm is tolerable for deep squat;
-                                                    // proper fix is IK-style compensation so feet stay planted
-                                                    // while hip drops via thigh/calf flexion alone.
+                                                    if (m.thighLJointIdx >= 0) {
+                                                        skel.setJointEulerXYZ(m.thighLJointIdx, thighDeg, 0f, -pelvisSwayZBob)
+                                                    }
+                                                    if (m.thighRJointIdx >= 0) {
+                                                        skel.setJointEulerXYZ(m.thighRJointIdx, thighDeg, 0f, -pelvisSwayZBob)
+                                                    }
+                                                    // Root Y drop for dance-squat only. Arch no longer drops
+                                                    // root (arch is upper-body lordosis, doesn't need leg
+                                                    // compensation). 4cm is tolerable for deep squat.
                                                     if (m.rootJointIdx >= 0) {
                                                         skel.resetJointToBind(m.rootJointIdx)
-                                                        val dropMeters = squat * 0.04f + stanceRootDrop * 0.5f
+                                                        val dropMeters = squat * 0.04f
                                                         skel.localPose[m.rootJointIdx * 16 + 13] -= dropMeters
                                                     }
                                                 }
                                             }
                                         } else {
-                                            // Bob off: restore every squat joint to bind so the rig doesn't
-                                            // freeze at the last frame's posed angles.
+                                            // Bob off: reset knees + root. Thighs are owned by the stance
+                                            // block (it writes them every frame with thrust + sway counters)
+                                            // so we MUST NOT reset thighs here or the Z counter is lost and
+                                            // legs wobble sideways whenever sway is active without bob.
                                             val gpuM = glesRenderer?.getModel(m.gpuModelId)
                                             val skel = gpuM?.skeleton
                                             if (gpuM?.isSkinned == true && skel != null && m.kneeLJointIdx != Int.MIN_VALUE) {
                                                 if (m.kneeLJointIdx >= 0) skel.resetJointToBind(m.kneeLJointIdx)
                                                 if (m.kneeRJointIdx >= 0) skel.resetJointToBind(m.kneeRJointIdx)
-                                                if (m.thighLJointIdx >= 0) skel.resetJointToBind(m.thighLJointIdx)
-                                                if (m.thighRJointIdx >= 0) skel.resetJointToBind(m.thighRJointIdx)
                                                 if (m.rootJointIdx >= 0) skel.resetJointToBind(m.rootJointIdx)
                                             }
                                         }
@@ -2333,25 +2578,26 @@ class FilamentModelActivity : ComponentActivity() {
                                             }
                                         }
 
-                                        // Lissajous hip-8: figure-8 COM arc in the frontal plane — the
-                                        // literal kinematic signature of belly-dance/winding. Horizontal
-                                        // at 1x yaw rate, vertical at 2x → ∞-shape COM trajectory.
-                                        if (m.physicsAmount > 0.001f && hasTempo) {
-                                            val lissAmp = 0.018f * m.physicsAmount * effInt * ampGain * gazeGain
-                                            val hp = ar.phaseAtSnap(snap, yawRate)
-                                            val hCos = kotlin.math.cos(2.0 * Math.PI * hp).toFloat()
-                                            val hSin2 = kotlin.math.sin(4.0 * Math.PI * hp).toFloat()
-                                            px += lissAmp * hCos
-                                            py += lissAmp * 0.45f * hSin2
-                                        }
+                                        // Lissajous hip-8 DISABLED — was injecting ±6mm world X +
+                                        // ±3mm world Y translation per beat onto model position px/py.
+                                        // Even at 6mm, over a cycle it reads as the model gliding in
+                                        // an ∞-arc which on top of hip gyration looks like pendulum
+                                        // feet. The hip gyration is already doing the belly-dance
+                                        // signature via pelvis joint rotation — we don't need the
+                                        // additional world translation on top.
 
                                         // ── Tier1-E/G/J: breath + axis coupling + vestibular mirror ──
                                         // Dancer: a body is causally chained, not a tripod. Yaw pulls pitch
                                         // into the turn (contrapposto), and bob dips on the loaded side.
                                         // Breath runs independent of the beat — she's alive on stillness.
 
-                                        // Tier1-E: weight-shift bob dip on yaw extremes.
-                                        py -= 0.010f * m.physicsAmount * effInt * kotlin.math.abs(yawSig) * proxMacro
+                                        // Tier1-E weight-shift bob dip DISABLED — was subtracting
+                                        // up to 1cm from world Y on yaw extremes, creating asymmetric
+                                        // vertical motion that contributed to the pendulum read
+                                        // since it only fires on yaw peaks, not continuously. Pelvis
+                                        // Z sway already gives the visual weight shift through rig
+                                        // rotation, no world-position write needed.
+                                        // py -= 0.010f * m.physicsAmount * effInt * kotlin.math.abs(yawSig) * proxMacro
 
                                         // Tier1-G: breath bob — 3mm @ 0.25Hz, per-model seed decorrelation.
                                         val breathBobM = 0.003f * proxMicro *
@@ -2366,19 +2612,15 @@ class FilamentModelActivity : ComponentActivity() {
                                         m.camYVelSmooth = 0.9f * m.camYVelSmooth + 0.1f * camYDelta
                                         py += (m.camYVelSmooth * 2.5f).coerceIn(-0.003f, 0.003f)
 
-                                        // Tier1-E: yaw → pitch coupling (15%). Body tilts into the turn.
-                                        // Local-frame (right-multiply q * qX) so tilt goes in HER forward.
-                                        if (yawSig != 0f && m.danceYawDeg > 0f) {
-                                            val halfC = Math.toRadians(
-                                                (m.danceYawDeg * effInt * yawSig * 0.15f * proxMacro * gazeGain).toDouble()
-                                            ).toFloat() * 0.5f
-                                            val scp = kotlin.math.sin(halfC); val ccp = kotlin.math.cos(halfC)
-                                            val nxC = qx * ccp + qw * scp
-                                            val nyC = qy * ccp + qz * scp
-                                            val nzC = qz * ccp - qy * scp
-                                            val nwC = qw * ccp - qx * scp
-                                            qx = nxC; qy = nyC; qz = nzC; qw = nwC
-                                        }
+                                        // Tier1-E yaw→pitch coupling DISABLED — this was rotating the
+                                        // WORLD quaternion by 0.15 × yawDeg × yawSig on local X axis,
+                                        // up to 2.25° world pitch on each yaw peak. For a BCP-OFF
+                                        // rig pivoting at pelvis, that's sin(2.25°) × 1m foot height
+                                        // = ~4cm foot arc per beat — a direct contribution to the
+                                        // residual pendulum the user kept seeing even after every
+                                        // other world-rotation source was removed.
+                                        // If we want "tilts into the turn" later, apply it at a spine
+                                        // joint (waist X), not world, so feet stay planted.
 
                                         // Tier1-G: breath pitch — 0.3° @ 0.3Hz, always on (local-frame).
                                         val breathPitchDeg = 0.3f * proxMicro *
@@ -2684,6 +2926,34 @@ class FilamentModelActivity : ComponentActivity() {
                                 val gmF = gr.getModel(m.gpuModelId) ?: continue
                                 val hLocal = 2f * (gmF.boundsCenterY - gmF.boundsMinY)
                                 val headYWorld = m.posY + (gmF.boundsMinY + hLocal * 0.92f) * m.scale
+
+                                // ── Floor FORWARD arrow ──
+                                // Always on for selected model so user can confirm visually
+                                // which direction the rig considers "face forward" (Tripo
+                                // convention = local +Z). Three crosses on the floor forming
+                                // a yellow→gold line, biggest at the tip. Floor Y = gridHeight
+                                // + 5mm so it hovers just above the shadow/grid.
+                                run {
+                                    val modelYaw = kotlin.math.atan2(
+                                        2f * (m.rotW * m.rotY + m.rotX * m.rotZ),
+                                        1f - 2f * (m.rotY * m.rotY + m.rotZ * m.rotZ)
+                                    )
+                                    // Tripo rigs appear to bake face-forward as local +X, not
+                                    // +Z (user saw the +Z arrow going perpendicular to her
+                                    // face). +X rotated by Y-yaw lands at (cos, -sin) in XZ.
+                                    val fwdX = kotlin.math.cos(modelYaw)
+                                    val fwdZ = -kotlin.math.sin(modelYaw)
+                                    val floorY = (glesRenderer?.gridHeight ?: 0f) + 0.005f
+                                    gr.renderFacingMarker(leftProj, leftView,
+                                        m.posX, floorY, m.posZ, 0.08f, 1f, 0.9f, 0.15f)
+                                    gr.renderFacingMarker(leftProj, leftView,
+                                        m.posX + fwdX * 0.3f, floorY, m.posZ + fwdZ * 0.3f,
+                                        0.12f, 1f, 0.85f, 0.1f)
+                                    gr.renderFacingMarker(leftProj, leftView,
+                                        m.posX + fwdX * 0.6f, floorY, m.posZ + fwdZ * 0.6f,
+                                        0.22f, 1f, 1f, 0f)
+                                }
+
                                 // FACE dot: only rendered when face is explicitly marked.
                                 // Positioned on her captured-face side, rotates with her body.
                                 if (!m.markedFaceLocalYaw.isNaN()) {
@@ -2771,6 +3041,29 @@ class FilamentModelActivity : ComponentActivity() {
                                 val gmF = gr.getModel(m.gpuModelId) ?: continue
                                 val hLocal = 2f * (gmF.boundsCenterY - gmF.boundsMinY)
                                 val headYWorld = m.posY + (gmF.boundsMinY + hLocal * 0.92f) * m.scale
+
+                                // Floor FORWARD arrow (see left-eye block for rationale).
+                                run {
+                                    val modelYaw = kotlin.math.atan2(
+                                        2f * (m.rotW * m.rotY + m.rotX * m.rotZ),
+                                        1f - 2f * (m.rotY * m.rotY + m.rotZ * m.rotZ)
+                                    )
+                                    // Tripo rigs appear to bake face-forward as local +X, not
+                                    // +Z (user saw the +Z arrow going perpendicular to her
+                                    // face). +X rotated by Y-yaw lands at (cos, -sin) in XZ.
+                                    val fwdX = kotlin.math.cos(modelYaw)
+                                    val fwdZ = -kotlin.math.sin(modelYaw)
+                                    val floorY = (glesRenderer?.gridHeight ?: 0f) + 0.005f
+                                    gr.renderFacingMarker(rightProj, rightView,
+                                        m.posX, floorY, m.posZ, 0.08f, 1f, 0.9f, 0.15f)
+                                    gr.renderFacingMarker(rightProj, rightView,
+                                        m.posX + fwdX * 0.3f, floorY, m.posZ + fwdZ * 0.3f,
+                                        0.12f, 1f, 0.85f, 0.1f)
+                                    gr.renderFacingMarker(rightProj, rightView,
+                                        m.posX + fwdX * 0.6f, floorY, m.posZ + fwdZ * 0.6f,
+                                        0.22f, 1f, 1f, 0f)
+                                }
+
                                 if (!m.markedFaceLocalYaw.isNaN()) {
                                     val faceWorldYaw = kotlin.math.atan2(
                                         2f * (m.rotW * m.rotY + m.rotX * m.rotZ),

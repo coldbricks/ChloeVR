@@ -129,10 +129,14 @@ class SceneManager(
         // is true, dance takes priority over the A/B shake above.
         var animHasBase: Boolean = false,
         val animBasePose: FloatArray = FloatArray(7),
-        var danceYawDeg: Float = 0f,
+        // Defaults captured from user's end-of-session screenshot — the
+        // "booty-master" preset. YAW at full 15° drives hip gyration, pitch
+        // and bob stay near-zero because yaw + gyration reads best alone.
+        // Rates 1/2 / 1/4 / 1/4 match the subdivisions the user settled on.
+        var danceYawDeg: Float = 15f,
         var danceYawRate: Int = 2,
         var dancePitchDeg: Float = 0f,
-        var dancePitchRate: Int = 2,
+        var dancePitchRate: Int = 4,
         var danceYMeters: Float = 0f,
         var danceYRate: Int = 4,
         // Per-axis phase offsets (0..1). Shuffle randomises these so moves
@@ -143,7 +147,7 @@ class SceneManager(
         // Easing curve applied to each quarter of the oscillation. Default SINE
         // is the smoothest / most neutral; BACK adds an overshoot for attitude,
         // EXPO for a punchy "whip then hold" snap, LINEAR for robotic metronome.
-        var danceEase: DanceEase = DanceEase.SINE,
+        var danceEase: DanceEase = DanceEase.LINEAR,
         // IMPROV: when on, the dance auto-shuffles every `improvBars` bars of
         // the locked BPM — so the model spontaneously swaps between booty shake,
         // ass bend, jump, etc. without manual intervention. Feels like jamming.
@@ -253,11 +257,11 @@ class SceneManager(
         // BOUNCE, etc.) crank sharpness to give each style a recognisable
         // feel beyond amp×rate×ease alone.
         var yawSharpness: Float = 0f,
-        var yawComplexity: Float = 0f,
+        var yawComplexity: Float = 0.34f,
         var pitchSharpness: Float = 0f,
-        var pitchComplexity: Float = 0f,
+        var pitchComplexity: Float = 0.34f,
         var bobSharpness: Float = 0f,
-        var bobComplexity: Float = 0f,
+        var bobComplexity: Float = 0.34f,
         // ── Tier 3 Feature 4: glute deformation ──
         // Vertex-shader push-out at two symmetric points near the hip, beat-
         // synced so bass kicks spike the push amount. A/B positions are auto-
@@ -296,6 +300,10 @@ class SceneManager(
         var spine02JointIdx: Int = Int.MIN_VALUE,
         var claviceLJointIdx: Int = Int.MIN_VALUE,
         var claviceRJointIdx: Int = Int.MIN_VALUE,
+        var upperArmLJointIdx: Int = Int.MIN_VALUE,
+        var upperArmRJointIdx: Int = Int.MIN_VALUE,
+        var forearmLJointIdx: Int = Int.MIN_VALUE,
+        var forearmRJointIdx: Int = Int.MIN_VALUE,
         var pelvisJointIdx: Int = Int.MIN_VALUE,
         var waistJointIdx: Int = Int.MIN_VALUE,
         // Tier 4 — ARCH stance. 0 = bind pose (KNOWN GOOD), 1 = full booty

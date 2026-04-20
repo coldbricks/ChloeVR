@@ -563,6 +563,14 @@ class AudioReactor {
         musicalLevelSmooth += (rmsInst - musicalLevelSmooth) * mlAlpha
         val mlHeadroom = (musicalLevelSmooth - silenceFloor).coerceAtLeast(0f) * musicalDynamics
         musicalLevel = (silenceFloor + mlHeadroom).coerceIn(0f, 1f)
+        // When BPM is locked (user has tap-tempoed or auto-BPM caught),
+        // floor musicalLevel at 0.5 so dance effects still fire when the
+        // user is using the metronome without music playing. Without this
+        // floor, quiet passages silence every dance effect because dance
+        // amplitudes are multiplied by musicalLevel.
+        if (bpmLockedStable) {
+            musicalLevel = musicalLevel.coerceAtLeast(0.5f)
+        }
 
         // BPM tracker runs off rawBass (bass-band RMS), NOT the user's BOX
         // settings. The box can be anywhere in the spectrum without affecting
