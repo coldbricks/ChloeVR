@@ -157,6 +157,17 @@ class FilamentModelActivity : ComponentActivity() {
     @Volatile internal var glbPickerMode = false
     internal var availableGlbFiles: List<File> = emptyList()
     internal var glbPickerScrollOffset = 0
+    // RIGGED filter — when true, picker shows only files in /sdcard/RIGGED/
+    // or with a "RIGGED_" / "_rigged" filename marker (DeoVR-style convention).
+    @Volatile internal var riggedOnlyMode = false
+
+    /** Returns the GLB files currently visible in the picker, respecting the
+     *  RIGGED filter. Single source of truth — both UiRenderer's row draw and
+     *  InputHandler's hit-test index into this, so indices always line up. */
+    internal fun visibleGlbFiles(): List<File> {
+        return if (riggedOnlyMode) availableGlbFiles.filter { FilePicker.isRiggedGlb(it) }
+            else availableGlbFiles
+    }
     @Volatile internal var pendingModelLoad: File? = null  // queued for render thread (needs GL context)
 
     // Preview-before-add: tap a GLB and inspect it floating above the panel before

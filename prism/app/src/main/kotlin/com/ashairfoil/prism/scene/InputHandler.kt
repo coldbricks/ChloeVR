@@ -900,12 +900,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 if (by > 1200f) {
                                     hoveredActionButton = 103 // BACK at uiH-80=1200
                                 }
+                                // RIGGED toggle — top-right, x=uiW-70-220..uiW-70, y=76..116
+                                if (by in 76f..116f && bx >= (1024f - 70f - 220f) && bx <= (1024f - 70f)) {
+                                    hoveredActionButton = 110
+                                }
                                 // UiRenderer: GLB rows at startY=140, rowH=76, 13 visible
                                 if (by in 140f..1128f) {
                                     val maxVisible = 13
                                     val frac = (by - 140f) / (1128f - 140f)
                                     val idx = activity.glbPickerScrollOffset + (frac * maxVisible).toInt()
-                                    if (idx < activity.availableGlbFiles.size) {
+                                    if (idx < activity.visibleGlbFiles().size) {
                                         hoveredGlbIndex = idx
                                     }
                                 }
@@ -1825,8 +1829,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.glbPickerMode = false
                 hoveredGlbIndex = -1
                 activity.uiNeedsRefresh = true
-            } else if (activity.menuVisible && activity.glbPickerMode && hoveredGlbIndex >= 0 && hoveredGlbIndex < activity.availableGlbFiles.size) {
-                val file = activity.availableGlbFiles[hoveredGlbIndex]
+            } else if (activity.menuVisible && activity.glbPickerMode && hoveredActionButton == 110) {
+                activity.riggedOnlyMode = !activity.riggedOnlyMode
+                activity.glbPickerScrollOffset = 0  // reset scroll when filter toggles
+                hoveredGlbIndex = -1
+                Log.i(TAG, "RIGGED-only filter: ${if (activity.riggedOnlyMode) "ON" else "OFF"}")
+                activity.uiRenderer.showMessage(
+                    if (activity.riggedOnlyMode) "Showing rigged GLBs only" else "Showing all GLBs"
+                )
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.glbPickerMode && hoveredGlbIndex >= 0 && hoveredGlbIndex < activity.visibleGlbFiles().size) {
+                val file = activity.visibleGlbFiles()[hoveredGlbIndex]
                 Log.i(TAG, "GLB picker: queuing ${file.name} for load")
                 activity.pendingModelLoad = file
                 activity.glbPickerMode = false
@@ -2261,7 +2274,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
             if (activity.glbPickerMode) {
                 if (kotlin.math.abs(rightThumbY) > STICK_DEADZONE) {
                     val maxVisible = 13
-                    val maxScroll = (activity.availableGlbFiles.size - maxVisible).coerceAtLeast(0)
+                    val maxScroll = (activity.visibleGlbFiles().size - maxVisible).coerceAtLeast(0)
                     if (rightThumbY < -STICK_DEADZONE && activity.glbPickerScrollOffset < maxScroll) {
                         activity.glbPickerScrollOffset++
                         activity.uiNeedsRefresh = true

@@ -1559,11 +1559,36 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         if (glbPickerMode) {
             tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.GREEN; isFakeBoldText = true; textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT }
             canvas.drawText("Select a 3D Model", 70f, 112f, tmpPaint)
+
+            // RIGGED-only toggle — top-right corner of picker header. Filters
+            // to files in /sdcard/RIGGED/ OR with RIGGED_ / _rigged in name.
+            val riggedHover = hoveredActionButton == 110
+            val riggedOn = activity.riggedOnlyMode
+            val rbW = 220f
+            val rbL = uiW - 70f - rbW
+            val rbT = 76f; val rbB = 116f
+            tmpPaint2.apply {
+                style = Paint.Style.FILL; maskFilter = null; shader = null
+                color = when {
+                    riggedHover -> (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x90000000.toInt()
+                    riggedOn -> (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x60000000
+                    else -> (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x22000000
+                }
+            }
+            canvas.drawRoundRect(rbL, rbT, rbL + rbW, rbB, 10f, 10f, tmpPaint2)
+            tmpPaint.apply {
+                textSize = 26f; textAlign = Paint.Align.CENTER; isFakeBoldText = riggedOn
+                color = if (riggedHover || riggedOn) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
+            }
+            val rbLabel = if (riggedOn) "RIGGED \u25CF" else "RIGGED only"
+            canvas.drawText(rbLabel, rbL + rbW / 2f, rbT + 27f, tmpPaint)
+            tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false
+
             tmpPaint2.apply { color = (ThemeManager.GREEN and 0x00FFFFFF) or 0x40000000; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE; maskFilter = blurNormal4; shader = null }
             canvas.drawLine(70f, 120f, uiW - 70f, 120f, tmpPaint2)
             tmpPaint2.maskFilter = null
 
-            val files = availableGlbFiles
+            val files = activity.visibleGlbFiles()
             if (files.isEmpty()) {
                 tmpPaint.apply { textSize = 34f; color = ThemeManager.TEXT_DIM; isFakeBoldText = false }
                 canvas.drawText("No .glb files found on device", 70f, 200f, tmpPaint)
@@ -1638,6 +1663,16 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                     tmpPaint.apply { textSize = ThemeManager.PX_CAPTION; color = ThemeManager.PURPLE_DEEP; letterSpacing = 0.05f }
                     canvas.drawText(ext, if (isLoaded) 62f else 50f, ry + 54f, tmpPaint)
                     tmpPaint.letterSpacing = 0f
+
+                    // RIG badge next to ext on rigged files — gold pill.
+                    if (com.ashairfoil.prism.FilePicker.isRiggedGlb(file)) {
+                        val rigX = if (isLoaded) 108f else 96f
+                        tmpPaint2.apply { color = (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x55000000; style = Paint.Style.FILL; maskFilter = null }
+                        canvas.drawRoundRect(rigX, ry + 42f, rigX + 50f, ry + 60f, 6f, 6f, tmpPaint2)
+                        tmpPaint.apply { textSize = 16f; color = ThemeManager.GOLD_WARM; letterSpacing = 0.08f; isFakeBoldText = true }
+                        canvas.drawText("RIG", rigX + 8f, ry + 55f, tmpPaint)
+                        tmpPaint.letterSpacing = 0f; tmpPaint.isFakeBoldText = false
+                    }
                 }
 
                 if (files.size > maxVisible) {

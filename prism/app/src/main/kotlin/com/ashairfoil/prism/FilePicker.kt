@@ -17,6 +17,22 @@ object FilePicker {
     fun isModelFile(file: File): Boolean = file.extension.lowercase() in MODEL_EXTENSIONS
     fun isAudioFile(file: File): Boolean = file.extension.lowercase() in AUDIO_EXTENSIONS
 
+    /**
+     * Rigged-GLB heuristic (cheap, no file I/O). Matches if the file lives
+     * under a `RIGGED` folder anywhere in the path, or if its name has a
+     * `RIGGED_` prefix / `_rigged` suffix (DeoVR-style convention, same
+     * pattern as our `_180_sbs` / `_360_tb` projection markers in
+     * FileNameParser). Use this for UI filtering; the GLB loader still
+     * handles both rigged and unrigged files correctly at runtime.
+     */
+    fun isRiggedGlb(file: File): Boolean {
+        if (!isModelFile(file)) return false
+        val path = file.absolutePath.replace('\\', '/').lowercase()
+        if ("/rigged/" in path) return true
+        val name = file.nameWithoutExtension.lowercase()
+        return name.startsWith("rigged_") || name.endsWith("_rigged") || name.contains("+rigged") || name.contains(" rigged")
+    }
+
     fun listVideoFiles(context: Context): List<File> {
         return listVideoFilesProgressive(context) { _, _, _ -> }
     }
