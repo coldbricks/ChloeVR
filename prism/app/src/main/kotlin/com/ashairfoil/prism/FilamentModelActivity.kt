@@ -7,6 +7,7 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import com.ashairfoil.prism.scene.InputHandler
+import com.ashairfoil.prism.scene.JointDriveLayer
 import com.ashairfoil.prism.scene.SceneManager
 import com.ashairfoil.prism.scene.SceneOcclusionManager
 import com.ashairfoil.prism.scene.SpatialAnchorManager
@@ -669,7 +670,12 @@ class FilamentModelActivity : ComponentActivity() {
         // style a recognisable feel beyond amp×rate×ease alone.
         val yawSharp: Float = 0f, val yawCmplx: Float = 0f,
         val pitSharp: Float = 0f, val pitCmplx: Float = 0f,
-        val bobSharp: Float = 0f, val bobCmplx: Float = 0f
+        val bobSharp: Float = 0f, val bobCmplx: Float = 0f,
+        // Phase 2 — optional per-joint articulation on top of the rigid-body
+        // rotation. Null (default) = pure Tier 4 behaviour. When set, the
+        // layer drives spine/clavicle/arm/head joints AFTER Tier 4 writes.
+        // Produced by tools/mixamo_extract (Phase 2 extension, pending).
+        val jointLayer: JointDriveLayer? = null,
     )
     // Tier1-C: all amps obey sweep-speed law amp × rate ≤ K per axis
     //   yaw K = 64   → max yaw at 1/2: 32°, at 1/4: 16°, at 1/8: 8°, at 1/16: 4°
@@ -884,6 +890,7 @@ class FilamentModelActivity : ComponentActivity() {
             m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
             m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
         }
+        m.jointLayer = p.jointLayer
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset: ${p.name} (pP=${p.pitchPivot} rP=${p.rollPivot} crG=${p.counterRollGain})")
     }
@@ -919,6 +926,7 @@ class FilamentModelActivity : ComponentActivity() {
         m.pitchSharpness = p.pitSharp; m.pitchComplexity = p.pitCmplx
         m.bobSharpness = p.bobSharp; m.bobComplexity = p.bobCmplx
         m.characterCustomized = false
+        m.jointLayer = p.jointLayer
         m.currentPresetName = p.name
         android.util.Log.i(TAG, "Dance preset (direct): ${p.name}")
     }
@@ -2583,6 +2591,24 @@ class FilamentModelActivity : ComponentActivity() {
                                                 if (m.kneeLJointIdx >= 0) skel.resetJointToBind(m.kneeLJointIdx)
                                                 if (m.kneeRJointIdx >= 0) skel.resetJointToBind(m.kneeRJointIdx)
                                                 if (m.rootJointIdx >= 0) skel.resetJointToBind(m.rootJointIdx)
+                                            }
+                                        }
+
+                                        // ── Phase 2: JointDriveLayer articulation pass ──
+                                        // Runs AFTER all Tier 4 rigid-body joint writes so the layer's spine/
+                                        // clavicle/arm/head drives land on top. Per-joint ownership model:
+                                        // Tier 4 keeps pelvis/waist/thigh/calf (biomechanics-coded); the layer
+                                        // owns the upper body where Mixamo-extracted articulation lives.
+                                        // Null layer = pure Tier 4 behaviour (all 38 hand-tuned presets today).
+                                        val layer = m.jointLayer
+                                        if (layer != null) {
+                                            val gpuL = glesRenderer?.getModel(m.gpuModelId)
+                                            val skelL = gpuL?.skeleton
+                                            if (gpuL?.isSkinned == true && skelL != null) {
+                                                // phaseAt(1) = one cycle per measure. JointDrive.rateCyclesPerMeasure
+                                                // scales from there (rate=4 → one cycle per beat in 4/4).
+                                                val measurePhase = ar.phaseAt(1)
+                                                layer.evaluate(measurePhase, skelL, effInt * ampGain)
                                             }
                                         }
 

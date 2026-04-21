@@ -323,6 +323,10 @@ class SceneManager(
         // complexity). While true, shuffleDance (auto IMPROV) preserves
         // the user's custom values. setDancePreset (explicit pick) clears it.
         var characterCustomized: Boolean = false,
+        // Phase 2 — active per-joint articulation layer for this model. Copied
+        // from the active DancePreset.jointLayer each time a preset is applied
+        // (shuffleDance / setDancePreset). Null = pure Tier 4 rigid-body only.
+        var jointLayer: JointDriveLayer? = null,
         // Set true when the user drags a main-panel AMP slider (YAW, PITCH,
         // BOB, PHYSICS). IMPROV's per-bar shuffleDance then leaves the amp
         // fields alone — only rates/phases/easing shuffle. Explicit preset
