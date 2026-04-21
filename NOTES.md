@@ -319,3 +319,120 @@ The main `beatSliders` list is at 22 entries × 28px = 616px, which exceeds the 
 - HEAVE stretch from plan — chest mesh deformation, same system as glute.
 - UI: slider list overflow fix (smaller row height OR sub-panels).
 - Persist Tier 3 state in SettingsManager (silenceFloor, character/glute per model).
+
+---
+
+## [Claude] 2026-04-20
+
+### Session: Mixamo dance preset extraction pipeline (Phase 1)
+
+User direction pivot during session, captured here so next session doesn't re-derive:
+the procedural Tier 4 dance engine is beat-phase-locked; Mixamo clips are
+time-locked. Can't mix. Right model is to LEARN from Mixamo (extract motion
+params as functions of beatPhase) not COPY it (runtime clip playback).
+
+Within "learn", two phases:
+- **Phase 1 (done this session):** extract rigid-body hip motion → existing
+  DancePreset schema. Test loop to validate extraction pipeline E2E. Expected
+  NOT to look dramatically better than hand-tuned — schema is the ceiling.
+- **Phase 2 (designed, not implemented):** extend schema with JointDriveLayer
+  for per-joint Euler Fourier drives. Axis calibration comes back here, per-bone.
+
+### What shipped
+- `tools/mixamo_extract/` — offline Python pipeline (FBX binary parser → animation
+  graph resolver → harmonic extractor → DancePreset Kotlin emitter). See
+  tools/mixamo_extract/README.md for the how.
+- `FilamentModelActivity.kt` — 31 new `DancePreset` rows appended to dancePresets.
+  7 hand-tuned originals preserved; total 38 presets live.
+- APK built, not yet sideloaded/validated on-device.
+
+### Confirmed facts about the rig landscape
+- User's rigged character (BIKINI+GIRL+WITH+BONES+MIXAMO.zip, 30MB, 39 bones) uses
+  **Tripo naming**: Root, Hip (singular), Pelvis, Waist, Spine01, Spine02,
+  L/R_Thigh, L/R_Calf, L/R_Foot, L/R_Upperarm, L/R_Forearm, L/R_Hand, L/R_Clavicle,
+  Head, plus twist bones (ThighTwist01/02, CalfTwist01/02, etc.).
+- Tripo's "Mixamo" FBX preset DOES NOT BAKE A SKELETON — it's a pre-upload format
+  for Mixamo Auto-Rigger. The user's earlier mixamo+bikini.zip (28MB) was
+  mesh-only. The WITH+BONES zip is the actually-rigged version.
+- Mixamo animation FBX files use `mixamorig:*` prefix on all 65 standard bones.
+  Standard Mixamo skeleton: Hips, Spine, Spine1, Spine2, Neck, Head,
+  Left/RightShoulder, Left/RightArm, Left/RightForeArm, Left/RightHand + fingers,
+  Left/RightUpLeg, Left/RightLeg, Left/RightFoot, Left/RightToeBase.
+- Bone name mismatch between Mixamo source and Tripo target is non-trivial
+  but doesn't bite Phase 1 (we extract world-frame Hips rigid-body motion).
+  Phase 2 NEEDS a retarget table: mixamorig:Hips→Hip, mixamorig:Spine→Spine01,
+  mixamorig:Spine1→Spine02, mixamorig:LeftShoulder→L_Clavicle,
+  mixamorig:LeftArm→L_Upperarm, mixamorig:LeftForeArm→L_Forearm, etc.
+
+### Phase 1 quantitative results
+Across all 31 extracted presets: yawDeg / pitchDeg / bobM all saturate the
+runtime caps (15deg / 10deg / 0.04m) for every non-trivial clip. Raw envelope
+amplitudes ranged yaw 17-107deg, pitch 11-402deg, bob 4-31cm. Most clips
+delivered 2-3x the motion the schema can represent. This is *the* quantitative
+argument for Phase 2. The extractor logs the clamps explicitly.
+
+Inferred tempos span 62-145 BPM (realistic musical range) after applying:
+- Euler angle unwrap (fixed Salsa/Samba 700-1000deg spurious peak-to-peak)
+- 60-180 BPM band constraint on fundamental detection (fixed House=31,
+  Snake=20, Macarena=22 false-positive envelope detection)
+
+### Known extractor limitations (Phase 1 punt list)
+- Some clips bob 2x/beat not 1x/beat → BPM inferred 2x reality. Affects Shuffling,
+  possibly others. Low-priority in Phase 1 because the rates are ratios; high-
+  priority in Phase 2 where per-joint rates matter.
+- Non-stationary rhythm clips (Moonwalk-style step-return) break autocorrelation.
+  Not in current clip set.
+- Amplitude ceiling clamps are lossy and silent beyond a log warning. Every
+  extracted preset hits them.
+- No axis calibration yet. Hips rigid-body extraction is world-frame so target
+  rig bind pose doesn't matter — this collapses in Phase 2.
+
+### Phase 2 design (drafted in task-tracker #13, not implemented)
+- Schema: `JointDriveLayer(drives: Array<JointDrive>)` composed into DancePreset
+  as `val jointLayer: JointDriveLayer? = null`.
+- JointDrive = (jointName, axis[0/1/2], rateCyclesPerMeasure, phaseOffset,
+  amplitudeDeg, amplitude2ndDeg, phase2ndOffset).
+- Composition model C (per-joint ownership): Tier 4 keeps Pelvis/Waist/Root/
+  Thigh/Calf (hard-wired biomechanics — lordosis arch, foot-planting, thigh
+  counter-rotation). JointDriveLayer owns Spine01/02, L/R_Clavicle,
+  L/R_Upperarm, L/R_Forearm, Head. No conflicts.
+- Runtime: zero-alloc Array<JointDrive>, evaluates after rigid-body pass,
+  writes into SkeletonRuntime.localPose via setJointEulerX/Y/Z.
+- Axis calibration OFFLINE per-bone at extraction time (runtime stays dumb).
+  Correction quat = target_bind_world⁻¹ × source_bind_world, applied before
+  PCA on the principal rotation axis.
+- Four open design questions for user review:
+  1. Kotlin literal vs JSON asset for the drives array?
+  2. Twist bones (ThighTwist01/02 etc.) — proportional-to-parent / independent / at-rest?
+  3. Head: extract from Mixamo or stay gaze-controlled?
+  4. Auto-generate L/R-mirrored variants?
+
+### Files created this session
+- `tools/mixamo_extract/fbx_peek.py` — FBX binary parser (v7200 and v7500+).
+- `tools/mixamo_extract/fbx_anim.py` — AnimationCurve resolver via Connections.
+- `tools/mixamo_extract/extract_preset.py` — harmonic extractor + Kotlin emitter.
+- `tools/mixamo_extract/README.md` — usage + limitations + regeneration flow.
+
+### Files modified this session
+- `prism/app/src/main/kotlin/com/ashairfoil/prism/FilamentModelActivity.kt` —
+  31 extracted DancePreset rows appended after existing SQUAT PULSE.
+
+### Critical: on-device validation pending
+User has not yet sideloaded the built APK. APK at
+`prism/app/build/outputs/apk/debug/app-debug.apk` (45MB). Install with
+`adb install -r <path>`. Eyeball test: pick each MIXAMO preset from the dance
+picker, compare motion quality to hand-tuned originals. Expected finding: not
+dramatically better — schema is the ceiling. Actionable: if a specific preset
+looks WORSE than hand-tuned, that's an extractor bug worth tracing (rate/phase/
+counter-roll mapping). If all similar-or-better, Phase 1 pipeline validated,
+Phase 2 is the next move.
+
+### Next session starting points
+- If user approves Phase 2 design answers: implement `scene/JointDriveLayer.kt`,
+  extend `extract_preset.py` to pull per-joint channels with calibration, wire
+  evaluation into FilamentModelActivity.kt dance loop (task #13, #2, #3).
+- If on-device Phase 1 looks bad: trace the extractor's phase/rate mapping —
+  `ar.phaseAtSnap(snap, rate)` in the runtime vs `phase_to_unit()` in extractor
+  need sign/wrap conventions to match. Current best-guess alignment may be off.
+- Independent of above: the existing commit (hash after push) is a safe restore
+  point. `git revert HEAD` brings you back to pre-extraction TWERK.
