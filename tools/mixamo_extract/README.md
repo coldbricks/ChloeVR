@@ -76,13 +76,48 @@ numpy (for FFT and array math). No scipy required.
 pip install numpy
 ```
 
-## Known issues / Phase 2 backlog
+## Phase 2 — per-joint drives (landed)
+
+The extractor now also pulls per-joint Euler rotation channels for the upper
+body — Spine01, Spine02, L/R_Clavicle, L/R_Upperarm, L/R_Forearm, Head — and
+emits each driven axis as a `JointDrive` inside a `JointDriveLayer` attached
+to the `DancePreset`. Tier 4 still owns pelvis/waist/thigh/calf (hard-coded
+biomechanics); the layer composes on top without conflict.
+
+Per-axis decomposition is one-harmonic-plus-optional-second: for each
+(bone, axis) pair we find the dominant sinusoid in [60,180] BPM, emit
+`(rate, phase_offset, amplitude_deg)`, and if the 2nd harmonic is above
+0.6deg we also emit `(amplitude_2nd_deg, phase_2nd_offset)`. Axes below
+1.5deg fundamental amplitude are dropped — noise cluttering the literal.
+
+Phase conversion: the Phase 2 runtime evaluator uses `sin(2π * ph)` directly
+(vs Phase 1's stylized `waveAt` on rigid-body axes). The extractor's
+`phase_to_unit_sin()` applies the `+π/2` shift so cos-phase from FFT
+converts cleanly to sin-phase in the preset — this fixes the 0.25-cycle
+mis-alignment that Phase 1 punted.
+
+### What's still NOT calibrated
+
+- No per-bone axis-correction quaternion. Drives are emitted in Mixamo's
+  local-rotation frame. The user's rig is Tripo-authored; although both are
+  Y-up with approximately matching orientation conventions, individual bones
+  (especially the clavicles and forearms) have subtly different local-frame
+  bases. On-device testing will show which bones look wrong — at that point
+  we bake a correction quat per bone from the target rig's bind pose and
+  rerun. The target bind pose for the user's rigged character
+  (`BIKINI+GIRL+WITH+BONES+MIXAMO.zip`) hasn't been parsed into an extractor
+  input yet.
+- Head motion is extracted from Mixamo alongside the body, but gaze tracking
+  in `FilamentModelActivity` writes a whole-model quaternion (not the Head
+  joint) for viewer-facing bias, so the two layers compose additively with
+  no conflict.
+- L/R mirrored variants are not auto-generated — the 33-clip source folder
+  already has both-hand variants where needed.
+
+## Phase 1 known issues
 
 - Clips that bob 2x per beat (fast hip-hop) get their BPM inferred as 2x reality.
 - Clips that do step-return patterns (Moonwalk-style) trip autocorrelation.
-- Euler-wrap-through-full-rotation clips (Salsa) are handled via numpy.unwrap but
-  the principal rotation axis is still locked to world-Y even when the dancer
-  pitches forward — Phase 2 per-joint PCA will fix this.
-- No per-bone calibration yet — Phase 1 only touches Hips and Spine2 in world
-  frame, so the target rig's bone naming is irrelevant. Phase 2 needs the real
-  per-bone correction quats.
+- Euler-wrap-through-full-rotation clips (Salsa) are handled via numpy.unwrap.
+  The principal rotation axis is still locked to world-Y — Phase 2 per-bone
+  local-frame extraction mostly sidesteps this.

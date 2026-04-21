@@ -39,6 +39,38 @@ BOB_M_MAX = 0.04
 # Rate snap grid — presets in the codebase use these values exclusively.
 RATE_GRID = [1, 2, 4, 8, 16, 32]
 
+# ── Phase 2 — per-joint articulation layer ──
+# Bone retarget: Mixamo source naming → Tripo target rig naming.
+# Philosophy: layer owns the upper body (where real Mixamo articulation lives);
+# Tier 4 owns pelvis/waist/thigh/calf (hard-coded biomechanics).
+# Mixamo has 3 spine bones (Spine, Spine1, Spine2); Tripo has 2 (Spine01, Spine02).
+# We collapse Spine1→Spine01 and Spine2→Spine02 — mixamorig:Spine (just above
+# pelvis) doesn't retarget cleanly and overlaps with Tier 4's Waist anyway.
+# Neck is skipped for the same reason (no Tripo equivalent bone in the user's
+# rig inspection; head motion still works via mixamorig:Head → Head).
+JOINT_MAP = {
+    "mixamorig:Spine1":      "Spine01",
+    "mixamorig:Spine2":      "Spine02",
+    "mixamorig:LeftShoulder":  "L_Clavicle",
+    "mixamorig:RightShoulder": "R_Clavicle",
+    "mixamorig:LeftArm":     "L_Upperarm",
+    "mixamorig:RightArm":    "R_Upperarm",
+    "mixamorig:LeftForeArm":  "L_Forearm",
+    "mixamorig:RightForeArm": "R_Forearm",
+    "mixamorig:Head":        "Head",
+}
+
+# Minimum amplitude (degrees) for a joint-axis drive to be emitted. Below this
+# the motion is noise — emitting it just clutters the literal. Tuned by eye:
+# on-device testing can revisit. 1.5° is roughly the threshold where a single
+# joint rotation becomes visible on a 1m-tall character at typical VR distance.
+MIN_JOINT_AMP_DEG = 1.5
+
+# Minimum 2nd-harmonic amplitude (degrees) for the 2nd-harmonic term to be
+# emitted in a JointDrive. Below this, the 2nd harmonic is noise and we set
+# amp_2nd=0 so the runtime skips its sin() evaluation.
+MIN_JOINT_H2_AMP_DEG = 0.6
+
 
 def resample_uniform(series, fps=60, unwrap_degrees=False):
     """Resample a non-uniform (t, v) series to a uniform fps grid.
@@ -113,6 +145,26 @@ def harmonic_amp(signal, fps, f_fundamental, k):
     return float(np.abs(fft[idx]) * (2.0 / N) / 0.5)
 
 
+def harmonic_amp_phase(signal, fps, f_fundamental, k):
+    """Amplitude AND phase of the k-th harmonic at f_fundamental.
+
+    Returns (amp_deg, phase_rad_cos). Same FFT convention as dominant_sine:
+    signal ≈ amp * cos(2π * k*f * t + phase_rad_cos). Used for Phase 2
+    JointDriveLayer 2nd-harmonic extraction.
+    """
+    N = len(signal)
+    if N < 8 or f_fundamental <= 0:
+        return 0.0, 0.0
+    sig = signal - np.mean(signal)
+    fft = np.fft.rfft(sig * np.hanning(N))
+    freqs = np.fft.rfftfreq(N, d=1.0 / fps)
+    target_f = k * f_fundamental
+    idx = int(np.argmin(np.abs(freqs - target_f)))
+    amp = float(np.abs(fft[idx]) * (2.0 / N) / 0.5)
+    phase = float(np.angle(fft[idx]))
+    return amp, phase
+
+
 def sharpness_triangle_vs_sine(signal, fps, f_fund, amp_fund, phase_rad):
     """How triangle-like is the signal? 0 = pure sine, 1 = triangle/square.
 
@@ -156,8 +208,98 @@ def phase_to_unit(phase_rad):
     return float(((phase_rad / (2 * math.pi)) + 1.0) % 1.0)
 
 
+def phase_to_unit_sin(phase_rad):
+    """FFT phase (radians, cos convention) → [0,1] cycle fraction for sin-based runtime.
+
+    Phase 2 runtime (JointDriveLayer.evaluate) computes angle = sin(2π * ph1)
+    rather than the stylized waveAt() used by Phase 1 rigid-body writes. Since
+    sin(x) = cos(x - π/2), a cos-phase of φ corresponds to a sin-phase of
+    φ + π/2 — i.e. the sin convention leads the cos convention by 0.25 cycle.
+
+    Phase 1 used `phase_to_unit` unchanged, acknowledging the 0.25-cycle
+    mismatch in NOTES.md as "best-guess alignment may be off". Phase 2 fixes
+    it properly here because the runtime is pure sin.
+    """
+    return float((((phase_rad + math.pi / 2) / (2 * math.pi)) + 1.0) % 1.0)
+
+
+def detrend(x):
+    """Remove linear drift from a 1D series so centered oscillation remains."""
+    n = len(x)
+    if n < 4:
+        return x
+    t = np.arange(n)
+    slope, intercept = np.polyfit(t, x, 1)
+    return x - (slope * t + intercept)
+
+
+def extract_joint_drives(anim, f_bob, fps, verbose=False):
+    """Extract per-joint articulation drives for the Phase 2 JointDriveLayer.
+
+    Walks every bone in JOINT_MAP, decomposes each Lcl Rotation axis into
+    a single-harmonic drive at the beat-relative rate (plus an optional
+    2nd harmonic for double-time accents).
+
+    Drives below MIN_JOINT_AMP_DEG are dropped — they'd clutter the literal
+    with noise. At-rest joints end up contributing zero drives.
+
+    Returns a list of dicts ready for Kotlin emission:
+        [{jointName, axis, rate, phase_offset, amp_deg, amp_2nd_deg, phase_2nd_offset}, ...]
+    """
+    if f_bob <= 0:
+        return []
+    drives = []
+    BPM_MIN, BPM_MAX = 60.0, 180.0
+    for src_name, tgt_name in JOINT_MAP.items():
+        bone = anim.get(src_name)
+        if not bone:
+            if verbose:
+                print(f"  {src_name}: not in clip, skipping")
+            continue
+        rot = bone.get("Lcl Rotation", {})
+        if not rot:
+            continue
+        for axis_name, axis_idx in (("X", 0), ("Y", 1), ("Z", 2)):
+            raw = rot.get(axis_name)
+            if not raw:
+                continue
+            vs, _ = resample_uniform(raw, fps, unwrap_degrees=True)
+            if len(vs) < 8:
+                continue
+            vd = detrend(vs)
+            # Prefer a fundamental in the musical beat range; fall back to
+            # unconstrained search so a slow spine undulation at 0.5 Hz still
+            # emits a drive (rate will snap to 1 → one cycle per measure).
+            f, a1, phi_cos = dominant_sine(vd, fps, min_freq=BPM_MIN / 60, max_freq=BPM_MAX / 60)
+            if a1 < MIN_JOINT_AMP_DEG:
+                f, a1, phi_cos = dominant_sine(vd, fps)
+            if a1 < MIN_JOINT_AMP_DEG or f <= 0:
+                continue
+            rate = snap_rate(4.0 * f / f_bob)
+            phase_offset = phase_to_unit_sin(phi_cos)
+            # 2nd harmonic — relative to the joint's own fundamental (at 2*f),
+            # not to f_bob. Most dance clips have clean fundamentals, so this
+            # is usually small, but TWERK-style double-bob moves use it.
+            a2, phi2_cos = harmonic_amp_phase(vd, fps, f, 2)
+            if a2 < MIN_JOINT_H2_AMP_DEG:
+                a2 = 0.0
+                phi2 = 0.0
+            else:
+                phi2 = phase_to_unit_sin(phi2_cos)
+            drives.append({
+                "jointName": tgt_name,
+                "axis": axis_idx,
+                "rate": rate,
+                "phase_offset": phase_offset,
+                "amp_deg": min(a1, 30.0),   # safety cap — any single joint past 30° reads as broken
+                "amp_2nd_deg": a2,
+                "phase_2nd_offset": phi2,
+            })
+    return drives
+
+
 def extract(fbx_path, clip_name, verbose=True):
-    want = {"mixamorig:Hips", "mixamorig:Spine2"}
+    want = {"mixamorig:Hips", "mixamorig:Spine2"} | set(JOINT_MAP.keys())
     anim, _, _ = extract_animation(fbx_path, bone_filter=want)
     hips = anim.get("mixamorig:Hips")
     if not hips:
@@ -177,14 +319,6 @@ def extract(fbx_path, clip_name, verbose=True):
     ty, _ = resample_uniform(ty_raw, fps)  # translation: don't unwrap
 
     # Detrend long-term drift (subtract linear fit) so bob/yaw centers stable.
-    def detrend(x):
-        n = len(x)
-        if n < 4:
-            return x
-        t = np.arange(n)
-        slope, intercept = np.polyfit(t, x, 1)
-        return x - (slope * t + intercept)
-
     rx_d = detrend(rx)
     ry_d = detrend(ry)
     rz_d = detrend(rz)
@@ -290,6 +424,12 @@ def extract(fbx_path, clip_name, verbose=True):
     counter_roll_pivot = 0.50
     physics = 0.90
 
+    # Phase 2 — per-joint articulation drives. Upper body joints only; Tier 4
+    # keeps authority over pelvis/waist/thigh/calf. Empty list = pure rigid-body
+    # preset (current Phase 1 behaviour). For clips where we can't resolve
+    # any upper-body joints, this naturally degrades to Phase 1.
+    joint_drives = extract_joint_drives(anim, f_bob, fps, verbose=verbose)
+
     preset = {
         "name": clip_name,
         "yawDeg": yaw_deg, "yawRate": yaw_rate, "yawPhase": yaw_phase,
@@ -302,6 +442,7 @@ def extract(fbx_path, clip_name, verbose=True):
         "yawSharp": yaw_sharp, "yawCmplx": yaw_cmplx,
         "pitSharp": pit_sharp, "pitCmplx": pit_cmplx,
         "bobSharp": bob_sharp, "bobCmplx": bob_cmplx,
+        "jointDrives": joint_drives,
     }
 
     # Diagnostic: peak-to-peak vs fundamental amplitude tells us how much of
@@ -338,6 +479,16 @@ def extract(fbx_path, clip_name, verbose=True):
             print(f"[!] Runtime caps hit (Phase 1 schema ceiling): {', '.join(clamp_notes)}")
         print(f"Counter-roll: gain={counter_roll_gain:.2f} (from Spine2.Z/Hips.Z)")
         print(f"Ease classification: {ease} (yaw sharpness {yaw_sharp:.2f})")
+        if joint_drives:
+            axis_c = ("X", "Y", "Z")
+            print(f"Phase 2 joint drives ({len(joint_drives)}):")
+            for d in joint_drives:
+                a2 = f" +H2 {d['amp_2nd_deg']:.1f}deg@{d['phase_2nd_offset']:.2f}" if d["amp_2nd_deg"] > 0 else ""
+                print(f"  {d['jointName']:>13s}.{axis_c[d['axis']]}  rate={d['rate']:2d} "
+                      f"amp={d['amp_deg']:5.1f}deg phase={d['phase_offset']:.2f}{a2}")
+        else:
+            print("Phase 2 joint drives: NONE above threshold "
+                  "(either a Hips-only clip or noise-only upper body).")
         print()
         print("--- DancePreset Kotlin literal ---")
         print(_format_kotlin(preset))
@@ -346,7 +497,7 @@ def extract(fbx_path, clip_name, verbose=True):
 
 
 def _format_kotlin(p):
-    return (
+    head = (
         f'DancePreset("{p["name"]}",'
         f' {p["yawDeg"]:.2f}f, {p["yawRate"]:d}, {p["yawPhase"]:.3f}f,'
         f' {p["pitchDeg"]:.2f}f, {p["pitchRate"]:d}, {p["pitchPhase"]:.3f}f,'
@@ -357,8 +508,23 @@ def _format_kotlin(p):
         f' {p["counterRollPivot"]:.2f}f, {p["counterRollGain"]:.2f}f,'
         f' {p["yawSharp"]:.2f}f, {p["yawCmplx"]:.2f}f,'
         f' {p["pitSharp"]:.2f}f, {p["pitCmplx"]:.2f}f,'
-        f' {p["bobSharp"]:.2f}f, {p["bobCmplx"]:.2f}f),'
+        f' {p["bobSharp"]:.2f}f, {p["bobCmplx"]:.2f}f'
     )
+    drives = p.get("jointDrives") or []
+    if not drives:
+        return head + "),"
+    # Multi-line layer literal — positional DancePreset arg #22.
+    axis_c = ("X", "Y", "Z")
+    lines = [head + ","]
+    lines.append("            JointDriveLayer(arrayOf(")
+    for d in drives:
+        lines.append(
+            f'                JointDrive("{d["jointName"]}", JointDriveLayer.AXIS_{axis_c[d["axis"]]},'
+            f' {d["rate"]:d}, {d["phase_offset"]:.3f}f, {d["amp_deg"]:.2f}f,'
+            f' {d["amp_2nd_deg"]:.2f}f, {d["phase_2nd_offset"]:.3f}f),'
+        )
+    lines.append("            ))),")
+    return "\n".join(lines)
 
 
 def folder_mode(folder):
