@@ -199,10 +199,10 @@ class SceneManager(
         // Tier1.5-intensity: single knob multiplier for all three axis amps.
         // Default 0.25× because anything above reads as cartoony — real dance
         // motion is small. User can crank it if they want but 0.25 is sweet spot.
-        var danceIntensity: Float = 0.25f,
+        var danceIntensity: Float = 0.5f,
         // Tier1.5-gaze-toggle: follow-gaze (saccade FSM) on/off per model.
         // When false, FSM never captures even if dance is armed.
-        var danceGazeFollow: Boolean = true,
+        var danceGazeFollow: Boolean = false,
         // Tier1.5-roll: third dance axis. Applied in LOCAL frame so bank
         // matches the model's facing direction regardless of base orientation.
         var danceRollDeg: Float = 0f,
@@ -327,6 +327,10 @@ class SceneManager(
         // from the active DancePreset.jointLayer each time a preset is applied
         // (shuffleDance / setDancePreset). Null = pure Tier 4 rigid-body only.
         var jointLayer: JointDriveLayer? = null,
+        // Pose override: if true, the Tier 4 arm block writes a hands-on-knees
+        // pose instead of the default drop+sway. Copied from the active
+        // preset's handsOnKnees flag.
+        var handsOnKnees: Boolean = false,
         // Set true when the user drags a main-panel AMP slider (YAW, PITCH,
         // BOB, PHYSICS). IMPROV's per-bar shuffleDance then leaves the amp
         // fields alone — only rates/phases/easing shuffle. Explicit preset
@@ -619,6 +623,58 @@ class SceneManager(
                 // Optional spatial anchor binding — included for diagnostics; authoritative
                 // copy still lives in anchors.json keyed by UUID.
                 m.anchorUuid?.let { obj.put("anchorUuid", bytesToHex(it)) }
+                // Dance parameters — everything needed to restore the exact
+                // groove across sessions. animHasBase + preset name + amps/
+                // rates/phases + pivots + intensity + improv + character +
+                // glute + pose override.
+                val dance = org.json.JSONObject()
+                dance.put("animHasBase", m.animHasBase)
+                dance.put("currentPresetName", m.currentPresetName)
+                dance.put("danceYawDeg", m.danceYawDeg.toDouble())
+                dance.put("danceYawRate", m.danceYawRate)
+                dance.put("danceYawPhase", m.danceYawPhase.toDouble())
+                dance.put("dancePitchDeg", m.dancePitchDeg.toDouble())
+                dance.put("dancePitchRate", m.dancePitchRate)
+                dance.put("dancePitchPhase", m.dancePitchPhase.toDouble())
+                dance.put("danceYMeters", m.danceYMeters.toDouble())
+                dance.put("danceYRate", m.danceYRate)
+                dance.put("danceYPhase", m.danceYPhase.toDouble())
+                dance.put("danceRollDeg", m.danceRollDeg.toDouble())
+                dance.put("danceRollRate", m.danceRollRate)
+                dance.put("danceRollPhase", m.danceRollPhase.toDouble())
+                dance.put("danceEase", m.danceEase.ordinal)
+                dance.put("physicsAmount", m.physicsAmount.toDouble())
+                dance.put("pivotEnabled", m.pivotEnabled)
+                dance.put("pitchPivotFrac", m.pitchPivotFrac.toDouble())
+                dance.put("rollPivotFrac", m.rollPivotFrac.toDouble())
+                dance.put("counterRollPivotFrac", m.counterRollPivotFrac.toDouble())
+                dance.put("counterRollGain", m.counterRollGain.toDouble())
+                dance.put("danceIntensity", m.danceIntensity.toDouble())
+                dance.put("danceImprov", m.danceImprov)
+                dance.put("improvBars", m.improvBars)
+                dance.put("danceGazeFollow", m.danceGazeFollow)
+                dance.put("yawSharpness", m.yawSharpness.toDouble())
+                dance.put("yawComplexity", m.yawComplexity.toDouble())
+                dance.put("pitchSharpness", m.pitchSharpness.toDouble())
+                dance.put("pitchComplexity", m.pitchComplexity.toDouble())
+                dance.put("bobSharpness", m.bobSharpness.toDouble())
+                dance.put("bobComplexity", m.bobComplexity.toDouble())
+                dance.put("gluteBasePush", m.gluteBasePush.toDouble())
+                dance.put("gluteRadius", m.gluteRadius.toDouble())
+                dance.put("gluteShakeIntensity", m.gluteShakeIntensity.toDouble())
+                dance.put("gluteRate", m.gluteRate)
+                dance.put("gluteLeftEnabled", m.gluteLeftEnabled)
+                dance.put("gluteRightEnabled", m.gluteRightEnabled)
+                dance.put("gluteAltStep", m.gluteAltStep)
+                dance.put("gluteShakerMode", m.gluteShakerMode)
+                dance.put("stanceArch", m.stanceArch.toDouble())
+                dance.put("handsOnKnees", m.handsOnKnees)
+                if (m.animHasBase) {
+                    val bp = org.json.JSONArray()
+                    for (v in m.animBasePose) bp.put(v.toDouble())
+                    dance.put("animBasePose", bp)
+                }
+                obj.put("dance", dance)
                 modelsArr.put(obj)
             }
             scene.put("models", modelsArr)
@@ -719,6 +775,57 @@ class SceneManager(
                     gpuModel.exposure = placed.exposure
                     gpuModel.contrast = placed.contrast
                     gpuModel.saturation = placed.saturation
+                    // Restore dance state if the save included it.
+                    val dance = obj.optJSONObject("dance")
+                    if (dance != null) {
+                        placed.animHasBase = dance.optBoolean("animHasBase", false)
+                        placed.currentPresetName = dance.optString("currentPresetName", "")
+                        placed.danceYawDeg = dance.optDouble("danceYawDeg", 0.0).toFloat()
+                        placed.danceYawRate = dance.optInt("danceYawRate", 2)
+                        placed.danceYawPhase = dance.optDouble("danceYawPhase", 0.0).toFloat()
+                        placed.dancePitchDeg = dance.optDouble("dancePitchDeg", 0.0).toFloat()
+                        placed.dancePitchRate = dance.optInt("dancePitchRate", 4)
+                        placed.dancePitchPhase = dance.optDouble("dancePitchPhase", 0.0).toFloat()
+                        placed.danceYMeters = dance.optDouble("danceYMeters", 0.0).toFloat()
+                        placed.danceYRate = dance.optInt("danceYRate", 4)
+                        placed.danceYPhase = dance.optDouble("danceYPhase", 0.0).toFloat()
+                        placed.danceRollDeg = dance.optDouble("danceRollDeg", 0.0).toFloat()
+                        placed.danceRollRate = dance.optInt("danceRollRate", 2)
+                        placed.danceRollPhase = dance.optDouble("danceRollPhase", 0.0).toFloat()
+                        val easeOrdinal = dance.optInt("danceEase", 0)
+                        val easeValues = DanceEase.entries
+                        if (easeOrdinal in easeValues.indices) placed.danceEase = easeValues[easeOrdinal]
+                        placed.physicsAmount = dance.optDouble("physicsAmount", 0.5).toFloat()
+                        placed.pivotEnabled = dance.optBoolean("pivotEnabled", false)
+                        placed.pitchPivotFrac = dance.optDouble("pitchPivotFrac", 0.85).toFloat()
+                        placed.rollPivotFrac = dance.optDouble("rollPivotFrac", 0.85).toFloat()
+                        placed.counterRollPivotFrac = dance.optDouble("counterRollPivotFrac", 0.5).toFloat()
+                        placed.counterRollGain = dance.optDouble("counterRollGain", 0.35).toFloat()
+                        placed.danceIntensity = dance.optDouble("danceIntensity", 0.5).toFloat()
+                        placed.danceImprov = dance.optBoolean("danceImprov", false)
+                        placed.improvBars = dance.optInt("improvBars", 4)
+                        placed.danceGazeFollow = dance.optBoolean("danceGazeFollow", false)
+                        placed.yawSharpness = dance.optDouble("yawSharpness", 0.0).toFloat()
+                        placed.yawComplexity = dance.optDouble("yawComplexity", 0.34).toFloat()
+                        placed.pitchSharpness = dance.optDouble("pitchSharpness", 0.0).toFloat()
+                        placed.pitchComplexity = dance.optDouble("pitchComplexity", 0.34).toFloat()
+                        placed.bobSharpness = dance.optDouble("bobSharpness", 0.0).toFloat()
+                        placed.bobComplexity = dance.optDouble("bobComplexity", 0.34).toFloat()
+                        placed.gluteBasePush = dance.optDouble("gluteBasePush", 0.0).toFloat()
+                        placed.gluteRadius = dance.optDouble("gluteRadius", 0.15).toFloat()
+                        placed.gluteShakeIntensity = dance.optDouble("gluteShakeIntensity", 0.5).toFloat()
+                        placed.gluteRate = dance.optInt("gluteRate", 1)
+                        placed.gluteLeftEnabled = dance.optBoolean("gluteLeftEnabled", true)
+                        placed.gluteRightEnabled = dance.optBoolean("gluteRightEnabled", true)
+                        placed.gluteAltStep = dance.optBoolean("gluteAltStep", false)
+                        placed.gluteShakerMode = dance.optBoolean("gluteShakerMode", false)
+                        placed.stanceArch = dance.optDouble("stanceArch", 0.0).toFloat()
+                        placed.handsOnKnees = dance.optBoolean("handsOnKnees", false)
+                        val bp = dance.optJSONArray("animBasePose")
+                        if (bp != null && bp.length() == 7) {
+                            for (k in 0 until 7) placed.animBasePose[k] = bp.optDouble(k, 0.0).toFloat()
+                        }
+                    }
                     models.add(placed)
                     updateModelTransform(placed)
                 }

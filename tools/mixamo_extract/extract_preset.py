@@ -238,13 +238,21 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
 
     Walks every bone in JOINT_MAP, decomposes each Lcl Rotation axis into
     a single-harmonic drive at the beat-relative rate (plus an optional
-    2nd harmonic for double-time accents).
+    2nd harmonic for double-time accents) AND a DC rest-pose offset.
 
-    Drives below MIN_JOINT_AMP_DEG are dropped — they'd clutter the literal
-    with noise. At-rest joints end up contributing zero drives.
+    The rest offset is the time-averaged value of the unwrapped Euler signal
+    — it captures the Mixamo dancer's natural rest pose so the runtime can
+    pose the target rig out of its T-pose bind into a sensible base before
+    layering the oscillatory drives on top.
+
+    Drives with BOTH oscillation amplitude AND rest offset below
+    MIN_JOINT_AMP_DEG are dropped — they'd clutter the literal with noise.
+    Axes that have a meaningful rest but below-threshold oscillation are
+    emitted as zero-amplitude rest-only drives.
 
     Returns a list of dicts ready for Kotlin emission:
-        [{jointName, axis, rate, phase_offset, amp_deg, amp_2nd_deg, phase_2nd_offset}, ...]
+        [{jointName, axis, rate, phase_offset, amp_deg, amp_2nd_deg,
+          phase_2nd_offset, rest_angle_deg}, ...]
     """
     if f_bob <= 0:
         return []
@@ -266,6 +274,20 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
             vs, _ = resample_uniform(raw, fps, unwrap_degrees=True)
             if len(vs) < 8:
                 continue
+            # Mean rest pose offset: the time-averaged Euler value in the
+            # UNWRAPPED, un-detrended signal. This is what the Mixamo dancer's
+            # natural rest orientation is for this axis, relative to the
+            # source rig's bind-zero. At runtime JointDriveLayer adds this as
+            # a DC term to the Fourier drive so the bind-pose character
+            # actually sits in the Mixamo author's intended rest (arms bent
+            # and hanging) rather than wiggling around a T-pose zero.
+            #
+            # Wrap into (-180, 180] because unwrap() can accumulate full-turn
+            # offsets on spin-through clips (e.g. ARMS HIP HOP, YMCA) — the
+            # mean then sits at e.g. +344° which is geometrically the same
+            # pose as -16° but numerically unhelpful for the runtime.
+            rest_angle_deg = float(np.mean(vs))
+            rest_angle_deg = ((rest_angle_deg + 180.0) % 360.0) - 180.0
             vd = detrend(vs)
             # Prefer a fundamental in the musical beat range; fall back to
             # unconstrained search so a slow spine undulation at 0.5 Hz still
@@ -274,6 +296,25 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
             if a1 < MIN_JOINT_AMP_DEG:
                 f, a1, phi_cos = dominant_sine(vd, fps)
             if a1 < MIN_JOINT_AMP_DEG or f <= 0:
+                # No oscillation above threshold — but if the joint has a
+                # substantial rest offset, we still want to emit a drive so
+                # the runtime can pose the bind to the Mixamo rest. Skip only
+                # if BOTH the oscillation AND the rest offset are tiny.
+                if abs(rest_angle_deg) < MIN_JOINT_AMP_DEG:
+                    continue
+                # Emit a zero-amplitude drive carrying only the rest offset.
+                # rate/phase don't matter when amp==0 but must be valid for
+                # the Kotlin data class; pick sane defaults.
+                drives.append({
+                    "jointName": tgt_name,
+                    "axis": axis_idx,
+                    "rate": 1,
+                    "phase_offset": 0.0,
+                    "amp_deg": 0.0,
+                    "amp_2nd_deg": 0.0,
+                    "phase_2nd_offset": 0.0,
+                    "rest_angle_deg": rest_angle_deg,
+                })
                 continue
             rate = snap_rate(4.0 * f / f_bob)
             phase_offset = phase_to_unit_sin(phi_cos)
@@ -294,6 +335,7 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
                 "amp_deg": min(a1, 30.0),   # safety cap — any single joint past 30° reads as broken
                 "amp_2nd_deg": a2,
                 "phase_2nd_offset": phi2,
+                "rest_angle_deg": rest_angle_deg,
             })
     return drives
 
@@ -484,8 +526,9 @@ def extract(fbx_path, clip_name, verbose=True):
             print(f"Phase 2 joint drives ({len(joint_drives)}):")
             for d in joint_drives:
                 a2 = f" +H2 {d['amp_2nd_deg']:.1f}deg@{d['phase_2nd_offset']:.2f}" if d["amp_2nd_deg"] > 0 else ""
+                rest = f" rest={d['rest_angle_deg']:+6.1f}deg"
                 print(f"  {d['jointName']:>13s}.{axis_c[d['axis']]}  rate={d['rate']:2d} "
-                      f"amp={d['amp_deg']:5.1f}deg phase={d['phase_offset']:.2f}{a2}")
+                      f"amp={d['amp_deg']:5.1f}deg phase={d['phase_offset']:.2f}{a2}{rest}")
         else:
             print("Phase 2 joint drives: NONE above threshold "
                   "(either a Hips-only clip or noise-only upper body).")
@@ -521,7 +564,8 @@ def _format_kotlin(p):
         lines.append(
             f'                JointDrive("{d["jointName"]}", JointDriveLayer.AXIS_{axis_c[d["axis"]]},'
             f' {d["rate"]:d}, {d["phase_offset"]:.3f}f, {d["amp_deg"]:.2f}f,'
-            f' {d["amp_2nd_deg"]:.2f}f, {d["phase_2nd_offset"]:.3f}f),'
+            f' {d["amp_2nd_deg"]:.2f}f, {d["phase_2nd_offset"]:.3f}f,'
+            f' {d["rest_angle_deg"]:.2f}f),'
         )
     lines.append("            ))),")
     return "\n".join(lines)

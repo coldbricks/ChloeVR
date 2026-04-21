@@ -935,6 +935,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             when {
                 selModel == null -> { danceLabel = "DANCE — select a model"; danceColor = (ThemeManager.TEXT_DIM and 0x00FFFFFF) or 0x20000000 }
                 !selModel.animHasBase -> { danceLabel = "DANCE \u25B8 Arm"; danceColor = (ThemeManager.PINK_HOT and 0x00FFFFFF) or 0x30000000 }
+                selModel.currentPresetName.isNotEmpty() -> { danceLabel = selModel.currentPresetName; danceColor = ThemeManager.PINK_HOT }
                 else -> { danceLabel = "DANCE \u25CF armed"; danceColor = ThemeManager.PINK_HOT }
             }
             val danceHover = hoveredActionButton == 133

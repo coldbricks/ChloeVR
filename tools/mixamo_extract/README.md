@@ -84,11 +84,27 @@ emits each driven axis as a `JointDrive` inside a `JointDriveLayer` attached
 to the `DancePreset`. Tier 4 still owns pelvis/waist/thigh/calf (hard-coded
 biomechanics); the layer composes on top without conflict.
 
-Per-axis decomposition is one-harmonic-plus-optional-second: for each
-(bone, axis) pair we find the dominant sinusoid in [60,180] BPM, emit
-`(rate, phase_offset, amplitude_deg)`, and if the 2nd harmonic is above
-0.6deg we also emit `(amplitude_2nd_deg, phase_2nd_offset)`. Axes below
-1.5deg fundamental amplitude are dropped — noise cluttering the literal.
+Per-axis decomposition is one-harmonic-plus-optional-second PLUS a DC
+(rest-pose) offset: for each (bone, axis) pair we find the dominant sinusoid
+in [60,180] BPM, emit `(rate, phase_offset, amplitude_deg)`, and if the 2nd
+harmonic is above 0.6deg we also emit `(amplitude_2nd_deg, phase_2nd_offset)`.
+The time-averaged value of the UNWRAPPED signal is emitted as `restAngleDeg`
+— the Mixamo author's natural rest orientation for that axis. Runtime
+`JointDriveLayer.evaluate` composes as
+    `angle = restAngleDeg + A1*sin(...) + A2*sin(...)`
+so the target bind pose (T-pose) is posed into the Mixamo rest first; the
+Fourier drives oscillate around that rest rather than around bind-zero. This
+fixed a visible bug where arms would gull-wing horizontally instead of
+hanging at their sides bent at the elbow.
+
+Axes below 1.5deg fundamental amplitude AND below 1.5deg rest offset are
+dropped — they are pure noise. Axes with big rest but quiet oscillation are
+emitted as zero-amplitude rest-only drives so the rest pose still applies.
+
+Rest angles are wrapped into (-180, 180] to avoid full-turn accumulation
+from the unwrap step on spin-through clips (ARMS HIP HOP / YMCA otherwise
+produce e.g. +344° which is pose-equivalent to -16° but less useful
+numerically).
 
 Phase conversion: the Phase 2 runtime evaluator uses `sin(2π * ph)` directly
 (vs Phase 1's stylized `waveAt` on rigid-body axes). The extractor's

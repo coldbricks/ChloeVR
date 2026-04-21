@@ -198,6 +198,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
             BeatSlider("SILENCE", "%", 0f, 100f,
                 { (activity.audioReactor?.silenceFloor ?: 0.15f) * 100f },
                 { activity.audioReactor?.silenceFloor = (it / 100f).coerceIn(0f, 1f) }),
+            // DYNAMIC RANGE — how much volume changes affect dance amplitude.
+            // 0% = volume-independent (dance the same during quiet AND loud).
+            // 100% = baseline (default — quiet music = quiet dance, loud = full).
+            // 200%+ = exaggerated (breakdowns nearly stop her, drops blow up).
+            BeatSlider("DYN RANGE", "%", 0f, 300f,
+                { (activity.audioReactor?.musicalDynamics ?: 1f) * 100f },
+                { activity.audioReactor?.musicalDynamics = (it / 100f).coerceIn(0f, 3f) }),
             BeatSlider("SMOOTH", "%", 0f, 100f,
                 { (activity.audioReactor?.smootherAmount ?: 0.3f) * 100f },
                 { activity.audioReactor?.smootherAmount = it / 100f }),
@@ -301,18 +308,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     com.ashairfoil.prism.settings.SettingsManager.vibesDynamicCurve = c
                     com.ashairfoil.prism.settings.SettingsManager.vibesPresetName = ""
                 }),
-            // FOOT anchor strength — moved from Row C (which now hosts the
-            // CHARACTER toggle). 100% = heels fully planted; body pivots
-            // around them. 0% = full drift (ice skater). Default 85%.
-            BeatSlider("FOOT", "%", 0f, 100f,
-                {
-                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    (m?.footAnchorStrength ?: 0.85f) * 100f
-                },
-                { v ->
-                    val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.footAnchorStrength = (v / 100f).coerceIn(0f, 1f)
-                }),
+            // FOOT slider removed (its foot-anchor runtime was also removed).
+            // Rationale: world-Y yaw now rotates through the model origin (=
+            // feet on FootPivot), so feet don't drift; the anchor was
+            // correcting a non-problem and damping the motion into a "skating"
+            // read.
         )
     }
 
@@ -1415,10 +1415,24 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
                         m.animHasBase = true
                         if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-                            m.danceYawDeg = 10f  // gentle default booty shake — user can dial up
+                            // User-selected default on device: HIP HOP 7 MIXAMO —
+                            // yaw=15°@1/1, pitch=10°@1/1, bob=0.04m@1/4, LINEAR.
+                            // Feet-planted under the current Tier 4 settings with
+                            // visible rudder from the world-Y deferred yaw.
+                            val defaultIdx = activity.dancePresetIndexByName("HIP HOP 7 MIXAMO")
+                            if (defaultIdx >= 0) activity.setDancePreset(m, defaultIdx)
+                            else {
+                                val twerkIdx = activity.dancePresetIndexByName("TWERK")
+                                if (twerkIdx >= 0) activity.setDancePreset(m, twerkIdx)
+                                else m.danceYawDeg = 10f  // safety fallback if renamed
+                            }
                         }
+                        // Sync BPM detection so the dance actually follows whatever
+                        // audio is playing. User's prior workflow was "arm dance →
+                        // hunt for LOCK BPM button"; skip that step.
+                        activity.audioReactor?.let { it.autoBpm = true }
                         activity.armGazeCapture(m)
-                        Log.i(TAG, "Dance armed on ${m.file.name} (yaw=${m.danceYawDeg}° pitch=${m.dancePitchDeg}° bob=${m.danceYMeters}m)")
+                        Log.i(TAG, "Dance armed on ${m.file.name} (yaw=${m.danceYawDeg}° pitch=${m.dancePitchDeg}° bob=${m.danceYMeters}m, preset=${m.currentPresetName})")
                     } else {
                         m.animHasBase = false
                         m.danceYawDeg = 0f; m.dancePitchDeg = 0f; m.danceYMeters = 0f
@@ -2584,6 +2598,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
         if (isGrabbing && grabHandPos != null && grabAimRot != null) {
             if (!grabbing) {
+                // Prevent grip-on-UI from hijacking the model grab. If the
+                // laser is on a draggable panel or on a hovered/grabbed
+                // emitter (sun), the dedicated UI handlers own the grip —
+                // don't drag the selected model along for the ride. Also
+                // require the laser to be on SOME model at grip onset
+                // (hoveredModelIndex >= 0 — which the hit-test path has
+                // already set to -1 when the laser is on the panel), so
+                // grip in empty space doesn't teleport a previously-
+                // selected model.
+                if (emitterHovered || emitterGrabbed || draggingPanel) return
+                if (hoveredModelIndex < 0) return
                 grabbing = true
                 whipSampleIdx = 0
                 whipSamplesFilled = 0
@@ -2626,9 +2651,28 @@ class InputHandler(private val activity: FilamentModelActivity) {
             selected.posX = grabHandPos[0] + fwd[0] * grabDistance + rotOff[0]
             selected.posY = grabHandPos[1] + fwd[1] * grabDistance + rotOff[1]
             selected.posZ = grabHandPos[2] + fwd[2] * grabDistance + rotOff[2]
+            // Re-anchor animBasePose live so a dancing model keeps dancing
+            // at the moving hand position (dance-loop reads base each frame
+            // and writes posX/Y/Z = base + dance_offset). Without this,
+            // the dance loop's skip-when-grabbing branch was the only way
+            // to avoid fighting the grab write — and the cost was her
+            // freezing mid-preset whenever the user tried to relocate her.
+            if (selected.animHasBase) {
+                selected.animBasePose[0] = selected.posX
+                selected.animBasePose[1] = selected.posY
+                selected.animBasePose[2] = selected.posZ
+            }
 
-            // Grip = move + rotate (ShapesXR style)
-            run {
+            // Grip rotation policy:
+            //   Static model (no dance armed)  — full 6DoF: pitch, yaw, roll all follow the controller.
+            //   Dancing model                 — Y-only: yaw-heading of the controller maps to her
+            //                                   Y rotation so you can re-aim her mid-dance, but roll
+            //                                   and pitch stay on the dance's own axes (avoids the
+            //                                   "spinning with the controller" jitter).
+            val isDancing = selected.animHasBase && (
+                selected.danceYawDeg != 0f || selected.dancePitchDeg != 0f ||
+                selected.danceYMeters != 0f)
+            if (!isDancing) {
                 val isx = -grabStartAimRot[0].toDouble()
                 val isy = -grabStartAimRot[1].toDouble()
                 val isz = -grabStartAimRot[2].toDouble()
@@ -2655,6 +2699,45 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val inv = 1f / qLen
                     selected.rotX *= inv; selected.rotY *= inv; selected.rotZ *= inv; selected.rotW *= inv
                 }
+                if (selected.animHasBase) {
+                    selected.animBasePose[3] = selected.rotX
+                    selected.animBasePose[4] = selected.rotY
+                    selected.animBasePose[5] = selected.rotZ
+                    selected.animBasePose[6] = selected.rotW
+                }
+            } else {
+                // Y-only path: extract controller yaw delta (world-Y heading) and
+                // apply it to grabStartModelRot as a pure Y rotation. Leaves pitch/
+                // roll alone so the dance's own rotations aren't perturbed.
+                fun yawOf(q: FloatArray): Float = kotlin.math.atan2(
+                    2f * (q[3] * q[1] + q[0] * q[2]),
+                    1f - 2f * (q[1] * q[1] + q[2] * q[2])
+                )
+                val yawStart = yawOf(grabStartAimRot)
+                val yawNow = yawOf(grabAimRot)
+                // Wrap delta to [-π, π] so whip-around the ±π boundary doesn't flip.
+                var yawDelta = yawNow - yawStart
+                while (yawDelta > Math.PI) yawDelta -= (2.0 * Math.PI).toFloat()
+                while (yawDelta < -Math.PI) yawDelta += (2.0 * Math.PI).toFloat()
+                val halfY = yawDelta * 0.5f
+                val sY = kotlin.math.sin(halfY); val cY = kotlin.math.cos(halfY)
+                val sr = grabStartModelRot
+                selected.rotX = cY * sr[0] + sY * sr[2]
+                selected.rotY = cY * sr[1] + sY * sr[3]
+                selected.rotZ = cY * sr[2] - sY * sr[0]
+                selected.rotW = cY * sr[3] - sY * sr[1]
+                val qLen = kotlin.math.sqrt(selected.rotX * selected.rotX + selected.rotY * selected.rotY +
+                    selected.rotZ * selected.rotZ + selected.rotW * selected.rotW)
+                if (qLen > 0.001f) {
+                    val inv = 1f / qLen
+                    selected.rotX *= inv; selected.rotY *= inv; selected.rotZ *= inv; selected.rotW *= inv
+                }
+                // Mirror into animBasePose so next-frame dance composes on top
+                // of the new heading without snapping back to the pre-grab facing.
+                selected.animBasePose[3] = selected.rotX
+                selected.animBasePose[4] = selected.rotY
+                selected.animBasePose[5] = selected.rotZ
+                selected.animBasePose[6] = selected.rotW
             }
 
             activity.updateModelTransform(selected)
@@ -2700,9 +2783,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else {
                     // Normal release — commit spatial anchor so placement survives app close.
                     activity.commitAnchorForGrip(model)
-                    // Re-anchor beat animations at the current pose so dance/shake
-                    // continues at the new location without snapping back.
-                    if (model.animHasBase) {
+                    // animBasePose is kept in sync live by the active-grab path, so
+                    // skip the post-release re-anchor for dancing models — that old
+                    // copy copied `model.posX/Y/Z` which ALREADY INCLUDES one frame
+                    // of dance offset (bob / breath / jitter), and every grab cycle
+                    // therefore baked a few cm of permanent drift into animBasePose.
+                    // Across a few grabs the accumulated lift sent her floating 30+
+                    // cm above the floor. For non-dancing (shake) animations the
+                    // re-anchor is still needed because animHasA/B isn't updated
+                    // during grab.
+                    val wasDancing = model.animHasBase && (
+                        model.danceYawDeg != 0f || model.dancePitchDeg != 0f ||
+                        model.danceYMeters != 0f)
+                    if (model.animHasBase && !wasDancing) {
                         model.animBasePose[0] = model.posX; model.animBasePose[1] = model.posY; model.animBasePose[2] = model.posZ
                         model.animBasePose[3] = model.rotX; model.animBasePose[4] = model.rotY
                         model.animBasePose[5] = model.rotZ; model.animBasePose[6] = model.rotW
@@ -2883,6 +2976,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     model.rotY = kotlin.math.sin(halfYaw)
                     model.rotZ = 0f
                     model.rotW = kotlin.math.cos(halfYaw)
+                    // Re-anchor the dance base pose so a currently-dancing model
+                    // doesn't drift back to its pre-snap Y on the next frame (the
+                    // dance loop reads animBasePose each frame, so without this
+                    // it would fight the snap and she'd pop back into the air).
+                    if (model.animHasBase) {
+                        model.animBasePose[0] = model.posX
+                        model.animBasePose[1] = model.posY
+                        model.animBasePose[2] = model.posZ
+                        model.animBasePose[3] = model.rotX
+                        model.animBasePose[4] = model.rotY
+                        model.animBasePose[5] = model.rotZ
+                        model.animBasePose[6] = model.rotW
+                    }
                     activity.updateModelTransform(model)
                     Log.i(TAG, "SNAP: posY=${"%.3f".format(model.posY)} (floor=$floorSource Y=${"%.3f".format(snapY)}, camY=${"%.3f".format(activity.camPosY)}, boundsMinY=${"%.3f".format(gpuModel.boundsMinY)}, scale=${"%.3f".format(model.scale)}, yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°)")
                 }

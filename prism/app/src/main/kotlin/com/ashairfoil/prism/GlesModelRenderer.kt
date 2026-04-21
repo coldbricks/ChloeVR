@@ -1238,6 +1238,11 @@ class GlesModelRenderer {
                             )
                             model.isSkinned = true
                             Log.i(TAG, "Tier 4 skin: initialised ${jointCount}-joint skeleton (Root='${names[0]}')")
+                            // Dump full joint roster so Tier 4 can verify the Tripo-naming
+                            // contract (Pelvis/Waist/Spine01/etc.) against what the GLB
+                            // actually ships. Silent no-ops on missing joints were hiding
+                            // a broken waist-yaw write.
+                            Log.i(TAG, "Joint names [${jointCount}]: ${names.toList()}")
                         } else {
                             jointIndicesBytes = null
                             jointWeightsFloats = null
@@ -1368,7 +1373,12 @@ class GlesModelRenderer {
 
             models.add(model)
             modelIndex[model.id] = model
+            val heightM = maxY - minY
+            val maxYLog = maxY
             Log.i(TAG, "GLB loaded #${model.id}: $posCnt verts, $idxCnt idx")
+            Log.i(TAG, "GLB bounds #${model.id}: minY=${"%.3f".format(minY)} maxY=${"%.3f".format(maxYLog)} " +
+                "centerY=${"%.3f".format(model.boundsCenterY)} height=${"%.3f".format(heightM)}m " +
+                "(origin at foot iff minY≈0; at hip iff minY≈-0.5·height; at head iff minY≈-height)")
             return model.id
         } catch (e: Exception) {
             Log.e(TAG, "Failed to load GLB", e)

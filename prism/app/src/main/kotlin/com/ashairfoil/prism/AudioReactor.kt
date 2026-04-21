@@ -86,7 +86,7 @@ class AudioReactor {
     enum class BlendMode { NORMAL, ADD, MULTIPLY, SCREEN }
     enum class WashScope { MODELS, ROOM, BOTH }
     @Volatile var blendMode = BlendMode.ADD
-    @Volatile var washScope = WashScope.BOTH
+    @Volatile var washScope = WashScope.MODELS
     @Volatile var colorMode = ColorMode.CYCLE
     @Volatile var cycleSpeed = 60f     // degrees per second for CYCLE mode
     private var cycleHue = 0f
@@ -105,7 +105,7 @@ class AudioReactor {
     // BPM detection: when enabled, releaseMs is overridden by the detected
     // quarter-note interval (60000 / BPM). Lets the gate fall in tempo so a
     // four-on-the-floor kick naturally triggers at the exact downbeat.
-    @Volatile var autoBpm = false
+    @Volatile var autoBpm = true
     @Volatile var detectedBpm = 0f; private set
     /** Quantization rate: 1 = whole, 2 = half, 4 = quarter, 8 = eighth, 16 = sixteenth.
      *  When autoBpm is on, one full A↔B oscillation cycle = (1/bpmRate) note. */

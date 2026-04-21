@@ -144,6 +144,35 @@ class SkeletonRuntime(
     }
 
     /**
+     * Multiplicatively compose a local rotXYZ(rx, ry, rz) onto joint `j`'s
+     * CURRENT local pose:
+     *
+     *     localPose[j] = currentLocalPose[j] * rotXYZ(degX, degY, degZ)
+     *
+     * Unlike [setJointEulerXYZ] (which replaces the local pose with
+     * `bind * rotXYZ`), this reads the live `localPose[j]` so a prior writer's
+     * rotation survives — the composed rotation is applied on top in the
+     * joint's local frame. Mirrors the Z→Y→X rotation-application order used
+     * by [setJointEulerXYZ] so a single-axis compose (e.g. degZ only) behaves
+     * identically to [setJointEulerZ]-style right-multiply on the current pose.
+     *
+     * Used by [JointDriveLayer] to add Mixamo-extracted oscillation on top of
+     * Tier 4 biomechanics writes without wiping them. Zero-alloc — reuses the
+     * same scratch matrices as the setJointEuler* family.
+     */
+    fun composeJointEulerXYZ(j: Int, degX: Float, degY: Float, degZ: Float) {
+        if (j < 0 || j >= jointCount) return
+        if (degX == 0f && degY == 0f && degZ == 0f) return
+        Matrix.setIdentityM(scratchAxisQuat, 0)
+        if (degZ != 0f) Matrix.rotateM(scratchAxisQuat, 0, degZ, 0f, 0f, 1f)
+        if (degY != 0f) Matrix.rotateM(scratchAxisQuat, 0, degY, 0f, 1f, 0f)
+        if (degX != 0f) Matrix.rotateM(scratchAxisQuat, 0, degX, 1f, 0f, 0f)
+        // Compose: local = currentLocal * axisRot (right-multiply in joint's local frame).
+        Matrix.multiplyMM(scratchQuat, 0, localPose, j * 16, scratchAxisQuat, 0)
+        System.arraycopy(scratchQuat, 0, localPose, j * 16, 16)
+    }
+
+    /**
      * Compute `globalPose` and `palette` in a single forward pass over the joints.
      * Parents come before children (topological order is enforced in `init`), so
      * each child can multiply `parent.global * self.local` in place.
