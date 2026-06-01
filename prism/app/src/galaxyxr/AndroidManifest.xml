@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Galaxy XR (Android XR) flavor manifest.
+  Carries everything Android-XR-specific: the required Android XR feature flags
+  (which would make the Horizon OS installer reject the APK on Quest) and the
+  MainActivity video player, which is built on Jetpack XR / SceneCore and only
+  compiles in this flavor.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Required Android XR features — Galaxy XR only. -->
+    <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
+    <uses-feature android:name="android.software.xr.api.openxr" android:required="true" />
+    <uses-feature android:name="android.hardware.xr.input.controller" android:required="true" />
+
+    <application>
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+
+            <!-- Launch directly into Full Space for immersive video -->
+            <property
+                android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
+                android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_MANAGED" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

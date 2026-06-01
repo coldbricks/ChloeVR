@@ -136,6 +136,32 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         maskFilter = BlurMaskFilter(4f, BlurMaskFilter.Blur.OUTER)
     }
 
+    private fun drawCenteredFittedText(
+        canvas: Canvas,
+        text: String,
+        cx: Float,
+        baseline: Float,
+        maxWidth: Float,
+        paint: Paint,
+        minTextSize: Float = 11f
+    ) {
+        val originalSize = paint.textSize
+        var fitted = text
+        var size = originalSize
+        while (size > minTextSize && paint.measureText(fitted) > maxWidth) {
+            size -= 1f
+            paint.textSize = size
+        }
+        if (paint.measureText(fitted) > maxWidth) {
+            while (fitted.length > 1 && paint.measureText("${fitted.dropLast(1)}...") > maxWidth) {
+                fitted = fitted.dropLast(1)
+            }
+            fitted = "${fitted.dropLast(1)}..."
+        }
+        canvas.drawText(fitted, cx, baseline, paint)
+        paint.textSize = originalSize
+    }
+
     private val paramNormalPaint = Paint().apply {
         isAntiAlias = true
         textSize = ThemeManager.PX_BODY
@@ -805,7 +831,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
 
             // ── Chloe Vibes presets + script mode (row above the main buttons) ──
-            val presetY = uiH - 145f; val presetH = 42f
+            val presetY = uiH - 136f; val presetH = 42f
             val presetNamesRow = arrayOf("LOOSE" to "Loose", "MEDIUM" to "Medium", "ULTIMATE" to "Ultimate")
             val presetIds = intArrayOf(140, 141, 142)
             val currentPreset = reactor?.vibesEngine?.presetName ?: ""
@@ -943,7 +969,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawRoundRect(246f, rowBY, 555f, rowBY + rowBH, 10f, 10f, p)
             p.color = if (danceHover || selModel?.animHasBase == true) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
             p.isFakeBoldText = selModel?.animHasBase == true
-            canvas.drawText(danceLabel, 400f, rowBY + 29f, p)
+            drawCenteredFittedText(canvas, danceLabel, 400f, rowBY + 29f, 285f, p, minTextSize = 12f)
             p.isFakeBoldText = false
             // EASE cycle
             val easeLabel = selModel?.danceEase?.name ?: "SINE"
@@ -969,12 +995,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawText(improvLabel, 885f, rowBY + 29f, p)
             p.isFakeBoldText = false
 
-            // ── Row C (Tier1.5): INTENSITY | GAZE | ROLL | TAP TEMPO ──
-            // Compressed into the narrow band between Row B (ends 1115) and
-            // haptic presets (start 1135). Small buttons but readable.
-            val rowCY = 1118f; val rowCH = 14f
+            // ── Row C (Tier1.5): INTENSITY | FACE | CHARACTER | TAP TEMPO ──
+            // Kept compact, but widened from the old 14px strip so ray/hand
+            // targets are less fussy with controller ray input on Android XR.
+            val rowCY = 1116f; val rowCH = 24f
             p.textAlign = Paint.Align.CENTER
-            p.textSize = 11f
+            p.textSize = 13f
 
             // INTENSITY cycle (0.25 / 0.5 / 1.0 / 2.0 / 3.0 / 5.0)
             val intensity = selModel?.danceIntensity ?: 1f
@@ -989,7 +1015,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawRoundRect(30f, rowCY, 270f, rowCY + rowCH, 6f, 6f, p)
             p.color = if (intensityHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
             p.isFakeBoldText = selModel != null && kotlin.math.abs(intensity - 1f) > 0.05f
-            canvas.drawText(intensityLabel, 150f, rowCY + 11f, p)
+            canvas.drawText(intensityLabel, 150f, rowCY + 17f, p)
             p.isFakeBoldText = false
 
             // FACE mark (replaces GAZE toggle — more immediately useful).
@@ -1006,7 +1032,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
             canvas.drawRoundRect(280f, rowCY, 520f, rowCY + rowCH, 6f, 6f, p)
             p.color = if (faceMarked || faceHover) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
-            canvas.drawText(faceLabel, 400f, rowCY + 11f, p)
+            canvas.drawText(faceLabel, 400f, rowCY + 17f, p)
 
             // CHARACTER sub-panel toggle (Tier 3). Replaces the FOOT cycle —
             // FOOT is now a regular slider in the main reactor list. Tapping
@@ -1023,7 +1049,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             canvas.drawRoundRect(530f, rowCY, 770f, rowCY + rowCH, 6f, 6f, p)
             p.color = if (charHover || charOn) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_MID
             p.isFakeBoldText = charOn
-            canvas.drawText(charLabel, 650f, rowCY + 11f, p)
+            canvas.drawText(charLabel, 650f, rowCY + 17f, p)
             p.isFakeBoldText = false
 
             // Rightmost Row C button: TAP TEMPO normally, but flips to
@@ -1048,7 +1074,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
                 p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
                 p.isFakeBoldText = tapHover
-                canvas.drawText(gluteLabel, 887f, rowCY + 11f, p)
+                canvas.drawText(gluteLabel, 887f, rowCY + 17f, p)
             } else {
                 // TAP TEMPO — bind to AudioReactor.tapTempo(); tap on beats to lock BPM instantly
                 p.color = if (tapHover) (ThemeManager.GREEN and 0x00FFFFFF) or 0x80000000.toInt()
@@ -1056,7 +1082,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 canvas.drawRoundRect(780f, rowCY, uiW - 30f, rowCY + rowCH, 6f, 6f, p)
                 p.color = if (tapHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GREEN
                 p.isFakeBoldText = tapHover
-                canvas.drawText("TAP TEMPO", 887f, rowCY + 11f, p)
+                canvas.drawText("TAP TEMPO", 887f, rowCY + 17f, p)
             }
             p.isFakeBoldText = false
             p.textAlign = Paint.Align.LEFT

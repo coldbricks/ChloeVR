@@ -386,7 +386,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.gluteBasePush = (v / 100f).coerceIn(0f, 0.08f)
+                    if (m != null) {
+                        m.gluteBasePush = (v / 100f).coerceIn(0f, 0.08f)
+                        m.characterCustomized = true
+                    }
                 }),
             BeatSlider("GLUTE SHAKE", "%", 0f, 100f,
                 {
@@ -395,7 +398,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.gluteShakeIntensity = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) {
+                        m.gluteShakeIntensity = (v / 100f).coerceIn(0f, 1f)
+                        m.characterCustomized = true
+                    }
                 }),
             BeatSlider("GLUTE RADIUS", "cm", 5f, 30f,
                 {
@@ -404,7 +410,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.gluteRadius = (v / 100f).coerceIn(0.05f, 0.30f)
+                    if (m != null) {
+                        m.gluteRadius = (v / 100f).coerceIn(0.05f, 0.30f)
+                        m.characterCustomized = true
+                    }
                 }),
             // Tier 4 — ARCH stance. Drives pelvic anterior tilt + counter-
             // arched spine + slight bent knees + arms dropped. 0 = T-pose,
@@ -417,7 +426,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 },
                 { v ->
                     val m = activity.sceneManager.models.getOrNull(activity.sceneManager.selectedModelIndex)
-                    if (m != null) m.stanceArch = (v / 100f).coerceIn(0f, 1f)
+                    if (m != null) {
+                        m.stanceArch = (v / 100f).coerceIn(0f, 1f)
+                        m.characterCustomized = true
+                    }
                 }),
         )
     }
@@ -731,16 +743,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                         bx in 776f..994f -> 139 // IMPROV
                                         else -> -1
                                     }
-                                } else if (by in 1116f..1132f) {
-                                    // Row C (Tier1.5): INTENSITY | GAZE | ROLL | TAP TEMPO
+                                } else if (by in 1116f..1140f) {
+                                    // Row C (Tier1.5): INTENSITY | FACE | CHARACTER | TAP TEMPO
                                     hoveredActionButton = when {
                                         bx in 30f..270f -> 144 // INTENSITY
-                                        bx in 280f..520f -> 145 // GAZE toggle
-                                        bx in 530f..770f -> 146 // ROLL rate
+                                        bx in 280f..520f -> 145 // FACE mark
+                                        bx in 530f..770f -> 146 // CHARACTER panel
                                         bx in 780f..994f -> 147 // TAP TEMPO
                                         else -> -1
                                     }
-                                } else if (by in 1133f..1180f) {
+                                } else if (by in 1144f..1186f) {
                                     // Chloe presets row: LOOSE / MEDIUM / ULTIMATE / SCRIPT
                                     val cellW = (1024f - 70f) / 4f
                                     hoveredActionButton = when {
@@ -1098,7 +1110,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
             // Test model intersection — allowed while menu is open as long as
             // the laser isn't targeting the panel itself. Lets the user pick a
             // model to adjust via the dance controls without closing the menu.
-            if ((!activity.menuVisible || !laserOnPanel) && hoveredGizmoAxis == GlesModelRenderer.GIZMO_AXIS_NONE && !emitterHovered && !emitterGrabbed) {
+            // Body hit-test runs even when a gizmo axis is also under the laser, so grabbing
+            // HER wins over the gizmo when they overlap (gizmo still usable on the axis tips
+            // that stick out past her body — see the hoveredModelIndex<0 guard on gizmo drag).
+            if ((!activity.menuVisible || !laserOnPanel) && !emitterHovered && !emitterGrabbed) {
                 var nearestDist = Float.MAX_VALUE
                 var nearestIdx = -1
                 for ((i, placed) in models.withIndex()) {
@@ -1114,6 +1129,19 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     if (dist < 0f) {
                         val coreR = (worldR * 0.15f).coerceIn(0.05f, 0.15f)
                         dist = raySphereIntersect(laserHandPos, rayDir, scratchGizmoPos, coreR)
+                    }
+                    if (dist < 0f) {
+                        // Close-range fallback: when the controller is inside/at her bounding
+                        // sphere the ray "starts past" her, so raySphereIntersect misses and she
+                        // can't be grabbed up close until you yank your hand back out. Treat being
+                        // within ~1.3x her radius of her center as a point-blank hover.
+                        val ocx = laserHandPos[0] - worldCx
+                        val ocy = laserHandPos[1] - worldCy
+                        val ocz = laserHandPos[2] - worldCz
+                        val originDist = kotlin.math.sqrt(ocx * ocx + ocy * ocy + ocz * ocz)
+                        if (originDist < worldR * 1.3f) {
+                            dist = kotlin.math.max(originDist * 0.5f, 0.05f)
+                        }
                     }
                     if (dist in 0.01f..nearestDist) { nearestDist = dist; nearestIdx = i }
                 }
@@ -1148,7 +1176,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else {
                     gizmoDragging = false
                 }
-            } else if (rightGripForGizmo && !blockGripInteractionsUntilRelease && hoveredGizmoAxis >= 0 && selModel != null) {
+            } else if (rightGripForGizmo && !blockGripInteractionsUntilRelease && hoveredGizmoAxis >= 0 && hoveredModelIndex < 0 && selModel != null) {
                 // Start gizmo drag
                 gizmoDragging = true
                 gizmoDragAxis = hoveredGizmoAxis
@@ -1415,11 +1443,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animBasePose[5] = m.rotZ; m.animBasePose[6] = m.rotW
                         m.animHasBase = true
                         if (m.danceYawDeg == 0f && m.dancePitchDeg == 0f && m.danceYMeters == 0f) {
-                            // User-selected default on device: HIP HOP 7 MIXAMO —
-                            // yaw=15°@1/1, pitch=10°@1/1, bob=0.04m@1/4, LINEAR.
-                            // Feet-planted under the current Tier 4 settings with
-                            // visible rudder from the world-Y deferred yaw.
-                            val defaultIdx = activity.dancePresetIndexByName("HIP HOP 7 MIXAMO")
+                            // Controller-first default: one tap arms a full-body
+                            // high-energy preset with beat lock and character
+                            // defaults already painted.
+                            val defaultIdx = activity.dancePresetIndexByName("CLUB HEAT")
                             if (defaultIdx >= 0) activity.setDancePreset(m, defaultIdx)
                             else {
                                 val twerkIdx = activity.dancePresetIndexByName("TWERK")
@@ -1504,6 +1531,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             if (m != null) {
                                 m.gluteRate = when (m.gluteRate) { 1 -> 2; 2 -> 4; else -> 1 }
                                 m.gluteLastSubBeat = 0L  // resync on next tick
+                                m.characterCustomized = true
                                 val label = when (m.gluteRate) { 1 -> "1/4"; 2 -> "1/8"; 4 -> "1/16"; else -> "1/${m.gluteRate}" }
                                 activity.uiRenderer.showMessage("Glute pulse: $label")
                                 Log.i(TAG, "Glute rate → $label")
@@ -1753,6 +1781,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                         // Re-seed the subBeat tracker so burst starts aligned.
                         if (m.gluteShakerMode) m.gluteLastSubBeat = 0L
+                        m.characterCustomized = true
                         val label = arrayOf("L+R", "L ONLY", "R ONLY", "ALT", "SHAKER", "OFF")[next]
                         Log.i(TAG, "Glute mode → $label push=${"%.3f".format(m.gluteBasePush)}")
                         activity.uiNeedsRefresh = true
@@ -1894,10 +1923,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 100) {
                 Log.i(TAG, "Action: Return to file menu")
-                activity.startActivity(android.content.Intent(activity, com.ashairfoil.prism.MainActivity::class.java).apply {
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                })
-                activity.finish()
+                // MainActivity (the SceneCore video/file menu) exists only in the galaxyxr
+                // flavor. Launch by name so the Quest build — which has no MainActivity —
+                // still compiles; on Quest this button is a no-op (the dancer viewer is home).
+                if (com.ashairfoil.prism.BuildConfig.FLAVOR == "galaxyxr") {
+                    activity.startActivity(android.content.Intent().setClassName(
+                        activity, "com.ashairfoil.prism.MainActivity"
+                    ).apply {
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    })
+                    activity.finish()
+                }
                 return
             } else if (activity.menuVisible && hoveredActionButton == 102) {
                 Log.i(TAG, "Action: Exit app")
@@ -2639,8 +2675,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
             val fwd = fwdResult ?: scratchGrabFwd
 
             if (kotlin.math.abs(grabThumbY) > STICK_DEADZONE) {
-                grabDistance += grabThumbY * 0.05f
-                grabDistance = grabDistance.coerceIn(0.05f, 30f)
+                // Reel speed scales with distance — yank her in fast from across the room,
+                // fine-tune slowly up close. Floor of 0 so she comes ALL the way to your hand.
+                grabDistance += grabThumbY * (0.04f + grabDistance * 0.04f)
+                grabDistance = grabDistance.coerceIn(0f, 30f)
             }
 
             if (kotlin.math.abs(grabThumbX) > STICK_DEADZONE) {

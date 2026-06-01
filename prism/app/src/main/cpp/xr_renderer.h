@@ -171,6 +171,7 @@ public:
     bool hasRefreshRateControl() const { return refreshRateSupported_; }
     bool hasPerfMetrics() const { return perfMetricsSupported_; }
     bool hasPassthroughState() const { return passthroughStateSupported_; }
+    bool hasFbPassthrough() const { return fbPassthroughSupported_; }
     bool hasFoveation() const { return foveationSupported_; }
     bool hasEyeTrackedFoveation() const { return eyeTrackedFoveationSupported_; }
     void setFoveationLevel(int level); // 0=off, 1=low, 2=medium, 3=high
@@ -358,6 +359,18 @@ private:
 
     // ── Passthrough camera state ──
     bool passthroughStateSupported_ = false;
+
+    // ── FB passthrough (Quest mixed reality) ──
+    bool fbPassthroughSupported_ = false;
+    XrPassthroughFB passthrough_ = XR_NULL_HANDLE;
+    XrPassthroughLayerFB passthroughLayer_ = XR_NULL_HANDLE;
+    PFN_xrCreatePassthroughFB xrCreatePassthroughFB_ = nullptr;
+    PFN_xrDestroyPassthroughFB xrDestroyPassthroughFB_ = nullptr;
+    PFN_xrPassthroughStartFB xrPassthroughStartFB_ = nullptr;
+    PFN_xrCreatePassthroughLayerFB xrCreatePassthroughLayerFB_ = nullptr;
+    PFN_xrDestroyPassthroughLayerFB xrDestroyPassthroughLayerFB_ = nullptr;
+    PFN_xrPassthroughLayerResumeFB xrPassthroughLayerResumeFB_ = nullptr;
+    bool initFbPassthrough();
 
     // ── Thermal notifications via XR_EXT_performance_settings ──
     bool perfSettingsSupported_ = false;

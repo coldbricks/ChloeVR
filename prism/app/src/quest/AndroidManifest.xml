@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Meta Quest 3 flavor manifest.
+  The GLB dancer viewer (FilamentModelActivity — native OpenXR + Filament) becomes
+  the VR launcher. No Jetpack XR / SceneCore here; MainActivity is galaxyxr-only.
+  The com.oculus.intent.category.VR category tells Horizon OS this is an immersive
+  VR app so it appears in the VR library and launches in-headset.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Required for Horizon OS to expose XR_FB_passthrough + ALPHA_BLEND blend mode. -->
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
+
+    <application>
+        <activity
+            android:name=".FilamentModelActivity"
+            android:exported="true"
+            tools:replace="android:exported">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

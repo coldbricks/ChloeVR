@@ -10,7 +10,6 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- XR permissions -->
-    <uses-permission android:name="android.permission.HAND_TRACKING" />
     <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_COARSE" />
     <uses-permission android:name="android.permission.SCENE_UNDERSTANDING_FINE" />
     <uses-permission android:name="android.permission.EYE_TRACKING_COARSE" />
@@ -32,10 +31,9 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
-    <!-- XR features -->
-    <uses-feature android:name="android.software.xr.api.spatial" android:required="true" />
-    <uses-feature android:name="android.software.xr.api.openxr" android:required="false" />
-    <uses-feature android:name="android.hardware.xr.input.hand_tracking" android:required="false" />
+    <!-- XR features. The required=true Android XR features (api.spatial, api.openxr,
+         input.controller) live in the galaxyxr flavor manifest — they would make the
+         Horizon OS installer reject the APK on Quest. -->
     <uses-feature android:name="android.hardware.xr.input.eye_tracking" android:required="false" />
     <uses-feature android:name="android.hardware.xr.input.face_tracking" android:required="false" />
     <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
@@ -51,24 +49,17 @@
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <!-- ChloeVR expects room-scale movement in Full Space; request Android XR's larger safety boundary. -->
+        <property
+            android:name="android.window.PROPERTY_XR_BOUNDARY_TYPE_RECOMMENDED"
+            android:value="XR_BOUNDARY_TYPE_LARGE" />
+
         <!-- OpenXR native runtime -->
         <uses-native-library android:name="libopenxr.google.so" android:required="false" />
 
-        <activity
-            android:name=".MainActivity"
-            android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
-
-            <!-- Launch directly into Full Space for immersive video -->
-            <property
-                android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
-                android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_MANAGED" />
-
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+        <!-- MainActivity (Jetpack XR / SceneCore video player) is declared in the
+             galaxyxr flavor manifest. On Quest the launcher is FilamentModelActivity,
+             promoted via the quest flavor manifest. -->
 
         <!-- Filament + OpenXR direct renderer for 3D models (UNMANAGED mode) -->
         <activity

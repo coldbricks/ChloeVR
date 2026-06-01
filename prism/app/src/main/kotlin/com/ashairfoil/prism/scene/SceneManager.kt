@@ -298,6 +298,8 @@ class SceneManager(
         var rootJointIdx: Int = Int.MIN_VALUE,
         var spine01JointIdx: Int = Int.MIN_VALUE,
         var spine02JointIdx: Int = Int.MIN_VALUE,
+        var neckJointIdx: Int = Int.MIN_VALUE,
+        var headJointIdx: Int = Int.MIN_VALUE,
         var claviceLJointIdx: Int = Int.MIN_VALUE,
         var claviceRJointIdx: Int = Int.MIN_VALUE,
         var upperArmLJointIdx: Int = Int.MIN_VALUE,

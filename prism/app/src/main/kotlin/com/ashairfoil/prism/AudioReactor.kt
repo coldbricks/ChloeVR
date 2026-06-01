@@ -340,12 +340,19 @@ class AudioReactor {
 
     private var currentSessionId = 0
 
+    @Synchronized
     fun start(audioSessionId: Int = 0): Boolean {
         if (started) return true
         currentSessionId = audioSessionId
+        // Only one Visualizer may bind a given audio session at a time. If a
+        // stale one survives (release/re-create race when the beat reactor is
+        // opened mid-playback), construction fails with error -3 and its native
+        // capture thread can SIGSEGV on freed buffers. Fully tear down first.
+        teardownVisualizer()
+        var vis: Visualizer? = null
         try {
             Log.i(TAG, "Creating Visualizer($audioSessionId) for ${if (audioSessionId == 0) "system audio" else "session"}...")
-            val vis = Visualizer(audioSessionId)
+            vis = Visualizer(audioSessionId)
             vis.captureSize = CAPTURE_SIZE
 
             val maxRate = Visualizer.getMaxCaptureRate()
@@ -371,19 +378,42 @@ class AudioReactor {
             Log.i(TAG, "AudioReactor started, enabled=${vis.enabled}")
             return true
         } catch (e: Exception) {
+            // Construction or setup failed (e.g. -3 = session already bound).
+            // Release the half-initialized object without ever capturing from it.
             Log.e(TAG, "Failed to start Visualizer: ${e.message}", e)
+            try {
+                vis?.setDataCaptureListener(null, Visualizer.getMaxCaptureRate(), false, false)
+            } catch (ignored: Exception) {}
+            try { vis?.enabled = false } catch (ignored: Exception) {}
+            try { vis?.release() } catch (ignored: Exception) {}
+            visualizer = null
+            started = false
             return false
         }
     }
 
-    fun stop() {
+    /** Fully tear down the active Visualizer in a SIGSEGV-safe order: unregister
+     *  the native capture callback FIRST (stops the capture thread before the
+     *  engine is freed), then disable, release, and null the field. Safe to call
+     *  when no Visualizer exists. @Synchronized so create/teardown can't race. */
+    @Synchronized
+    private fun teardownVisualizer() {
+        val vis = visualizer ?: return
+        // Unregister the native capture callback BEFORE release() so the capture
+        // thread can't dereference freed buffers. This is the key SIGSEGV fix.
         try {
-            visualizer?.enabled = false
-            visualizer?.release()
+            vis.setDataCaptureListener(null, Visualizer.getMaxCaptureRate(), false, false)
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping: ${e.message}")
+            Log.w(TAG, "Error clearing capture listener: ${e.message}")
         }
+        try { vis.enabled = false } catch (e: Exception) { Log.w(TAG, "Error disabling: ${e.message}") }
+        try { vis.release() } catch (e: Exception) { Log.w(TAG, "Error releasing: ${e.message}") }
         visualizer = null
+    }
+
+    @Synchronized
+    fun stop() {
+        teardownVisualizer()
         started = false
         lastUpdateNanos = 0L
         bass = 0f; mid = 0f; high = 0f
@@ -392,6 +422,7 @@ class AudioReactor {
     }
 
     /** Restart with a different audio session (e.g., switch to app audio player) */
+    @Synchronized
     fun restart(newSessionId: Int) {
         if (newSessionId == currentSessionId && started) return
         stop()

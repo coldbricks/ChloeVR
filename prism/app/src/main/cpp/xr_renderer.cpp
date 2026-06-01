@@ -49,6 +49,7 @@ bool XrRenderer::init(JNIEnv* env, jobject activity) {
     if (faceTrackingSupported_) initFaceTracking();
     if (trackablesSupported_) initPlaneTracking();
     if (perfMetricsSupported_) initPerfMetrics();
+    if (fbPassthroughSupported_) initFbPassthrough();
 
     // Load refresh rate function pointers
     if (refreshRateSupported_) {
@@ -141,12 +142,11 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         XR_LOGI("  + Light estimation");
     }
 
-    // Hand tracking
-    if (hasExt(XR_EXT_HAND_TRACKING_EXTENSION_NAME)) {
-        extensions.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);
-        handTrackingSupported_ = true;
-        XR_LOGI("  + Hand tracking");
-    }
+    // Controller-first build: leave XR_EXT_hand_tracking disabled. ChloeVR's
+    // primary input path is high-precision 6DoF controllers; skipping hand
+    // tracker creation keeps the runtime/privacy surface and per-frame budget
+    // focused on rendering, foveation, room tracking, and model motion.
+    handTrackingSupported_ = false;
 
     // Eye tracking
     if (hasExt(XR_ANDROID_EYE_TRACKING_EXTENSION_NAME)) {
@@ -246,6 +246,13 @@ bool XrRenderer::createInstance(JNIEnv* env, jobject activity) {
         extensions.push_back(XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME);
         perfSettingsSupported_ = true;
         XR_LOGI("  + Performance settings (thermal notifications)");
+    }
+
+    // FB passthrough (Quest mixed reality). Self-gates via hasExt — absent on Galaxy XR.
+    if (hasExt("XR_FB_passthrough")) {
+        extensions.push_back("XR_FB_passthrough");
+        fbPassthroughSupported_ = true;
+        XR_LOGI("  + FB passthrough");
     }
 
     // Create instance
@@ -913,6 +920,43 @@ bool XrRenderer::waitFrame(FrameData& frame) {
     return true;
 }
 
+bool XrRenderer::initFbPassthrough() {
+    xrGetInstanceProcAddr(instance_, "xrCreatePassthroughFB", (PFN_xrVoidFunction*)&xrCreatePassthroughFB_);
+    xrGetInstanceProcAddr(instance_, "xrDestroyPassthroughFB", (PFN_xrVoidFunction*)&xrDestroyPassthroughFB_);
+    xrGetInstanceProcAddr(instance_, "xrPassthroughStartFB", (PFN_xrVoidFunction*)&xrPassthroughStartFB_);
+    xrGetInstanceProcAddr(instance_, "xrCreatePassthroughLayerFB", (PFN_xrVoidFunction*)&xrCreatePassthroughLayerFB_);
+    xrGetInstanceProcAddr(instance_, "xrDestroyPassthroughLayerFB", (PFN_xrVoidFunction*)&xrDestroyPassthroughLayerFB_);
+    xrGetInstanceProcAddr(instance_, "xrPassthroughLayerResumeFB", (PFN_xrVoidFunction*)&xrPassthroughLayerResumeFB_);
+    if (!xrCreatePassthroughFB_ || !xrCreatePassthroughLayerFB_) {
+        XR_LOGE("FB passthrough functions unavailable");
+        fbPassthroughSupported_ = false;
+        return false;
+    }
+    XrPassthroughCreateInfoFB ptci{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
+    XrResult r = xrCreatePassthroughFB_(session_, &ptci, &passthrough_);
+    if (XR_FAILED(r)) {
+        XR_LOGE("xrCreatePassthroughFB failed: %d", (int)r);
+        fbPassthroughSupported_ = false;
+        return false;
+    }
+    if (xrPassthroughStartFB_) {
+        r = xrPassthroughStartFB_(passthrough_);
+        if (XR_FAILED(r)) XR_LOGE("xrPassthroughStartFB failed: %d", (int)r);
+    }
+    XrPassthroughLayerCreateInfoFB plci{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
+    plci.passthrough = passthrough_;
+    plci.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+    plci.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+    r = xrCreatePassthroughLayerFB_(session_, &plci, &passthroughLayer_);
+    if (XR_FAILED(r)) {
+        XR_LOGE("xrCreatePassthroughLayerFB failed: %d", (int)r);
+        fbPassthroughSupported_ = false;
+        return false;
+    }
+    XR_LOGI("FB passthrough initialized (Quest MR)");
+    return true;
+}
+
 void XrRenderer::submitFrame(const FrameData& frame) {
     if (!session_ || !sessionReady_) return;
 
@@ -966,9 +1010,19 @@ void XrRenderer::submitFrame(const FrameData& frame) {
         quadLayer.size = {uiWorldW_, uiWorldH_};
     }
 
-    const XrCompositionLayerBaseHeader* layers[2] = {};
+    // FB passthrough layer (Quest MR) composites UNDERNEATH the scene — must be first.
+    // The projection layer already carries BLEND_TEXTURE_SOURCE_ALPHA and the renderer
+    // clears to alpha 0, so transparent regions reveal the real room beneath.
+    XrCompositionLayerPassthroughFB ptLayer{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
+    ptLayer.layerHandle = passthroughLayer_;
+    ptLayer.flags = 0;
+
+    const XrCompositionLayerBaseHeader* layers[3] = {};
     uint32_t layerCount = 0;
     if (frame.shouldRender) {
+        if (fbPassthroughSupported_ && passthroughLayer_ != XR_NULL_HANDLE) {
+            layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&ptLayer;
+        }
         layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&projLayer;
         if (uiVisible_ && uiSwapchain_ != XR_NULL_HANDLE && uiHasContent_) {
             layers[layerCount++] = (const XrCompositionLayerBaseHeader*)&quadLayer;
@@ -2218,7 +2272,11 @@ void XrRenderer::setFoveationLevel(int level) {
 
     // If eye-tracked foveation is available, chain it
     XrFoveationEyeTrackedProfileCreateInfoMETA eyeTrackedCI{};
-    if (eyeTrackedFoveation_) {
+    // Only chain the META eye-tracked foveation struct when that extension was
+    // actually ENABLED at instance creation (it needs eye tracking, which Quest
+    // lacks via XR_ANDROID_eye_tracking). Chaining it when the ext isn't loaded
+    // null-derefs inside Meta's VR driver — the SIGSEGV in setFoveationLevel.
+    if (eyeTrackedFoveation_ && eyeTrackedFoveationExtEnabled_) {
         eyeTrackedCI.type = XR_TYPE_FOVEATION_EYE_TRACKED_PROFILE_CREATE_INFO_META;
         eyeTrackedCI.next = nullptr;
         levelCI.next = &eyeTrackedCI;

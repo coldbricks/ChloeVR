@@ -27,6 +27,20 @@ android {
         }
     }
 
+    flavorDimensions += "vendor"
+    productFlavors {
+        create("galaxyxr") {
+            dimension = "vendor"
+            // Samsung Galaxy XR / Android XR: Jetpack XR + SceneCore video player
+            // plus the GLB model viewer. Carries the androidx.xr dependencies.
+        }
+        create("quest") {
+            dimension = "vendor"
+            // Meta Quest 3: GLB dancer viewer only (FilamentModelActivity, native
+            // OpenXR + Filament). No Jetpack XR — MainActivity/SceneCore are galaxyxr-only.
+        }
+    }
+
     signingConfigs {
         create("release") {
             // Configure via environment variables or local.properties:
@@ -81,10 +95,11 @@ android {
 }
 
 dependencies {
-    // Android XR
-    implementation("androidx.xr.runtime:runtime:1.0.0-alpha11")
-    implementation("androidx.xr.scenecore:scenecore:1.0.0-alpha12")
-    implementation("com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava")
+    // Android XR — Galaxy XR flavor ONLY (Jetpack XR + SceneCore). Excluded from the
+    // Quest build so the dancer viewer compiles without the Android XR runtime.
+    "galaxyxrImplementation"("androidx.xr.runtime:runtime:1.0.0-alpha12")
+    "galaxyxrImplementation"("androidx.xr.scenecore:scenecore:1.0.0-alpha13")
+    "galaxyxrImplementation"("com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava")
 
     // OpenXR loader (native, via prefab)
     implementation("org.khronos.openxr:openxr_loader_for_android:1.1.49")
