@@ -213,6 +213,32 @@ class FilamentModelActivity : ComponentActivity() {
         return if (riggedOnlyMode) availableGlbFiles.filter { FilePicker.isRiggedGlb(it) }
             else availableGlbFiles
     }
+
+    // ── GLB rename (user request 2026-06-10: readable names instead of hash
+    // soup). RENAME toggle in the picker header arms it; tapping a row then
+    // opens the save-name keyboard prefilled, and SAVE renames on disk. ──
+    @Volatile internal var glbRenameArmed = false
+    internal var renameTargetFile: File? = null
+
+    /** Rename a GLB on disk. Returns a user-facing status message. */
+    internal fun renameGlbFile(target: File, newBaseName: String): String {
+        val safe = newBaseName.trim().replace(Regex("[^A-Za-z0-9 _\\-]"), "").trim()
+        if (safe.isEmpty()) return "Invalid name"
+        val dest = File(target.parentFile, "$safe.${target.extension}")
+        if (dest.exists()) return "Name already taken"
+        if (!target.renameTo(dest)) return "Rename failed (storage permission?)"
+        availableGlbFiles = availableGlbFiles.map {
+            if (it.absolutePath == target.absolutePath) dest else it
+        }
+        // Keep the startup cache in sync so a restart doesn't resurrect the
+        // old path (it filters on exists(), but the entry would just vanish).
+        try {
+            File(cacheDir, "glb_cache.txt")
+                .writeText(availableGlbFiles.joinToString("\n") { it.absolutePath })
+        } catch (e: Exception) { Log.w(TAG, "GLB cache rewrite failed: ${e.message}") }
+        Log.i(TAG, "Renamed ${target.name} -> ${dest.name}")
+        return "Renamed to ${dest.nameWithoutExtension}"
+    }
     @Volatile internal var pendingModelLoad: File? = null  // queued for render thread (needs GL context)
 
     // Preview-before-add: tap a GLB and inspect it floating above the panel before

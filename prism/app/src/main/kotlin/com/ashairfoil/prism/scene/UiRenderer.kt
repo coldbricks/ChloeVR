@@ -1529,8 +1529,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
         // ═══ Save Name Editor ═══
         if (saveNameMode) {
+            val renaming = activity.renameTargetFile != null
             tmpPaint.apply { textSize = ThemeManager.PX_TITLE; color = ThemeManager.PURPLE_DEEP; isFakeBoldText = true; textAlign = Paint.Align.LEFT; style = Paint.Style.FILL; shader = null; maskFilter = null; typeface = Typeface.DEFAULT }
-            canvas.drawText("Save Scene", 50f, 110f, tmpPaint)
+            canvas.drawText(if (renaming) "Rename File" else "Save Scene", 50f, 110f, tmpPaint)
 
             // Name display with cursor
             val nameY = 155f
@@ -1569,12 +1570,15 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             tmpPaint.apply { textSize = ThemeManager.PX_HEADING; textAlign = Paint.Align.CENTER; color = if (isSaveHovered) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_DEEP; isFakeBoldText = true }
             @Suppress("NAME_SHADOWING")
             val displayName = String(saveNameChars, 0, saveNameLen).trim().ifEmpty { "untitled" }
-            canvas.drawText("SAVE \"$displayName\"", uiW / 2f, saveBtnY + 34f, tmpPaint)
+            canvas.drawText(
+                if (renaming) "RENAME TO \"$displayName\"" else "SAVE \"$displayName\"",
+                uiW / 2f, saveBtnY + 34f, tmpPaint)
 
-            // Existing scenes (overwrite targets)
+            // Existing scenes (overwrite targets) — not shown while renaming a
+            // file: a stray row tap there would silently save a scene instead.
             activity.refreshSceneList()
             val scenes = savedSceneFiles
-            if (scenes.isNotEmpty()) {
+            if (scenes.isNotEmpty() && !renaming) {
                 tmpPaint.apply { textSize = ThemeManager.PX_BODY; color = ThemeManager.TEXT_DIM; isFakeBoldText = false; textAlign = Paint.Align.LEFT; typeface = Typeface.DEFAULT }
                 canvas.drawText("Or overwrite existing:", 50f, 630f, tmpPaint)
 
@@ -1645,6 +1649,27 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             }
             val rbLabel = if (riggedOn) "RIGGED \u25CF" else "RIGGED only"
             canvas.drawText(rbLabel, rbL + rbW / 2f, rbT + 27f, tmpPaint)
+            tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false
+
+            // RENAME toggle \u2014 left of RIGGED. Armed = the next row tap opens
+            // the rename keyboard instead of loading the model.
+            val rnHover = hoveredActionButton == 111
+            val rnOn = activity.glbRenameArmed
+            val rnL = rbL - 240f
+            tmpPaint2.apply {
+                style = Paint.Style.FILL; maskFilter = null; shader = null
+                color = when {
+                    rnHover -> (ThemeManager.PURPLE_GLOW and 0x00FFFFFF) or 0x90000000.toInt()
+                    rnOn -> (ThemeManager.PURPLE_GLOW and 0x00FFFFFF) or 0x60000000
+                    else -> (ThemeManager.PURPLE_GLOW and 0x00FFFFFF) or 0x22000000
+                }
+            }
+            canvas.drawRoundRect(rnL, rbT, rnL + rbW, rbB, 10f, 10f, tmpPaint2)
+            tmpPaint.apply {
+                textSize = 26f; textAlign = Paint.Align.CENTER; isFakeBoldText = rnOn
+                color = if (rnHover || rnOn) ThemeManager.TEXT_BRIGHT else ThemeManager.PURPLE_GLOW
+            }
+            canvas.drawText(if (rnOn) "RENAME \u25CF" else "RENAME", rnL + rbW / 2f, rbT + 27f, tmpPaint)
             tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false
 
             tmpPaint2.apply { color = (ThemeManager.GREEN and 0x00FFFFFF) or 0x40000000; strokeWidth = 2f; style = Paint.Style.FILL_AND_STROKE; maskFilter = blurNormal4; shader = null }

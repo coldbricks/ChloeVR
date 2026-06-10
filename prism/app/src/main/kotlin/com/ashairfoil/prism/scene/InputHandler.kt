@@ -976,6 +976,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                 if (by in 76f..116f && bx >= (1024f - 70f - 220f) && bx <= (1024f - 70f)) {
                                     hoveredActionButton = 110
                                 }
+                                // RENAME toggle — left of RIGGED, same row, same width
+                                if (by in 76f..116f && bx >= (1024f - 70f - 220f - 240f) && bx <= (1024f - 70f - 220f - 20f)) {
+                                    hoveredActionButton = 111
+                                }
                                 // UiRenderer: GLB rows at startY=140, rowH=76, 13 visible
                                 if (by in 140f..1128f) {
                                     val maxVisible = 13
@@ -1952,7 +1956,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.saveNameMode && hoveredSaveButton == 0) {
                 val name = String(activity.saveNameChars, 0, activity.saveNameLen).trim()
-                if (name.isNotEmpty()) {
+                val renameTarget = activity.renameTargetFile
+                if (renameTarget != null) {
+                    if (name.isNotEmpty()) {
+                        activity.uiRenderer.showMessage(activity.renameGlbFile(renameTarget, name))
+                        activity.renameTargetFile = null
+                        activity.saveNameMode = false
+                        activity.glbPickerMode = true  // back to the picker to see the result
+                    }
+                } else if (name.isNotEmpty()) {
                     Log.i(TAG, "Saving scene as: '$name'")
                     activity.saveScene(name)
                     activity.saveNameMode = false
@@ -1960,8 +1972,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.saveNameMode && hoveredSaveButton == 1) {
                 activity.saveNameMode = false
+                if (activity.renameTargetFile != null) {
+                    activity.renameTargetFile = null
+                    activity.glbPickerMode = true  // cancel rename → back to picker
+                }
                 activity.uiNeedsRefresh = true
-            } else if (activity.menuVisible && activity.saveNameMode && hoveredSceneIndex >= 0 && hoveredSceneIndex < activity.savedSceneFiles.size) {
+            } else if (activity.menuVisible && activity.saveNameMode && activity.renameTargetFile == null && hoveredSceneIndex >= 0 && hoveredSceneIndex < activity.savedSceneFiles.size) {
                 val existingFile = activity.savedSceneFiles[hoveredSceneIndex]
                 val name = existingFile.nameWithoutExtension
                 Log.i(TAG, "Overwriting scene: '$name'")
@@ -1981,11 +1997,35 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     if (activity.riggedOnlyMode) "Showing rigged GLBs only" else "Showing all GLBs"
                 )
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.glbPickerMode && hoveredActionButton == 111) {
+                activity.glbRenameArmed = !activity.glbRenameArmed
+                activity.uiRenderer.showMessage(
+                    if (activity.glbRenameArmed) "RENAME armed — tap a file to rename it"
+                    else "Rename mode off"
+                )
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.glbPickerMode && hoveredGlbIndex >= 0 && hoveredGlbIndex < activity.visibleGlbFiles().size) {
                 val file = activity.visibleGlbFiles()[hoveredGlbIndex]
-                Log.i(TAG, "GLB picker: queuing ${file.name} for load")
-                activity.pendingModelLoad = file
-                activity.glbPickerMode = false
+                if (activity.glbRenameArmed) {
+                    // Rename flow: prefill the save-name keyboard with the
+                    // current name; SAVE renames on disk (see save handler).
+                    activity.renameTargetFile = file
+                    val base = file.nameWithoutExtension
+                    activity.saveNameLen = 0
+                    for (c in base) {
+                        if (activity.saveNameLen >= 20) break
+                        activity.saveNameChars[activity.saveNameLen] = c
+                        activity.saveNameLen++
+                    }
+                    for (i in activity.saveNameLen until 20) activity.saveNameChars[i] = ' '
+                    activity.saveNameCursor = activity.saveNameLen.coerceAtMost(19)
+                    activity.glbPickerMode = false
+                    activity.saveNameMode = true
+                } else {
+                    Log.i(TAG, "GLB picker: queuing ${file.name} for load")
+                    activity.pendingModelLoad = file
+                    activity.glbPickerMode = false
+                }
                 hoveredGlbIndex = -1
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 109) {
