@@ -176,10 +176,12 @@ CRITICAL: When this conversation is compacted, the following MUST survive in the
 **Latest verified commit:** 19648f8 on master (R2 Follow Room Light, Galaxy XR verified)
 **Standing directive (2026-06-10):** implement ALL of `RENDERING_REALISM_PLAN.md`
 (R1–R16) and ALL of `DANCE_REALISM_PLAN.md` (D1–D12). R1 (4x MSAA + specular
-AA) implemented + installed on Galaxy XR — on-head logcat verification pending
-(checklist in NOTES.md). Next: **D1+D3 (dance quick wins)**, then down both
-plans. Re-verify plan line cites before editing — R1/R2/R6 landed after the
-audit and shifted files.
+AA) and D1+D3 (beat-grid epoch + anticipation; skeletal breath + idle layer)
+implemented + installed on Galaxy XR — on-head verification pending for all
+three (checklists in NOTES.md). Next: continue down both plans (rendering:
+R3 normal maps → R4 shadows → R5 IBL; dance: D2 glute fix → D4 onset
+plumbing → D5 loop-tell). Re-verify plan line cites before editing —
+R1/R2/R6/D1/D3 landed after the audit and shifted files.
 
 **FIXED in this session (BUILD SUCCESSFUL):**
 - Panel Y coordinate mapping: changed `by = v * 1024f` to `by = v * 1280f`, all hit regions now match UiRenderer's 1280-tall bitmap

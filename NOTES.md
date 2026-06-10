@@ -674,3 +674,84 @@ Tag is ChloeVR-GLRenderer (Kotlin) / ChloeVR-XRRenderer (native shim). Expect:
    were to fall back).
 5. Perf sanity: budget says +0.5-1.5 ms GPU. Watch the perf HUD / thermal
    ladder for unexpected escalation, esp. with bloom ON (early-resolve cost).
+
+## [Claude] 2026-06-10 — D1 + D3 implemented (beat-grid epoch + anticipation; skeletal breath + idle layer)
+
+Both recs from DANCE_REALISM_PLAN.md, same session as R1. `assembleDebug`
+BUILD SUCCESSFUL both flavors; installed on Galaxy XR (@.179) alongside R1.
+NOT yet verified on-head (session was IDLE — headset unworn).
+
+### D1(A) — clocks/grids
+- ALL bpmEpochMs sites migrated wall-clock → SystemClock.uptimeMillis
+  (phaseAt, phaseInBars, halve/doubleBpm, tapTempo, update, snapshot).
+  AudioReactor.lastCaptureMs deliberately stays WALL clock (UiRenderer pairs
+  it with System.currentTimeMillis).
+- Epoch now anchors to lastBassRiseMs when <2s old at lock (plan trap 3) —
+  phase 0 sits on a real kick, not the update() tick that noticed the lock.
+- FrameSnapshot += epochMs; the three glute grids divide
+  (nowMs - epochMs) — the old absolute-ms division had 131s Float ULP
+  (indices frozen ~2.2 min, then jumping thousands of sub-beats).
+- **DISCOVERY (same bug class, audit missed it):** `tSec = snap.nowMs/1000f`
+  also Float-froze — fBm amplitude drift, ±5% phase slop, warmth jitter, and
+  the old breath were all stair-stepping in ~131s plateaus. Fixed via new
+  monoClockBaseMs session base. Expect the dance to feel subtly less
+  "static" on-head purely from this.
+
+### D1(B) — anticipation
+- Per-axis POSITIVE leads (leadMs = 60+60·physics ≈ 81ms default) on yaw,
+  pitch, bob, pelvis-thrust, squash lookups. Old yaw-only -45ms·physics lead
+  deleted (sign-inverted = a LAG, plan trap 2). **VERIFY DIRECTION ON HEAD.**
+- Bob/squat weight-arrival recentered: +kSkew phase offset puts the DEEPEST
+  point (root drop dominates) on the grid beat; descent = the fast kSkew
+  segment INTO the beat. GATED on the squat actually driving (skinned +
+  L/R_Calf + Root found) AND hasTempo — else the upward py bump's minimum
+  already sits at lookup 0 and recentering would invert arrival.
+- Impact kicks free-run the epoch grid shifted 72ms early (envelope peak
+  sin(πk)(1-k) @ k≈0.36) so the PEAK lands on the beat; beatCounter fallback
+  kept for no-lock. NOTE: kicks now fire through breakdowns when locked
+  (same "her ass is the metronome" policy as the glute tick).
+- Fill window lead-shifted (leaded phase4bar) so the fill rate-flip happens
+  where ALL leaded lookups ≡ 0 — keeps the previously pop-free fill
+  boundary pop-free with leads active.
+
+### D3 — idle layer
+- NEW `scene/IdleLayer.kt` (internal object), called for every skinned
+  non-preview model AFTER the dance pass, outside the audioReactor gate, on
+  its own uptime base: breath Spine01/02 X @0.22Hz + clavicle -X lift at 90°
+  lag + Head X counterphase; Waist X breath-pitch @0.3Hz + Waist Z
+  two-incommensurate-sine weight sway; Head Y micro-yaw ±1.5° retargeted
+  4-8s (hash-decorrelated per model), eased 0.4s; Root X ±5mm CoM wander
+  @0.05Hz (STATUE ONLY — dance owns Root while dancing). All ×(1+0.5·ml),
+  ml=0 unless reactor enabled.
+- Compose-ordering contract: dancing models get composes on the dance's
+  fresh REPLACE writes; statues get reset-to-bind first each frame (no
+  accumulation). Dance-stop falling edge does ONE resetAllToBind
+  (m.idleWasDanced) — without it knees/thighs froze bent while Root
+  re-bound, floating her feet cm above the passthrough floor.
+- Whole-model breath bob capped 3mm → 1mm; model-space breath pitch now
+  NON-skinned only (skinned get Waist X instead). Feet stay planted.
+- SkeletonRuntime += composeJointTranslation; PlacedModel += 5 idle fields.
+
+### Review process
+4-lens × 3-refuter adversarial workflow (64 agents): 20 findings → 13
+confirmed (7 distinct after cross-lens dedup) → ALL 7 fixed + re-built:
+kick-fallback poisoning (epoch grid index vs beatCounter '>' = kicks dead
+for minutes after BPM-lock toggle — now glute-shaped '!='), leadPhBob
+rate-mismatch on thrust/squash (up to 8× lead during fills — leadPhBobBase),
+recenter inversion on non-squat models (squatDrives gate), NEW fill-boundary
+knee/root pop (lead-shifted fill window), dance-stop floating statue
+(falling-edge resetAllToBind), head-retarget lockstep (h2 decorrelation),
+tempo-less static pose = deepest squat (hasTempo gates).
+
+### ON-HEAD VERIFICATION (D1/D3 additions to the R1 checklist)
+1. Glute shaker/sync grids: burst should fire on the LAST beat of each bar
+   every bar (was: rare bursts ~2min apart). Tap-tempo + no music should
+   tick glute pops AND impact kicks on the metronome.
+2. Anticipation direction: at default physics 0.35 she should read as
+   landing ON/with the beat, not dragging after it. If she reads EARLY,
+   reduce leadMs base (60+60·physics) before touching signs.
+3. Idle: non-dancing model must breathe (chest/shoulders), sway, and glance
+   — NOT a statue; feet rock-solid on the floor (no 3mm hover cycle).
+   Stop a deep-squat dance → she stands up to bind pose, feet ON floor.
+4. IMPROV fill bars: no knee/root snap at fill start/end.
+5. Multi-model: heads must NOT flick in unison.

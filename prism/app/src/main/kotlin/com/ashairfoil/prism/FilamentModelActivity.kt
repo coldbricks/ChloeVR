@@ -1504,6 +1504,11 @@ class FilamentModelActivity : ComponentActivity() {
     // Audio snapshot reused each frame (read-once vs 6+ @Volatile loads per model).
     private val danceSnapshot = AudioReactor.FrameSnapshot()
 
+    // Session base for monotonic-clock → Float seconds conversions (tSec, idle
+    // layer). Subtracting a base keeps the Float small — raw uptimeMillis/1000f
+    // loses sub-second precision once the device has been up for weeks (D1).
+    private var monoClockBaseMs = 0L
+
     // Tier2-pivot: zero-alloc scratch for rotating a local-frame vec3 by a
     // quaternion into world frame. Single-threaded (render thread) so safe.
     private val pivotRotScratch = FloatArray(3)
@@ -2607,7 +2612,12 @@ class FilamentModelActivity : ComponentActivity() {
                                 val rawFill = snap.boxFillPct
                                 // Tier1-H (Gemini #6): sub-perceptual phase slop — she drifts
                                 // in/out of the grid like a real dancer sitting in the pocket.
-                                val tSecFrame = snap.nowMs / 1000f
+                                // Session-relative seconds: raw nowMs/1000f promoted Long→Float
+                                // at full clock magnitude, where Float ULP froze tSec in
+                                // multi-second steps (same precision class as the D1 grid bug —
+                                // every fBm/slop/jitter consumer was stair-stepping).
+                                if (monoClockBaseMs == 0L) monoClockBaseMs = snap.nowMs
+                                val tSecFrame = (snap.nowMs - monoClockBaseMs) / 1000f
                                 val phaseSlop = 0.05f * kotlin.math.sin((tSecFrame * 0.1f * 2.0 * Math.PI).toFloat())
                                 // Metronome sync: find the first armed dancing model and use it
                                 // as the master clock. Every other model inherits its yaw/pitch/
@@ -2678,10 +2688,16 @@ class FilamentModelActivity : ComponentActivity() {
                                             // regular subdivision/syncopation path when active.
                                             val useShaker = m.gluteShakerMode && beatPeriodMsG > 0f
                                             val useSubdivision = !useShaker && beatPeriodMsG > 0f && (m.gluteRate > 1 || syncAmt > 0.01f)
+                                            // D1 grid snap: sub-beat indices divide ELAPSED-SINCE-EPOCH,
+                                            // not absolute nowMs. Absolute ms at full clock magnitude
+                                            // promoted Long→Float with ~131s ULP (indices froze for
+                                            // minutes, then jumped thousands of sub-beats), and even
+                                            // without that the grid sat a random offset from the body
+                                            // oscillators, which are all epoch-phased.
                                             if (useShaker) {
                                                 val shakeRate = 8 // 8 subs/beat = 1/32 note
                                                 val subBeatMs = beatPeriodMsG / shakeRate
-                                                val subBeatNow = (snap.nowMs / subBeatMs).toLong()
+                                                val subBeatNow = ((snap.nowMs - snap.epochMs) / subBeatMs).toLong()
                                                 if (subBeatNow != m.gluteLastSubBeat) {
                                                     if (m.gluteLastSubBeat != 0L) {
                                                         val subsPerBar = (shakeRate * 4).toLong() // 32
@@ -2702,7 +2718,7 @@ class FilamentModelActivity : ComponentActivity() {
                                                 }
                                             } else if (useSubdivision) {
                                                 val subBeatMs = beatPeriodMsG / m.gluteRate
-                                                val subBeatNow = (snap.nowMs / subBeatMs).toLong()
+                                                val subBeatNow = ((snap.nowMs - snap.epochMs) / subBeatMs).toLong()
                                                 if (subBeatNow != m.gluteLastSubBeat) {
                                                     // Skip the very first sub-beat transition so
                                                     // we don't fire spuriously on mode toggle.
@@ -2731,7 +2747,7 @@ class FilamentModelActivity : ComponentActivity() {
                                                 // a bass transient. Tap-tempo locks BPM without
                                                 // feeding beatCounter, so the glute kick never
                                                 // fired even with BPM locked.
-                                                val beatNow = (snap.nowMs / beatPeriodMsG).toLong()
+                                                val beatNow = ((snap.nowMs - snap.epochMs) / beatPeriodMsG).toLong()
                                                 if (beatNow != m.gluteLastBeatSeen) {
                                                     if (m.gluteLastBeatSeen != 0L) {
                                                         m.gluteKickLastMs = snap.nowMs
@@ -2872,7 +2888,19 @@ class FilamentModelActivity : ComponentActivity() {
                                         val moodGain = if (choreoActive) {
                                             0.8f + 0.45f * (0.5f - 0.5f * kotlin.math.cos(2.0 * Math.PI * snap.phase16bar).toFloat())
                                         } else 1f
-                                        val fillActive = choreoActive && snap.phase4bar > 0.75f
+                                        // D1(B) anticipation basis — computed BEFORE fillActive because
+                                        // the fill window itself must shift by the lead: a rate flip is
+                                        // only pop-free where the LEADED lookups cross zero. Lead is
+                                        // zero without a tempo lock (phases are frozen at 0 there; a
+                                        // constant offset would just bend the static pose).
+                                        val leadMs = if (hasTempo) 60f + 60f * m.physicsAmount else 0f
+                                        val quarterMsLead = if (hasTempo) 60000f / snap.bpm else 500f
+                                        // Fill window shifted earlier by leadMs: at elapsed = N·bar −
+                                        // leadMs every leaded lookup ≡ 0 REGARDLESS of rate, so flipping
+                                        // rates there stays continuous (the raw bar boundary had that
+                                        // property pre-lead; the lead moved it — review finding).
+                                        val fillActive = choreoActive &&
+                                            (((snap.phase4bar + leadMs / (quarterMsLead * 16f)) % 1f + 1f) % 1f) > 0.75f
                                         // Softened: during fill, drop amps to 40% (was 100%) and use
                                         // 1/8 (was 1/16) on yaw+pitch. Full 1/16 on three axes at once
                                         // read as spaz; 1/8 at reduced amp reads as a tasteful fill.
@@ -2886,13 +2914,33 @@ class FilamentModelActivity : ComponentActivity() {
                                         val pitchRate = if (fillActive) 8 else m.dancePitchRate
                                         val yRate = if (fillActive) 8 else m.danceYRate
 
+                                        // ── D1(B): anticipation lead, all three axes ──
+                                        // Trained dancers lead the beat by ~45-90ms: preparatory motion
+                                        // starts early so the kinematic ARRIVAL (deceleration / lowest
+                                        // CoM) lands on the audible beat — which sits EARLIER than grid
+                                        // phase 0 by the Visualizer-capture + render latency. A POSITIVE
+                                        // phase offset moves the waveform earlier in time by the code's
+                                        // own shear semantics (bob 0 = "hips lead", yaw -0.09 = lag).
+                                        // The previous yaw-only -(45ms × physics) lead was sign-inverted
+                                        // — it DELAYED arrival (audit D1 trap 2). VERIFY DIRECTION ON
+                                        // DEVICE: if she reads early, flip the sign back with evidence.
+                                        // The lead is constant in TIME, so each lookup needs it as a
+                                        // fraction of ITS OWN rate's cycle — leadPhBobBase serves the
+                                        // pelvis-thrust and squash lookups, which deliberately stay at
+                                        // the un-fill-adjusted danceYRate (review finding: reusing the
+                                        // fill-rate lead there inflated it up to 8x during fills).
+                                        val leadPhYaw = leadMs / (quarterMsLead * 4f / yawRate.coerceAtLeast(1))
+                                        val leadPhPitch = leadMs / (quarterMsLead * 4f / pitchRate.coerceAtLeast(1))
+                                        val leadPhBob = leadMs / (quarterMsLead * 4f / yRate.coerceAtLeast(1))
+                                        val leadPhBobBase = leadMs / (quarterMsLead * 4f / m.danceYRate.coerceAtLeast(1))
+
                                         val b = m.animBasePose
                                         var px = b[0]; var py = b[1]; var pz = b[2]
                                         var qx = b[3]; var qy = b[4]; var qz = b[5]; var qw = b[6]
 
                                         // Tier1-A: fbmMod + easeFor hoisted to class level — no per-frame
                                         // closure or listOf allocation (was ~720 alloc/sec at 4 models × 120Hz).
-                                        val tSec = snap.nowMs / 1000f
+                                        val tSec = (snap.nowMs - monoClockBaseMs) / 1000f
                                         val seed = if (m.fbmSeed == 0f) { m.fbmSeed = (m.gpuModelId * 0.37f + 1.13f); m.fbmSeed } else m.fbmSeed
                                         // Quarter-scale intensity internally so the UI's "1.0x" feels
                                         // like the previous "0.25x" (which the user settled on as correct).
@@ -2914,6 +2962,18 @@ class FilamentModelActivity : ComponentActivity() {
                                         //      just freezes her in the stance like a doll.
                                         val stanceGpu = glesRenderer?.getModel(m.gpuModelId)
                                         val stanceSkel = stanceGpu?.skeleton
+                                        // D1(B): the +kSkew weight-arrival recenter assumes the squat's
+                                        // root drop makes phase01's peak the body's LOWEST point. That
+                                        // only holds when the squat path actually drives (skinned rig
+                                        // with L/R_Calf + Root joints found — cached lazily, so the
+                                        // first bob frame runs unrecentered once). Otherwise the
+                                        // strictly-upward py bump makes phase01's peak the HIGHEST
+                                        // point and recentering would invert weight arrival (review
+                                        // finding); without the recenter the bump's own minimum
+                                        // already sits at lookup phase 0, which is correct as-is.
+                                        val squatDrives = stanceGpu?.isSkinned == true &&
+                                            m.kneeLJointIdx >= 0 && m.kneeRJointIdx >= 0 && m.rootJointIdx >= 0
+                                        val bobRecenter = if (hasTempo && squatDrives) 0.5f - 0.2f * m.physicsAmount else 0f
                                         if (stanceGpu?.isSkinned == true && stanceSkel != null) {
                                             if (m.pelvisJointIdx == Int.MIN_VALUE) {
                                                 m.pelvisJointIdx = stanceSkel.indexOf("Pelvis")
@@ -3029,8 +3089,13 @@ class FilamentModelActivity : ComponentActivity() {
                                             } else 0f
                                             val bobThrustDeg = if (bobActive) {
                                                 val yRateS = m.danceYRate.coerceAtLeast(1)
-                                                val pelvisPh = ((ar.phaseAtSnap(snap, yRateS) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
                                                 val kSkewS = 0.5f - 0.2f * m.physicsAmount
+                                                // Same recenter + lead family as the main bob lookup (see
+                                                // the D1(B) notes) so the hip-thrust peak stays in sync
+                                                // with the weight drop landing on the beat. This lookup
+                                                // stays at the base danceYRate, so it takes the BASE-rate
+                                                // lead, not the fill-adjusted one.
+                                                val pelvisPh = ((ar.phaseAtSnap(snap, yRateS) + m.danceYPhase + bobRecenter + leadPhBobBase + phaseSlop) % 1f + 1f) % 1f
                                                 val p01 = if (pelvisPh < kSkewS) pelvisPh / kSkewS else 1f - (pelvisPh - kSkewS) / (1f - kSkewS)
                                                 p01 * 4f * snap.musicalLevel
                                             } else 0f
@@ -3241,11 +3306,9 @@ class FilamentModelActivity : ComponentActivity() {
                                         val fbmPitch = fbmMod(tSec, seed, 1.7f)
                                         val fbmBob = fbmMod(tSec, seed, 3.1f)
 
-                                        // Anticipation: lead yaw phase by ~45ms so motion feels "danced"
-                                        // instead of "on the grid". Scales with physicsAmount so clean
-                                        // motion at 0 and full swagger at 1.
-                                        val yawCycleMs = if (hasTempo) (60000f / snap.bpm) * 4f / yawRate.coerceAtLeast(1) else 500f
-                                        val leadPh = -(45f * m.physicsAmount) / yawCycleMs
+                                        // (Anticipation lead now computed per-axis above the stance
+                                        // block — see leadPhYaw/leadPhPitch/leadPhBob at the top of
+                                        // the dancing branch.)
 
                                         // Tier1-D: ease downgrade — fast rates with non-SINE/LINEAR ease
                                         // read as twitchy. Inline check (no listOf alloc).
@@ -3335,7 +3398,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // shoulders lag the hips by ~45% — "hips lead, shoulders follow"
                                         // — which is the dance read that selling the booty move.
                                         if (m.danceYawDeg != 0f) {
-                                            val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPh + phaseSlop) % 1f + 1f) % 1f
+                                            val ph = ((ar.phaseAtSnap(snap, yawRate) + m.danceYawPhase - 0.09f + leadPhYaw + phaseSlop) % 1f + 1f) % 1f
                                             yawSig = SceneManager.shapedWaveAt(ph, easeYaw, m.yawSharpness, m.yawComplexity)
 
                                             // Counter-roll ribcage proxy — now applied at the WAIST
@@ -3601,7 +3664,7 @@ class FilamentModelActivity : ComponentActivity() {
                                         // Tier2-pivot: if pivotEnabled, pitch pivots at preset-specified
                                         // height (e.g. 0.95 head for TWERK → hips pop, head stays fixed).
                                         if (m.dancePitchDeg != 0f) {
-                                            val ph = ((ar.phaseAtSnap(snap, pitchRate) + m.dancePitchPhase - 0.04f + phaseSlop) % 1f + 1f) % 1f
+                                            val ph = ((ar.phaseAtSnap(snap, pitchRate) + m.dancePitchPhase - 0.04f + leadPhPitch + phaseSlop) % 1f + 1f) % 1f
                                             // Tier 3 — character shaping (see yaw above).
                                             val sig = SceneManager.shapedWaveAt(ph, easePitch, m.pitchSharpness, m.pitchComplexity)
                                             val half = Math.toRadians((m.dancePitchDeg * effInt * ampGain * fbmPitch * bassGate * proxMacro * gazeGain * sig).toDouble()).toFloat() * 0.5f
@@ -3631,8 +3694,18 @@ class FilamentModelActivity : ComponentActivity() {
                                         // triangle (cusp'd peak); complexity adds a secondary 2×-rate
                                         // bump. Both 0 → pre-Tier3 behaviour.
                                         if (m.danceYMeters != 0f) {
-                                            val ph = ((ar.phaseAtSnap(snap, yRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
-                                            val kSkew = 0.5f - 0.2f * m.physicsAmount  // 0.5 = symmetric, 0.3 = fast-down
+                                            val kSkew = 0.5f - 0.2f * m.physicsAmount  // fast segment duration (the drop)
+                                            // D1(B) weight-arrival audit: phase01 peaks at ph==kSkew, and
+                                            // at that peak the squat's root drop (≤12cm) dominates the py
+                                            // bump (≤4cm × gains) — the body's LOWEST point used to land
+                                            // mid-beat. Offsetting the lookup by +kSkew puts the deepest
+                                            // point at grid phase 0: the fast kSkew segment becomes the
+                                            // descent INTO the beat (starting ~(1-kSkew) of the prior
+                                            // beat), recovery is the slow segment. leadPhBob then pulls
+                                            // the whole waveform ~80ms early like the other axes.
+                                            // bobRecenter (== kSkew when the squat drives, else 0) is
+                                            // computed above the stance block — see its gating note.
+                                            val ph = ((ar.phaseAtSnap(snap, yRate) + m.danceYPhase + bobRecenter + leadPhBob + phaseSlop) % 1f + 1f) % 1f
                                             val phase01 = if (ph < kSkew) ph / kSkew else 1f - (ph - kSkew) / (1f - kSkew)
                                             val smoothBob = phase01 * phase01 * (3f - 2f * phase01)
                                             val bobS = m.bobSharpness.coerceIn(0f, 1f)
@@ -3815,8 +3888,12 @@ class FilamentModelActivity : ComponentActivity() {
                                         // rotation, no world-position write needed.
                                         // py -= 0.010f * m.physicsAmount * effInt * kotlin.math.abs(yawSig) * proxMacro
 
-                                        // Tier1-G: breath bob — 3mm @ 0.25Hz, per-model seed decorrelation.
-                                        val breathBobM = 0.003f * proxMicro *
+                                        // Tier1-G: breath bob — capped at 1mm (was 3mm): whole-model Y
+                                        // translation makes her FEET sink/hover against the real
+                                        // passthrough floor, a grounding tell stereo vision catches at
+                                        // 1-3m (D3). Skinned rigs now breathe through the skeleton
+                                        // (IdleLayer); this 1mm remainder keeps non-skinned models alive.
+                                        val breathBobM = 0.001f * proxMicro *
                                             kotlin.math.sin(((tSec * 0.25f + seed) * 2.0 * Math.PI).toFloat())
                                         py += breathBobM
 
@@ -3838,10 +3915,12 @@ class FilamentModelActivity : ComponentActivity() {
                                         // If we want "tilts into the turn" later, apply it at a spine
                                         // joint (waist X), not world, so feet stay planted.
 
-                                        // Tier1-G: breath pitch — 0.3° @ 0.3Hz, always on (local-frame).
+                                        // Tier1-G: breath pitch — 0.3° @ 0.3Hz. NON-SKINNED models only:
+                                        // rotating the whole model breathes the feet too. Skinned rigs
+                                        // get this as a Waist-X compose in the IdleLayer instead (D3).
                                         val breathPitchDeg = 0.3f * proxMicro *
                                             kotlin.math.sin(((tSec * 0.3f + seed * 1.3f) * 2.0 * Math.PI).toFloat())
-                                        if (breathPitchDeg != 0f) {
+                                        if (breathPitchDeg != 0f && stanceGpu?.isSkinned != true) {
                                             val halfPB = Math.toRadians(breathPitchDeg.toDouble()).toFloat() * 0.5f
                                             val spB = kotlin.math.sin(halfPB); val cpB = kotlin.math.cos(halfPB)
                                             val nxB = qx * cpB + qw * spB
@@ -3862,13 +3941,38 @@ class FilamentModelActivity : ComponentActivity() {
                                                 + 0.5f * kotlin.math.sin(tSec * 1.57f + 2f).toFloat())
                                         }
 
-                                        // ── ALIVE: impact kick on each detected beat ──
-                                        // Skip beat capture during freeze — the held-gaze moment is more
-                                        // powerful than a syncopated twitch.
-                                        if (snap.beatCounter > m.lastBeatSeen && m.physicsAmount > 0.001f) {
-                                            m.lastBeatSeen = snap.beatCounter
-                                            m.impactKickStartMs = snap.nowMs
-                                            m.impactKickAxis = (snap.beatCounter % 3).toInt()
+                                        // ── ALIVE: impact kick scheduled off the epoch beat grid ──
+                                        // The raised-sine envelope sin(πk)(1-k) peaks at k≈0.36 → ~72ms
+                                        // into its 200ms window. Audio-detected beatCounter triggers
+                                        // always arrive late (~50ms capture quantization + 180ms min
+                                        // interval), so when BPM is locked the kick free-runs the epoch
+                                        // grid shifted 72ms EARLY — the envelope peak lands ON the grid
+                                        // beat ("her ass is the metronome", same policy as the glute
+                                        // tick). beatCounter stays as the no-lock fallback.
+                                        // m.lastBeatSeen holds a grid index in epoch mode and a counter
+                                        // in fallback mode — one spurious kick on mode switch, absorbed.
+                                        if (m.physicsAmount > 0.001f) {
+                                            if (hasTempo && snap.epochMs != 0L) {
+                                                val kickBeatMs = 60000f / snap.bpm
+                                                val kickGridNow = (((snap.nowMs - snap.epochMs).toFloat() + 72f) / kickBeatMs).toLong()
+                                                if (kickGridNow != m.lastBeatSeen) {
+                                                    if (m.lastBeatSeen != 0L) {
+                                                        m.impactKickStartMs = snap.nowMs
+                                                        m.impactKickAxis = (kickGridNow % 3).toInt()
+                                                    }
+                                                    m.lastBeatSeen = kickGridNow
+                                                }
+                                            } else if (snap.beatCounter != m.lastBeatSeen && snap.beatCounter > 0L) {
+                                                // != (not >) so the counter domain is re-adopted on the
+                                                // first frame after an epoch→fallback switch — the stale
+                                                // grid index in lastBeatSeen can exceed beatCounter by
+                                                // thousands and '>' would silence kicks for minutes
+                                                // (review finding; same self-healing shape as the glute
+                                                // fallback).
+                                                m.lastBeatSeen = snap.beatCounter
+                                                m.impactKickStartMs = snap.nowMs
+                                                m.impactKickAxis = (snap.beatCounter % 3).toInt()
+                                            }
                                         }
                                         if (m.impactKickStartMs > 0L) {
                                             val el = (snap.nowMs - m.impactKickStartMs).toFloat()
@@ -3998,7 +4102,11 @@ class FilamentModelActivity : ComponentActivity() {
                                             // actual bob amplitude, not just gated on > 0. 1mm bob now
                                             // produces 1% squash, not 10%. 7cm bob = full squash.
                                             if (m.danceYMeters > 0f) {
-                                                val ph = ((ar.phaseAtSnap(snap, m.danceYRate) + m.danceYPhase + phaseSlop) % 1f + 1f) % 1f
+                                                // -cos minimum at lookup 0 = max squash, which is where
+                                                // the recentered bob now puts the deepest point. BASE-rate
+                                                // lead — this lookup runs at danceYRate, not the
+                                                // fill-adjusted yRate (review finding).
+                                                val ph = ((ar.phaseAtSnap(snap, m.danceYRate) + m.danceYPhase + leadPhBobBase + phaseSlop) % 1f + 1f) % 1f
                                                 val bobSig = -kotlin.math.cos(2.0 * Math.PI * ph).toFloat()
                                                 val bobAmpScale = (m.danceYMeters / 0.05f).coerceIn(0f, 1f)
                                                 val k = 0.1f * m.physicsAmount * effInt * proxMicro * bobAmpScale
@@ -4058,6 +4166,39 @@ class FilamentModelActivity : ComponentActivity() {
                                         m.rotZ = qz / ql; m.rotW = qw / ql
                                         sceneManager.updateModelTransform(m)
                                     }
+                                }
+                            }
+
+                            // ── D3: always-on idle layer (breath / weight sway / head life) ──
+                            // Runs for EVERY skinned model, dancing or not, AFTER the dance
+                            // pass (compose-ordering contract — see IdleLayer kdoc). Sits
+                            // OUTSIDE the audioReactor gate on its own monotonic time base:
+                            // a statue with no audio session still breathes.
+                            run {
+                                val idleNow = android.os.SystemClock.uptimeMillis()
+                                if (monoClockBaseMs == 0L) monoClockBaseMs = idleNow
+                                val idleTSec = (idleNow - monoClockBaseMs) / 1000f
+                                val arIdle = audioReactor
+                                val idleMl = if (arIdle != null && arIdle.enabled) arIdle.musicalLevel else 0f
+                                for (i in models.indices) {
+                                    val m = models[i]
+                                    if (m.isPreview) continue
+                                    val idleGpu = gr.getModel(m.gpuModelId)
+                                    val idleSkel = idleGpu?.skeleton
+                                    if (idleGpu?.isSkinned != true || idleSkel == null) continue
+                                    // Mirrors the dance branch's run conditions: true only when
+                                    // the dance loop REPLACE-wrote this model's joints this frame.
+                                    val danced = arIdle != null && m.animHasBase && (m.danceYawDeg != 0f ||
+                                        m.dancePitchDeg != 0f || m.danceYMeters != 0f)
+                                    // Dance-stop falling edge: reset the WHOLE skeleton once. The
+                                    // dance pass owns knees/thighs/neck/arms and only re-bases them
+                                    // while running — without this, a stopped model froze bent-kneed
+                                    // while IdleLayer re-bound Root, deleting the root drop that
+                                    // balanced the bend → feet hovering cm above the real floor.
+                                    if (!danced && m.idleWasDanced) idleSkel.resetAllToBind()
+                                    m.idleWasDanced = danced
+                                    com.ashairfoil.prism.scene.IdleLayer.apply(
+                                        m, idleSkel, danced, idleTSec, idleNow, idleMl)
                                 }
                             }
 

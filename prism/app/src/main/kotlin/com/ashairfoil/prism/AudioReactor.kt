@@ -113,6 +113,10 @@ class AudioReactor {
     // Absolute time epoch, set once when BPM is first locked. Oscillator phase
     // is computed as (nowMs - bpmEpochMs) mod cycleMs — so it never accumulates
     // floating-point drift no matter how long the track plays.
+    // Clock domain: SystemClock.uptimeMillis (monotonic) — NEVER wall clock.
+    // Wall clock at 2026 epoch magnitudes (~1.78e12 ms) has a Float ULP of
+    // 131s, which froze every Long/Float time division downstream (audit D1),
+    // and an NTP step would jolt every oscillator at once.
     @Volatile private var bpmEpochMs: Long = 0L
     // Once the detector has seen N consistent intervals (low std-dev), BPM is
     // LOCKED — further triggers don't nudge it. This matches the "find the
@@ -134,7 +138,7 @@ class AudioReactor {
     fun phaseAt(rate: Int): Float {
         if (!autoBpm || detectedBpm <= 0f || bpmEpochMs == 0L) return 0f
         val cycleMs = (60000f / detectedBpm) * 4f / rate.coerceAtLeast(1)
-        val elapsedMs = (System.currentTimeMillis() - bpmEpochMs).toFloat()
+        val elapsedMs = (android.os.SystemClock.uptimeMillis() - bpmEpochMs).toFloat()
         return ((elapsedMs / cycleMs) % 1f + 1f) % 1f
     }
 
@@ -144,7 +148,7 @@ class AudioReactor {
         if (!autoBpm || detectedBpm <= 0f || bpmEpochMs == 0L) return 0f
         val barMs = (60000f / detectedBpm) * 4f
         val cycleMs = barMs * bars.coerceAtLeast(1)
-        val elapsedMs = (System.currentTimeMillis() - bpmEpochMs).toFloat()
+        val elapsedMs = (android.os.SystemClock.uptimeMillis() - bpmEpochMs).toFloat()
         return ((elapsedMs / cycleMs) % 1f + 1f) % 1f
     }
 
@@ -240,13 +244,13 @@ class AudioReactor {
     fun halveBpm() {
         if (detectedBpm > 0f) {
             detectedBpm = (detectedBpm / 2f).coerceIn(60f, 200f)
-            bpmEpochMs = System.currentTimeMillis()
+            bpmEpochMs = android.os.SystemClock.uptimeMillis()
         }
     }
     fun doubleBpm() {
         if (detectedBpm > 0f) {
             detectedBpm = (detectedBpm * 2f).coerceIn(60f, 200f)
-            bpmEpochMs = System.currentTimeMillis()
+            bpmEpochMs = android.os.SystemClock.uptimeMillis()
         }
     }
 
@@ -276,7 +280,7 @@ class AudioReactor {
             val sorted = tapTimes.copyOf(tapFilled).also { it.sort() }
             val medianMs = sorted[tapFilled / 2].toFloat()
             detectedBpm = (60000f / medianMs).coerceIn(60f, 200f)
-            bpmEpochMs = System.currentTimeMillis()
+            bpmEpochMs = android.os.SystemClock.uptimeMillis()
             bpmLockedStable = true
             autoBpm = true
             android.util.Log.i("AudioReactor", "TAP TEMPO: ${detectedBpm.toInt()} BPM (from $tapFilled taps)")
@@ -631,7 +635,14 @@ class AudioReactor {
             // through breakdowns and off-beat fills and never jitters mid-cycle.
             // (No longer call recordTrigger here — detectBassKick handles it.)
             if (detectedBpm > 0f) {
-                if (bpmEpochMs == 0L) bpmEpochMs = System.currentTimeMillis()
+                // Anchor the epoch to the last detected bass-kick onset (when
+                // recent) instead of "now" — phase 0 then sits on a real beat,
+                // not on whichever update() tick noticed the lock (audit D1).
+                if (bpmEpochMs == 0L) {
+                    val nowUp = android.os.SystemClock.uptimeMillis()
+                    bpmEpochMs = if (lastBassRiseMs > 0L && nowUp - lastBassRiseMs < 2000L)
+                        lastBassRiseMs else nowUp
+                }
                 // Absolute-time phase: no accumulated drift.
                 val phaseNorm = phaseAt(bpmRate)
                 smoothedOutput = 0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * phaseNorm).toFloat())
@@ -881,7 +892,13 @@ class AudioReactor {
     // the fields instead of hitting @Volatile getters + phaseAt() N times per
     // model per frame. Caller supplies + reuses the buffer — zero allocation.
     class FrameSnapshot {
+        /** SystemClock.uptimeMillis at snapshot time — monotonic, same clock
+         *  domain as [epochMs]. NOT wall clock (see bpmEpochMs doc). */
         var nowMs: Long = 0L
+        /** BPM epoch (uptimeMillis), 0 when no lock. Consumers compute beat
+         *  grids as (nowMs - epochMs) / periodMs — elapsed-since-epoch stays
+         *  small enough that Long/Float promotion keeps sub-ms precision. */
+        var epochMs: Long = 0L
         var boxFillPct: Float = 0f
         var beatCounter: Long = 0L
         var bpm: Float = 0f
@@ -900,8 +917,9 @@ class AudioReactor {
     }
 
     fun snapshot(out: FrameSnapshot) {
-        val now = System.currentTimeMillis()
+        val now = android.os.SystemClock.uptimeMillis()
         out.nowMs = now
+        out.epochMs = bpmEpochMs
         out.boxFillPct = boxFillPct
         out.beatCounter = beatCounter
         out.bpm = detectedBpm

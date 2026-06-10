@@ -173,6 +173,20 @@ class SkeletonRuntime(
     }
 
     /**
+     * Additively offset joint `j`'s local-pose origin (parent-space meters).
+     * Used by the idle layer's CoM wander on the Root joint. Additive on the
+     * translation column only — callers must re-base the joint each frame
+     * (reset or absolute write first) or offsets accumulate.
+     */
+    fun composeJointTranslation(j: Int, tx: Float, ty: Float, tz: Float) {
+        if (j < 0 || j >= jointCount) return
+        val off = j * 16
+        localPose[off + 12] += tx
+        localPose[off + 13] += ty
+        localPose[off + 14] += tz
+    }
+
+    /**
      * Compute `globalPose` and `palette` in a single forward pass over the joints.
      * Parents come before children (topological order is enforced in `init`), so
      * each child can multiply `parent.global * self.local` in place.

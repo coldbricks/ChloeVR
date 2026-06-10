@@ -175,6 +175,16 @@ class SceneManager(
         // Per-model fBm seed so the "slow random amplitude drift" is uncorrelated
         // between axes (prevents them all breathing in unison).
         var fbmSeed: Float = 0f,
+        // ── D3 IdleLayer: head-life micro-yaw retarget state ──
+        // ±1.5° target re-rolled every 4-8s, eased over 0.4s (IdleLayer.kt).
+        var idleHeadYawFromDeg: Float = 0f,
+        var idleHeadYawToDeg: Float = 0f,
+        var idleHeadMoveStartMs: Long = 0L,
+        var idleHeadNextMs: Long = 0L,
+        // Falling-edge tracker: when dance stops, the whole skeleton is reset
+        // once (the dance pass freezes knees/thighs/neck in their last pose
+        // while IdleLayer re-binds Root — feet would float; review finding).
+        var idleWasDanced: Boolean = false,
         // ── BREATH (Tier1-G): gaze-saccade FSM (Tier1-F) state ──
         // Camera-aware yaw bias. Behaves like a dancer glancing at the viewer:
         // hold a heading 2–6s, then SACCADE (fast snap with BACK overshoot) to

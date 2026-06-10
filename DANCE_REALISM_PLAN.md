@@ -33,7 +33,7 @@ Quick wins D1–D3 (hours each), D4–D8 (days each), D9/D10 (transformative, we
 
 ## D1: Snap all beat grids to the BPM epoch and add a real ~80ms anticipation lead so weight-arrival lands ON the beat
 
-`category=musicality · impact=high · effort=hours · verdict=confirmed`
+**STATUS: IMPLEMENTED 2026-06-10 (evening) — build-verified both flavors, adversarially reviewed (13 confirmed findings → 7 distinct fixes applied, see NOTES.md). Installed on Galaxy XR; ON-HEAD VERIFICATION PENDING — especially the lead DIRECTION (trap 2) and grid-firing cadence.** Notable deviations: clock migration also fixed tSec/tSecFrame (same Float-ULP class, previously frozen in ~131s steps — fBm/slop/jitter were stair-stepping); epoch now anchors to lastBassRiseMs at lock (trap 3); kick pre-trigger tuned to 72ms (trap 4); the +kSkew weight-arrival recenter is gated on the squat path actually driving (review: the upward py bump alone has its minimum at lookup 0 already); the fill window is lead-shifted so rate flips stay pop-free.
 **Files:** `AudioReactor.kt`, `FilamentModelActivity.kt`
 
 ### Spec
@@ -90,7 +90,7 @@ Complements D10: shader spheres do beat-synced pops, spring bones do physical in
 
 ## D3: Move breathing into the skeleton and add an always-on idle layer (statue when not dancing; feet bob off the real floor when dancing)
 
-`category=variation · impact=high · effort=hours · verdict=confirmed`
+**STATUS: IMPLEMENTED 2026-06-10 (evening) — build-verified both flavors, adversarially reviewed (see NOTES.md). Installed on Galaxy XR; ON-HEAD VERIFICATION PENDING.** New `scene/IdleLayer.kt` runs unconditionally after the dance pass (own monotonic time base, independent of audioReactor per trap 3); whole-model breath bob capped at 1mm (trap 6 option) and breath pitch moved to Waist X for skinned rigs; statue models reset idle joints to bind each frame + a falling-edge full-skeleton reset on dance-stop (review: partial reset left bent knees with a re-bound root — feet floating).
 **Files:** `FilamentModelActivity.kt`, `scene/SkeletonRuntime.kt`
 
 ### Spec
