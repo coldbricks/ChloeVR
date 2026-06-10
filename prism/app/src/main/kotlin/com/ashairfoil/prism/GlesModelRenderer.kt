@@ -950,6 +950,14 @@ class GlesModelRenderer {
                 val mat0 = mats.getJSONObject(0)
                 val pbr = mat0.optJSONObject("pbrMetallicRoughness")
                 if (pbr != null) {
+                    // DELIBERATE spec divergence: glTF defaults a missing
+                    // metallicFactor to 1.0. Tripo omits it AND ships the MR
+                    // map as one JPEG, whose chroma subsampling bleeds
+                    // roughness edges into the metallic (B) channel — up to
+                    // ~0.25 of garbage along every UV seam (pixel-verified
+                    // 2026-06-10). Spec-default 1.0 would render that bleed as
+                    // metallic speckle on skin; defaulting 0.0 multiplies it
+                    // away. The METALLIC slider remains the user's opt-in.
                     model.metallic = pbr.optDouble("metallicFactor", 0.0).toFloat()
                     model.roughness = pbr.optDouble("roughnessFactor", 0.9).toFloat()
                     val bcTex = pbr.optJSONObject("baseColorTexture")
@@ -1364,20 +1372,30 @@ class GlesModelRenderer {
             // Mesh grows ~3× in vertex count; memory is cheap on XR, correct
             // shading is not. The old posCnt ≤ 500000 cap is removed — unweld
             // is safe at any density.
-            // Skip the triangle-soup unweld for skinned meshes. The 3× vertex
-            // expansion would require replicating JOINTS_0/WEIGHTS_0 across the
-            // soup — extra work + risks breaking weights. Instead we disable
-            // tangent-space normal mapping on the skinned model (set
-            // hasNormalMap=false below) so the shader's TBN path never runs.
-            // Without baked tangents + no unweld, tan would read as (0,0,0) →
-            // normalize(zero)=NaN → fragment normal NaN → pitch-black lighting.
-            // Trade: flat PBR on rigged meshes. Basecolor + metallic-roughness
-            // still applied. Future: compute per-vertex averaged tangents for
-            // skinned meshes (no unweld needed) if bump detail becomes critical.
-            if (model.isSkinned && model.normalMapTexId != 0) {
-                Log.w(TAG, "Tier 4: disabling normal-map tangent-space shading on skinned model " +
-                    "(no baked TANGENT, unweld skipped) — flat PBR only")
-                model.hasNormalMap = false
+            // R3: SKINNED meshes get INDEXED per-vertex AVERAGED tangents — no
+            // unweld, so the welded index buffer stays 1:1 with the
+            // JOINTS_0/WEIGHTS_0 VBOs uploaded below. Averaged tangents are
+            // the industry norm for organic meshes (Filament/three.js absent
+            // MikkTSpace); the UV-seam cancellation that motivated the unweld
+            // only bites at rare seam vertices, and computeTangents' per-vertex
+            // fallback now substitutes a unit tangent there instead of leaving
+            // a near-zero vector to NaN in the shader. The shader's skinned-TBN
+            // path (tan = S3 * aTangent.xyz, gated on uHasNormalMap) has been
+            // shipping since Tier 4, waiting for real data. Baked TANGENT takes
+            // priority when a GLB ships one — the old gate fired on
+            // normalMapTexId alone and wrongly downgraded those too.
+            // Restores skin pores / navel / collarbone detail on exactly the
+            // asset class the app exists for.
+            if (model.isSkinned && model.hasNormalMap && tangents == null) {
+                if (texCoords != null) {
+                    tangents = computeTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
+                    Log.i(TAG, "R3: averaged tangents computed for skinned mesh " +
+                        "($posCnt verts) — normal mapping ENABLED")
+                } else {
+                    // No UVs → the normal map can't be sampled anyway.
+                    Log.w(TAG, "Skinned model has a normal map but no TEXCOORD_0 — flat PBR")
+                    model.hasNormalMap = false
+                }
             }
             if (!model.isSkinned && model.hasNormalMap && tangents == null && texCoords != null) {
                 val unweld = unweldWithTangents(positions, normals, texCoords, indices, posCnt, idxCnt)
@@ -2622,7 +2640,15 @@ class GlesModelRenderer {
             val du1 = uv[i1*2]-uv[i0*2]; val dv1 = uv[i1*2+1]-uv[i0*2+1]
             val du2 = uv[i2*2]-uv[i0*2]; val dv2 = uv[i2*2+1]-uv[i0*2+1]
             val det = du1*dv2 - du2*dv1
-            if (kotlin.math.abs(det) < 0.00001f) continue
+            // Degenerate gate must be SCALE-RELATIVE (review finding): det is
+            // 2x the triangle's UV area, which shrinks ~1/triCount — the old
+            // absolute 1e-5 cutoff discarded most LEGITIMATE triangles on
+            // dense meshes (measured ~all of them on the shipped 400k-2M-tri
+            // dancers), leaving whole regions on the fallback tangent. The
+            // ratio det/uvScale is density-independent; <= also catches the
+            // fully-degenerate uvScale==0 case (would divide 1/0 below).
+            val uvScale = du1*du1 + dv1*dv1 + du2*du2 + dv2*dv2
+            if (kotlin.math.abs(det) <= 1e-4f * uvScale) continue
             val inv = 1f / det
             val tx = (dv2*e1x - dv1*e2x)*inv; val ty = (dv2*e1y - dv1*e2y)*inv; val tz = (dv2*e1z - dv1*e2z)*inv
             val bx = (-du2*e1x + du1*e2x)*inv; val by = (-du2*e1y + du1*e2y)*inv; val bz = (-du2*e1z + du1*e2z)*inv
@@ -2639,6 +2665,12 @@ class GlesModelRenderer {
             tx -= d*nx; ty -= d*ny; tz -= d*nz
             val len = kotlin.math.sqrt(tx*tx + ty*ty + tz*tz)
             if (len > 0.0001f) { tx /= len; ty /= len; tz /= len }
+            // Degenerate fallback (R3): vertices touched only by degenerate-UV
+            // triangles (or seam-cancelled sums) end up near-zero here — the
+            // shader would normalize(0) → NaN → black fragments. Substitute a
+            // unit tangent like the unweld path does; one texel of wrong
+            // anisotropy beats a NaN.
+            else { tx = 1f; ty = 0f; tz = 0f }
             // Handedness: sign of dot(cross(N, T), B)
             val cx = ny*tz - nz*ty; val cy = nz*tx - nx*tz; val cz = nx*ty - ny*tx
             val w = if (cx*bitan[v*3] + cy*bitan[v*3+1] + cz*bitan[v*3+2] < 0f) -1f else 1f

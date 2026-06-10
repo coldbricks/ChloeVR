@@ -67,6 +67,7 @@ Together these are the documented difference between "dancing with" and "reactin
 
 ## D2: Fix the glute shaker: pose-space anchors via transformPointByJoint, skin-weight masking, and lighting-visible push
 
+**STATUS: DEPRIORITIZED BY USER 2026-06-10 — "the glute shake kind of sucks.. gimmicky." Do NOT pick this up by default when walking the plan; D10's spring-bone flesh chains are the physically-grounded replacement for flesh motion. Revisit only if the user asks.**
 `category=deformation · impact=high · effort=hours · verdict=confirmed`
 **Files:** `FilamentModelActivity.kt`, `GlesModelRenderer.kt`, `scene/SkeletonRuntime.kt`
 

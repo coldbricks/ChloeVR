@@ -827,6 +827,36 @@ Implications for the plans:
 - New tool: scripts\glb_peek.py (on the PC) — instant GLB rig/texture-dims
   inspection before pushing to the headset.
 
+## [Claude] 2026-06-10 — R3 implemented (normal maps on rigged dancers)
+
+Fix A per plan: computeTangents (dead since the unweld rewrite) now called
+for skinned meshes with a normal map + UVs and no baked TANGENT; the
+force-disable gate is deleted (baked TANGENT survives now); NaN fallback
+(1,0,0) ported to the per-vertex orthonormalize. Shader side needed ZERO
+changes (skinned-TBN path was already shipping). Build-verified both
+flavors, installed on Galaxy XR, visual verification pending.
+
+**Review catch (2-lens × 3-verifier workflow, 1 confirmed major):** the
+revived computeTangents' degenerate-UV gate was ABSOLUTE (|det| < 1e-5);
+det = 2× UV-triangle area scales ~1/triCount, so on the shipped 400k-2M-tri
+dancers it discarded essentially ALL triangles — verifiers measured the
+user's actual GLBs off the headset. Whole dancer would have rendered the
+normal map through the constant fallback tangent. Now scale-relative
+(|det| <= 1e-4 × uvScale, <= so uvScale==0 full-degenerates also skip).
+
+**Tripo MR packing verified with pixels (user prompted, ShapesXR scar):**
+G=roughness (real variation), B=metallic (~0), R=255 filler — spec-standard
+despite the '_rm' filename. REAL trap found instead: single-JPEG MR maps
+bleed roughness edges into the metallic channel (up to ~0.25 at UV seams,
+channel images eyeballed). Our loader's metallicFactor default of 0.0
+(spec says 1.0) is what neutralizes it — now comment-pinned in the loader
+as a DELIBERATE divergence. Babylon.js sandbox renders the same GLB with
+spec-default 1.0 and gets away with it only via soft studio IBL.
+New PC-side tools: scripts\glb_peek.py, scripts\glb_rm_check.py.
+
+**D2 deprioritized by user** ("gimmicky") — marked in DANCE plan; D10
+spring bones are the flesh-motion replacement. NEXT: **R4** (fresh session).
+
 ### Room Track now persisted (user request, same session)
 SettingsManager.roomTracking ("room_tracking", default OFF for fresh
 installs): the user's last toggle IS the startup default. Applied at

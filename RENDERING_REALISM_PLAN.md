@@ -119,7 +119,7 @@ All four current-code claims verified accurate. Must-knows:
 
 ## R3: Restore normal mapping on rigged dancers via indexed per-vertex tangent averaging + skinned TBN
 
-`category=materials · devices=both · impact=transformative · effort=days (verifier: much less — see below) · verdict=partially-implemented`
+**STATUS: IMPLEMENTED 2026-06-10 (late evening) — build-verified both flavors, installed on Galaxy XR; ON-HEAD VISUAL VERIFICATION PENDING (load a rigged PBR dancer, expect pores/navel/collarbone detail; watch for UV-seam shading artifacts — averaged tangents accepted per spec).** As predicted, fix A was mostly dead-code revival: computeTangents called for skinned meshes (welded indices stay 1:1 with JOINTS_0/WEIGHTS_0), gate deleted (baked TANGENT now survives too — old gate fired on normalMapTexId alone), NaN fallback ported. Adversarial review (2 lenses × 3 verifiers) caught one MAJOR in the revived code beyond the plan's notes: the degenerate-UV epsilon (|det| < 1e-5) was absolute, and on the shipped 400k-2M-tri dancers it discarded ~ALL legitimate triangles (det = 2×UV-area shrinks ~1/triCount) — whole model would have used the fallback tangent. Replaced with a scale-relative gate (|det| <= 1e-4 × uvScale). Bonus same-session: Tripo MR channel packing pixel-verified (G=roughness, B=metallic, spec-standard; the '_rm' name is just naming) and the loader's metallic-default-0 spec divergence documented as load-bearing (Tripo's single-JPEG MR map bleeds roughness edges into B — spec-default 1.0 would render seam speckle).
 **Files:** `GlesModelRenderer.kt` (only)
 
 ### Spec
