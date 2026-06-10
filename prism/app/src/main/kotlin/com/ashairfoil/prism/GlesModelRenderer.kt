@@ -2923,16 +2923,18 @@ void main() {
     vec3 fSpec = fD * fF * fG / (4.0 * NdotV * fNdotL + 0.0001);
     color += (diffuse + fSpec) * fNdotL * uFillLightColor * uFillLightIntensity;
 
-    // Ambient: SH irradiance or hemisphere fallback
+    // Ambient: SH irradiance or hemisphere fallback. uAmbientColor carries the
+    // XR colorCorrection (or the user tint) — apply it on BOTH branches so the
+    // estimator's white balance isn't silently dropped whenever SH is valid.
     if (uUseSH > 0.5) {
         vec3 shIrrad = evalSH(N);
-        color += albedo * shIrrad * uAmbientIntensity;
+        color += albedo * shIrrad * uAmbientColor * uAmbientIntensity;
         // IBL specular: evaluate SH at reflection direction, weight by smoothness
         vec3 R = reflect(-V, N);
         vec3 specEnv = evalSH(R);
         vec3 F_env = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - NdotV, 5.0);
         float smoothness = 1.0 - roughness;
-        color += specEnv * F_env * smoothness * smoothness * uAmbientIntensity;
+        color += specEnv * F_env * smoothness * smoothness * uAmbientColor * uAmbientIntensity;
     } else {
         color += albedo * mix(vec3(0.02, 0.02, 0.04), vec3(0.08, 0.08, 0.06), N.y * 0.5 + 0.5) * uAmbientColor * uAmbientIntensity;
     }

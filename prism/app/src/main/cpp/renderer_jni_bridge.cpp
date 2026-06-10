@@ -206,6 +206,17 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeIsRunning(
     return (g_renderer && g_renderer->isRunning()) ? JNI_TRUE : JNI_FALSE;
 }
 
+// When "Follow Room Light" drives the key light from the directional estimate,
+// request AMBIENT-kind SH so the key light isn't double-counted (TOTAL-kind SH
+// already includes the directional contribution). Falls back to TOTAL natively
+// if the runtime rejects the AMBIENT kind.
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetLightShAmbient(
+        JNIEnv* env, jobject thiz, jboolean ambient) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (g_renderer) g_renderer->setShKindAmbient(ambient == JNI_TRUE);
+}
+
 // Light estimation output layout (float array, 41 floats):
 // [0]  valid (1.0 or 0.0)
 // [1-3]   ambientR/G/B

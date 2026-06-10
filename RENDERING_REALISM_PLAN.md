@@ -28,8 +28,8 @@ The renderer is a hand-rolled GLES 3.0 forward pipeline (`GlesModelRenderer.kt`,
 
 | Item | Status |
 |------|--------|
-| **R6** (color hygiene) | **IN PROGRESS this session** |
-| **R2** (consume light direction) | **NEXT UP — fully specced below** |
+| **R6** (color hygiene) | **DONE — landed + device-verified on Quest 3 (2026-06-10)** |
+| **R2** (consume light direction) | **DONE — VERIFIED ON GALAXY XR 2026-06-10.** Two hardware corrections: direction convention is INVERTED from docs (runtime reports light-travel direction; negated at consumption), and AMBIENT-kind SH works natively (no fallback needed in practice). See NOTES.md for the session's bonus fixes (boundary-interceptor task demotion, occlusion un-stick) + discoveries (light_estimation_cubemap v1 enumerated → R5 Tier A viable; recommended_resolution v1 present → R7). |
 
 ### Already landed this session (3 fixes, both flavors compile-verified)
 
@@ -82,7 +82,7 @@ Impact tiers as ranked by the audit: R1-R5 transformative, R6-R13 high, R14-R16 
 
 ## R2: Galaxy XR — consume the estimated light DIRECTION to align key light + shadows with the real room; fix wasted SH colorCorrection, sticky useSH, and TOTAL-vs-AMBIENT double counting
 
-**STATUS: NEXT UP — fully specced.**
+**STATUS: DONE — VERIFIED ON GALAXY XR 2026-06-10.** Hardware findings: direction convention INVERTED from docs (negated at consumption, marked in code); AMBIENT-kind SH accepted natively; emitter-drag flip-off verified live. Outstanding minor verifications in NOTES.md. Deviations from spec: (a) the Follow Room Light toggle lives on param 24 as a 3-state cycle OFF→ON+DIR→ON — the main panel has no room for a new row (rows ≥25 collide with the action-button band); (b) hysteresis compares a CLAMPED-candidate direction (elev [5..85], azimuth frozen near zenith) against the applied dir — comparing the raw estimate would deadlock >5° for out-of-clamp lights and write angles forever (emitter/shadow crawl); (c) the AMBIENT-kind fallback covers all three rejection shapes (XR_FAILED / root-INVALID / sh-INVALID) with a warm-up-guarded 30-poll latch that is cleared on Follow re-engage; pre-latch fallback polls suppress SH so TOTAL coefficients never blend into the AMBIENT-basis EMA; (d) un-stick is 270 frames (~90 native polls) and native ages out the cached estimate after 10 consecutive failed polls so the un-stick can actually fire on hard outages.
 `category=lighting · devices=galaxyxr · impact=transformative · effort=hours · verdict=confirmed`
 **Files:** `FilamentModelActivity.kt`, `GlesModelRenderer.kt`, `scene/InputHandler.kt`, `settings/SettingsManager.kt`, `cpp/xr_renderer.cpp`
 
@@ -197,7 +197,7 @@ Specular "IBL" today is `evalSH(reflect(-V, N)) * Schlick * (1 - roughness)^2` (
   ```
   No LUT texture, ~8 ALU.
 - **TIER B (days, both devices, DO FIRST):** bake 2-3 HDR studio environments offline with Filament's cmgen (`--format=ktx --size=256 --ibl-samples=1024`), load as RGB16F cubemap (Adreno/XR2 filter half-float) or RGBM-in-RGBA8; selectable per lighting preset. On Galaxy XR scale by (live SH DC luminance / baked DC luminance) so reflections track real room brightness; diffuse stays on live SH exactly as today. **This alone transforms Quest**, whose ambient is near-black.
-- **TIER A (week-plus follow-on, galaxyxr):** the dismissal at xr_light_estimation.h:19 ("Revision 2 only") is an unverified platform-limitation claim — XR_ANDROID_light_estimation_cubemap is now documented (HDR R16G16B16A16_SFLOAT faces, reproject flag). Grep the already-logged startup extension dump (xr_renderer.cpp:118-121); if present, chain `XrCubemapLightEstimatorCreateInfoANDROID` (256px, reproject=true) behind the Samsung-trap protocol (struct-size logging, guarded first call), prefiltering one face-mip per frame amortized over ~30 frames.
+- **TIER A (week-plus follow-on, galaxyxr):** the dismissal at xr_light_estimation.h:19 ("Revision 2 only") is an unverified platform-limitation claim — XR_ANDROID_light_estimation_cubemap is now documented (HDR R16G16B16A16_SFLOAT faces, reproject flag). **CONFIRMED 2026-06-10: `XR_ANDROID_light_estimation_cubemap v1` IS enumerated on the (OTA-updated) Galaxy XR runtime — Tier A is viable.** Chain `XrCubemapLightEstimatorCreateInfoANDROID` (256px, reproject=true) behind the Samsung-trap protocol (struct-size logging, guarded first call), prefiltering one face-mip per frame amortized over ~30 frames. Note the R2 lesson: validate every doc claim on hardware — the light-estimation DIRECTION convention shipped inverted from developer.android.com.
 - **TIER C optional:** coarse live cubemap from the Camera2 passthrough feed.
 
 ### Verifier corrections & device traps
@@ -214,7 +214,7 @@ Specular "IBL" today is `evalSH(reflect(-V, N)) * Schlick * (1 - roughness)^2` (
 
 ## R6: Color hygiene: SRGB8_ALPHA8 texture uploads, Khronos PBR Neutral tone map, correct fill-light BRDF, 4x anisotropy (ASTC/KTX2 as follow-on)
 
-**STATUS: IN PROGRESS this session.**
+**STATUS: DONE — items 1-4 landed and device-verified on Quest 3 (2026-06-10). Item 5 (ASTC/KTX2 transcode) remains a separate follow-on.**
 `category=display-pipeline · devices=both · impact=high · effort=hours · verdict=confirmed`
 **Files:** `GlesModelRenderer.kt` (only, for items 1-4)
 

@@ -488,8 +488,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
             5 -> renderer.lightIntensity = value
             6 -> renderer.fillLightIntensity = value
             7 -> { activity.autoAmbient = false; renderer.ambientIntensity = value }
-            8 -> { renderer.lightAngleDeg = value; renderer.updateLightDirFromAngles() }
-            9 -> { renderer.lightElevDeg = value; renderer.updateLightDirFromAngles() }
+            8 -> { activity.setFollowRoomLight(false, "azimuth slider"); renderer.lightAngleDeg = value; renderer.updateLightDirFromAngles() }
+            9 -> { activity.setFollowRoomLight(false, "elevation slider"); renderer.lightElevDeg = value; renderer.updateLightDirFromAngles() }
             10 -> renderer.shadowDarkness = value
             11 -> renderer.shadowSoftness = value
             12 -> renderer.shadowSpread = value
@@ -1085,6 +1085,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
             // Emitter grab: grip on hovered emitter -> drag along ray, delta-based
             if (emitterHovered && rightSqueeze > 0.5f && !emitterGrabbed && !blockGripInteractionsUntilRelease) {
                 emitterGrabbed = true
+                // Dragging the emitter is a manual direction edit — take the key
+                // light back from XR room estimation (else it fights the drag)
+                activity.setFollowRoomLight(false, "emitter drag")
                 val dx = renderer.emitterPos[0] - laserHandPos[0]
                 val dy = renderer.emitterPos[1] - laserHandPos[1]
                 val dz = renderer.emitterPos[2] - laserHandPos[2]
@@ -1810,6 +1813,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 if (preset != null) {
                     val renderer = activity.glesRenderer
                     if (renderer != null) {
+                        // A preset is an authored direction — stop following the room
+                        // light so the preset's angles actually stick
+                        activity.setFollowRoomLight(false, "lighting preset")
                         com.ashairfoil.prism.settings.LightingPresets.applyPreset(preset, renderer) { activity.autoAmbient = it }
                         activity.activeLightingPresetName = preset.name
                         Log.i(TAG, "Applied lighting preset: ${preset.name}")
@@ -2086,11 +2092,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else if (hoveredMenuParam == 17) {
                     activity.roomTrackingEnabled = !activity.roomTrackingEnabled
                     activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
+                    // Scene occlusion must follow room tracking: its depth-only
+                    // occluder geometry otherwise persists and keeps clipping
+                    // models ("invisible walls") long after tracking stops.
+                    activity.sceneOcclusion.enabled = activity.roomTrackingEnabled &&
+                        activity.sceneOcclusion.isExtensionSupported &&
+                        com.ashairfoil.prism.settings.SettingsManager.occlusionEnabled
                     if (!activity.roomTrackingEnabled) {
                         activity.sensorPoller.detectedPlaneCount = 0
                         activity.glesRenderer?.shadowPlanes = emptyList()
                     }
-                    Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled}")
+                    Log.i(TAG, "Room tracking: ${activity.roomTrackingEnabled} (occlusion=${activity.sceneOcclusion.enabled})")
                 } else if (hoveredMenuParam == 18) {
                     activity.roomEditMode = !activity.roomEditMode
                     if (activity.roomEditMode) {
@@ -2137,10 +2149,22 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.uiRenderer.showMessage("Marks reset")
                     }
                 } else if (hoveredMenuParam == 24) {
-                    // Auto Light: re-enable XR light estimation on ambient channel.
-                    activity.autoAmbient = !activity.autoAmbient
-                    Log.i(TAG, "Auto Light: ${if (activity.autoAmbient) "ON" else "OFF"}")
-                    activity.uiRenderer.showMessage("Auto Light ${if (activity.autoAmbient) "ON" else "OFF"}")
+                    // Auto Light cycles OFF → ON+DIR (XR ambient + key light follows
+                    // the room's estimated direction) → ON (XR ambient only, manual
+                    // direction) → OFF. The panel has no room for a separate Follow
+                    // Room Light row, so it lives on this badge.
+                    when {
+                        !activity.autoAmbient -> {
+                            activity.autoAmbient = true
+                            activity.setFollowRoomLight(true, "Auto Light cycle")
+                        }
+                        activity.followRoomLight -> activity.setFollowRoomLight(false, "Auto Light cycle")
+                        else -> activity.autoAmbient = false
+                    }
+                    val autoLabel = if (!activity.autoAmbient) "OFF"
+                        else if (activity.followRoomLight) "ON+DIR" else "ON"
+                    Log.i(TAG, "Auto Light: $autoLabel")
+                    activity.uiRenderer.showMessage("Auto Light $autoLabel")
                 } else if (hoveredMenuParam == 25) {
                     // Mark Glute L — aim laser at left glute and trigger-click.
                     // Capture is world-hit → model-local in markAnatomyMode == 4 path.
@@ -2428,11 +2452,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         renderer.ambientIntensity = (renderer.ambientIntensity + delta).coerceIn(0f, 5f)
                     }
                     8 -> {
+                        activity.setFollowRoomLight(false, "azimuth nudge")
                         renderer.lightAngleDeg = (renderer.lightAngleDeg + delta * 20f) % 360f
                         if (renderer.lightAngleDeg < 0f) renderer.lightAngleDeg += 360f
                         renderer.updateLightDirFromAngles()
                     }
                     9 -> {
+                        activity.setFollowRoomLight(false, "elevation nudge")
                         renderer.lightElevDeg = (renderer.lightElevDeg + delta * 10f).coerceIn(5f, 90f)
                         renderer.updateLightDirFromAngles()
                     }
@@ -2548,8 +2574,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     5 -> renderer.lightIntensity = 2.0f
                     6 -> renderer.fillLightIntensity = 0.5f
                     7 -> { activity.autoAmbient = true; renderer.ambientIntensity = 1.0f }
-                    8 -> { renderer.lightAngleDeg = 0f; renderer.updateLightDirFromAngles() }
-                    9 -> { renderer.lightElevDeg = 60f; renderer.updateLightDirFromAngles() }
+                    8 -> { activity.setFollowRoomLight(false, "azimuth reset"); renderer.lightAngleDeg = 0f; renderer.updateLightDirFromAngles() }
+                    9 -> { activity.setFollowRoomLight(false, "elevation reset"); renderer.lightElevDeg = 60f; renderer.updateLightDirFromAngles() }
                     10 -> renderer.shadowDarkness = 0.7f
                     11 -> renderer.shadowSoftness = 2.0f
                     12 -> renderer.shadowSpread = 8f

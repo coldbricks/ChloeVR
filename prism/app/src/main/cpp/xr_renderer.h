@@ -59,6 +59,19 @@ public:
         static constexpr int SIZE = 41; // total floats in JNI buffer
     };
     bool pollLightEstimate(LightEstimate& estimate);
+    // When the key light is driven from the XR directional estimate ("Follow Room
+    // Light"), request AMBIENT-kind SH so the explicit key light isn't counted
+    // twice (TOTAL-kind SH already contains the directional contribution).
+    // Re-engaging clears the unsupported-latch so a wrong latch (e.g. from a
+    // degraded-tracking stretch) is recoverable from the UI cycle; a runtime
+    // that truly lacks AMBIENT kind simply re-latches within ~30 polls.
+    void setShKindAmbient(bool ambient) {
+        if (ambient && !shKindAmbient_) {
+            ambientShKindFails_ = 0;
+            ambientShKindUnsupported_ = false;
+        }
+        shKindAmbient_ = ambient;
+    }
 
     // ── Hand tracking ──
     struct HandJointData {
@@ -280,7 +293,22 @@ private:
     PFN_xrDestroyLightEstimatorANDROID xrDestroyLightEstimator_ = nullptr;
     PFN_xrGetLightEstimateANDROID xrGetLightEstimate_ = nullptr;
     bool initLightEstimation();
+    XrResult queryLightEstimate(XrTime time, XrSphericalHarmonicsKindANDROID kind,
+        XrAmbientLightANDROID& amb, XrDirectionalLightANDROID& dir,
+        XrSphericalHarmonicsANDROID& sh, XrLightEstimateANDROID& out);
     LightEstimate lastLightEstimate_;
+    // Instance members (not function statics) so a recreated renderer/estimator
+    // re-arms warm-up, cache aging, and diagnostics — same-process activity
+    // relaunch destroys+recreates XrRenderer (see NOTES.md).
+    int lightFrameCount_ = 0;   // polls since estimator creation (warm-up + cadence)
+    int lightQueryFails_ = 0;   // consecutive failed real polls (ages out the cache)
+    int lightErrCount_ = 0;     // error log throttle
+    int lightLogCount_ = 0;     // 'XR Light' log throttle
+    bool shKindAmbient_ = false;          // Kotlin-requested SH kind (Follow Room Light)
+    int ambientShKindFails_ = 0;          // AMBIENT-invalid-but-TOTAL-valid polls since
+                                          // the last AMBIENT success
+    bool ambientShKindUnsupported_ = false; // latched after repeated failures — Samsung
+                                            // runtime may not implement AMBIENT kind
 
     // ── Hand tracking ──
     bool handTrackingSupported_ = false;

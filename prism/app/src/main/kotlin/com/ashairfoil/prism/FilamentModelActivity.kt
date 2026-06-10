@@ -57,6 +57,11 @@ class FilamentModelActivity : ComponentActivity() {
 
     @Volatile internal var roomLux = 200f  // default indoor
     @Volatile internal var autoAmbient = true
+    // R2: while Auto Light is on, also steer the key light's DIRECTION from the
+    // XR directional estimate so shadows align with the real room. Persisted in
+    // SettingsManager; manual angle edits flip it off (same contract as the
+    // ambient slider vs autoAmbient). Loaded in onCreate.
+    @Volatile internal var followRoomLight = true
     private val lightEstimateBuffer = FloatArray(41)
 
     // Pre-allocated view/projection matrices to avoid per-frame copyOfRange allocations
@@ -82,11 +87,44 @@ class FilamentModelActivity : ComponentActivity() {
     private var smoothSH = FloatArray(27)
     private var lightSmoothed = false  // first frame gets instant values
 
+    // Follow Room Light state: require a stable run of valid direction estimates
+    // before the first apply (~20 native polls at the 3-frame cadence), then a 5°
+    // hysteresis so estimate noise can't make the emitter gizmo crawl.
+    private var dirStableFrames = 0
+    private val followWarmupFrames = 60
+    private val followHysteresisCos = 0.99619f  // just below cos(5°), no equality strobe
+    // useSH un-stick: drop frozen room SH after ~90 native polls without valid
+    // SH (270 render frames at the 3-frame poll cadence, ~3.75s)
+    private var shInvalidFrames = 0
+    private val shInvalidLimit = 270
+    private var lastShKindAmbient = false  // last SH kind sent to native
+
     private fun setRgb(dst: FloatArray, r: Float, g: Float, b: Float) {
         if (dst.size < 3) return
         dst[0] = r
         dst[1] = g
         dst[2] = b
+    }
+
+    /** Flip Follow Room Light and persist. Manual light-direction edits (sliders,
+     *  thumbstick nudges, resets, presets, emitter drag) call this with on=false —
+     *  mirroring the ambient-slider/autoAmbient contract. No-op when unchanged. */
+    internal fun setFollowRoomLight(on: Boolean, reason: String) {
+        if (followRoomLight == on) return
+        followRoomLight = on
+        SettingsManager.followRoomLight = on
+        if (!on) dirStableFrames = 0
+        Log.i(TAG, "Follow Room Light ${if (on) "ON" else "OFF"} ($reason)")
+    }
+
+    /** Keep the native SH kind in sync: AMBIENT while the key light follows the
+     *  room direction (avoids double-counting it via TOTAL-kind SH), TOTAL
+     *  otherwise. Crosses JNI only when the state actually changes. */
+    private fun syncLightShKind() {
+        val ambient = autoAmbient && followRoomLight
+        if (ambient == lastShKindAmbient) return
+        lastShKindAmbient = ambient
+        nativeSetLightShAmbient(ambient)
     }
 
     // ── XR Sensor Poller (hand/eye/face tracking, planes, perf, passthrough) ──
@@ -346,6 +384,7 @@ class FilamentModelActivity : ComponentActivity() {
         // SettingsManager is idempotent; ensure it's initialized even if this activity
         // was launched directly (e.g. from a model-file share) without going through MainActivity.
         SettingsManager.init(this)
+        followRoomLight = SettingsManager.followRoomLight
         spatialAnchors = SpatialAnchorManager(this)
 
         showMessage("Initializing 3D renderer...")
@@ -2136,6 +2175,7 @@ class FilamentModelActivity : ComponentActivity() {
                         try {
                             // Environment lighting: prefer XR light estimation, fall back to lux sensor
                             if (autoAmbient) {
+                                syncLightShKind()
                                 val hasXrLight = nativePollLightEstimate(lightEstimateBuffer)
                                 if (hasXrLight && lightEstimateBuffer[0] > 0.5f) {
                                     // XR_ANDROID_light_estimation: real room lighting
@@ -2161,9 +2201,7 @@ class FilamentModelActivity : ComponentActivity() {
                                     for (i in 0..2) smoothAmbientColor[i] += (tccBuf[i] - smoothAmbientColor[i]) * aI
                                     setRgb(gr.ambientColor, smoothAmbientColor[0], smoothAmbientColor[1], smoothAmbientColor[2])
 
-                                    // Light direction: use manual azimuth/elevation (menu sliders)
-                                    // XR direction estimation is unreliable — don't override user's setting
-                                    // Auto-adjust intensity and color from XR only
+                                    // Key-light intensity/color from the XR directional estimate
                                     val dirScale = (dirR + dirG + dirB) / 3f
                                     if (dirScale > 0.01f) {
                                         val targetInt = (dirScale * 3f).coerceIn(0.5f, 5f)
@@ -2175,27 +2213,98 @@ class FilamentModelActivity : ComponentActivity() {
                                         for (i in 0..2) smoothLightColor[i] += (tccBuf[i] - smoothLightColor[i]) * aI
                                         setRgb(gr.lightColor, smoothLightColor[0], smoothLightColor[1], smoothLightColor[2])
                                     }
-                                    // Direction set by azimuth/elevation sliders (params 8/9)
+
+                                    // Follow Room Light: steer azimuth/elevation toward the
+                                    // estimated direction ("direction toward light", same
+                                    // convention as lightDir). BOTH gates are required: on
+                                    // INVALID the runtime emits defaults dir=(0,1,0) — length
+                                    // 1.0! — with intensity 0, so only the intensity gate
+                                    // filters that out.
+                                    val dirLen = kotlin.math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ)
+                                    if (followRoomLight && dirScale > 0.3f && dirLen > 0.5f) {
+                                        // HARDWARE-VERIFIED 2026-06-10 (Galaxy XR, ceiling-lit room):
+                                        // the runtime reports the direction light TRAVELS (consistent
+                                        // -Y), NOT "toward the light" as developer.android.com claims.
+                                        // Negate to get the toward-light L vector lightDir expects.
+                                        smoothLightDir[0] += (-dirX / dirLen - smoothLightDir[0]) * aD
+                                        smoothLightDir[1] += (-dirY / dirLen - smoothLightDir[1]) * aD
+                                        smoothLightDir[2] += (-dirZ / dirLen - smoothLightDir[2]) * aD
+                                        val sLen = kotlin.math.sqrt(
+                                            smoothLightDir[0] * smoothLightDir[0] +
+                                                smoothLightDir[1] * smoothLightDir[1] +
+                                                smoothLightDir[2] * smoothLightDir[2])
+                                        if (dirStableFrames < followWarmupFrames) dirStableFrames++
+                                        if (dirStableFrames >= followWarmupFrames && sLen > 0.001f) {
+                                            // Build the CANDIDATE angles first — elevation clamped,
+                                            // azimuth frozen when the smoothed dir is near-vertical
+                                            // (atan2 of two near-zero components is pure noise) —
+                                            // then apply 5° hysteresis between the candidate and
+                                            // the APPLIED direction. Comparing the raw estimate
+                                            // instead would leave a permanent >5° gap for
+                                            // out-of-clamp lights (overhead/below-horizon) and
+                                            // re-trigger writes forever: emitter + shadow crawl.
+                                            val horizMag = kotlin.math.sqrt(
+                                                smoothLightDir[0] * smoothLightDir[0] +
+                                                    smoothLightDir[2] * smoothLightDir[2]) / sLen
+                                            var candAz = gr.lightAngleDeg
+                                            if (horizMag > 0.05f) {
+                                                candAz = Math.toDegrees(kotlin.math.atan2(
+                                                    smoothLightDir[0].toDouble(),
+                                                    smoothLightDir[2].toDouble())).toFloat()
+                                                if (candAz < 0f) candAz += 360f
+                                            }
+                                            val candEl = Math.toDegrees(kotlin.math.asin(
+                                                (smoothLightDir[1] / sLen).toDouble().coerceIn(-1.0, 1.0)))
+                                                .toFloat().coerceIn(5f, 85f)
+                                            val azRad = Math.toRadians(candAz.toDouble())
+                                            val elRad = Math.toRadians(candEl.toDouble())
+                                            val cosEl = kotlin.math.cos(elRad).toFloat()
+                                            val candX = cosEl * kotlin.math.sin(azRad).toFloat()
+                                            val candY = kotlin.math.sin(elRad).toFloat()
+                                            val candZ = cosEl * kotlin.math.cos(azRad).toFloat()
+                                            val dot = candX * gr.lightDir[0] +
+                                                candY * gr.lightDir[1] + candZ * gr.lightDir[2]
+                                            if (dot < followHysteresisCos) {
+                                                gr.lightAngleDeg = candAz
+                                                gr.lightElevDeg = candEl
+                                            }
+                                        }
+                                    } else {
+                                        dirStableFrames = 0
+                                    }
+                                    // Apply angles (manual sliders, or Follow Room Light above)
                                     gr.updateLightDirFromAngles()
 
                                     // Smooth SH coefficients
                                     xrSHAvailable = shValid
                                     if (shValid) {
+                                        shInvalidFrames = 0
                                         System.arraycopy(lightEstimateBuffer, 14, rawSHBuf, 0, 27)
                                         for (i in 0 until 27) smoothSH[i] += (rawSHBuf[i] - smoothSH[i]) * aS
                                         System.arraycopy(smoothSH, 0, gr.shCoefficients, 0, 27)
                                         gr.useSH = true
+                                    } else if (gr.useSH && ++shInvalidFrames >= shInvalidLimit) {
+                                        // SH stopped arriving — drop to the hemisphere fallback
+                                        // instead of rendering frozen room lighting (R2 un-stick)
+                                        gr.useSH = false
                                     }
 
                                     // Debug string for HUD (only allocate when visible)
                                     if (sensorHudVisible) {
-                                        xrLightDebugStr = "Amb(%.1f,%.1f,%.1f) Dir(%.1f,%.1f,%.1f) %s".format(
+                                        xrLightDebugStr = "Amb(%.1f,%.1f,%.1f) Dir(%.1f,%.1f,%.1f) %s%s az=%d el=%d".format(
                                             ambR, ambG, ambB, dirX, dirY, dirZ,
-                                            if (shValid) "SH:L2" else "SH:off")
+                                            if (shValid) "SH:L2" else "SH:off",
+                                            if (followRoomLight) " FOLLOW" else "",
+                                            gr.lightAngleDeg.toInt(), gr.lightElevDeg.toInt())
                                     }
                                 } else {
                                     // Fallback: lux sensor
                                     xrLightEstimateAvailable = false
+                                    dirStableFrames = 0
+                                    if (gr.useSH && ++shInvalidFrames >= shInvalidLimit) {
+                                        gr.useSH = false
+                                        xrSHAvailable = false
+                                    }
                                     val lux = roomLux
                                     gr.ambientIntensity = when {
                                         lux <= 0f -> 0.15f
@@ -2213,6 +2322,14 @@ class FilamentModelActivity : ComponentActivity() {
                                         1f + warmth * 0.08f,
                                         0.95f + warmth * 0.02f,
                                         0.9f - warmth * 0.05f)
+                                }
+                            } else {
+                                dirStableFrames = 0
+                                if (gr.useSH) {
+                                    // Auto Light toggled off — drop live-SH ambient immediately
+                                    // so frozen room lighting can't persist (R2 un-stick)
+                                    gr.useSH = false
+                                    xrSHAvailable = false
                                 }
                             }
 
@@ -4515,6 +4632,7 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeIsRunning(): Boolean
     private external fun nativeMakeGLContextCurrent(): Boolean
     private external fun nativePollLightEstimate(outData: FloatArray): Boolean
+    private external fun nativeSetLightShAmbient(ambient: Boolean)
 
     // Panel pose JNI
     private external fun nativeSetUiPose(px: Float, py: Float, pz: Float, rx: Float, ry: Float, rz: Float, rw: Float)

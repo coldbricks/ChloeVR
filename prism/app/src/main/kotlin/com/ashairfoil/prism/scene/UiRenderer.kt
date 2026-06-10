@@ -285,6 +285,7 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val foveationAvailable = activity.foveationAvailable
         val textureQuality = activity.textureQuality
         val autoAmbient = activity.autoAmbient
+        val followRoomLight = activity.followRoomLight
         val gridVisible = activity.gridVisible
         val roomLux = activity.roomLux
         val xrLightEstimateAvailable = activity.xrLightEstimateAvailable
@@ -1867,10 +1868,11 @@ class UiRenderer(private val activity: FilamentModelActivity) {
             tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false; tmpPaint.letterSpacing = 0f
         }
         var y = 140f
+        val dirSuffix = if (followRoomLight && xrLightEstimateAvailable) "+DIR" else ""
         val luxStr = when {
             !autoAmbient -> "Manual"
-            xrLightEstimateAvailable && xrSHAvailable -> "XR+SH"
-            xrLightEstimateAvailable -> "XR Light"
+            xrLightEstimateAvailable && xrSHAvailable -> "XR+SH$dirSuffix"
+            xrLightEstimateAvailable -> "XR Light$dirSuffix"
             else -> "${roomLux.toInt()} lux"
         }
         val gridStr = if (gridVisible) "ON" else "OFF"
@@ -1963,7 +1965,12 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 else -> "—"
             },
             "Reset Marks" to "TAP",
-            "Auto Light" to if (autoAmbient) "ON" else "OFF",
+            // Tap cycles OFF → ON+DIR (follow room light direction) → ON (manual
+            // direction). "*" = selected but XR light estimation not currently
+            // feeding data (Quest, warm-up, or permission missing).
+            "Auto Light" to if (autoAmbient)
+                (if (followRoomLight) (if (xrLightEstimateAvailable) "ON+DIR" else "ON+DIR*") else "ON")
+                else "OFF",
         )
 
         // Tier2: tightened from 46 → 34 so the grown param list (Room Edit /

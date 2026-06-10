@@ -96,6 +96,7 @@ object SettingsManager {
     private const val KEY_DISPLAY_REFRESH_RATE = "display_refresh_rate"
     private const val KEY_EYE_TRACKED_FOVEATION = "eye_tracked_foveation"
     private const val KEY_THERMAL_AUTO_DOWNGRADE = "thermal_auto_downgrade"
+    private const val KEY_FOLLOW_ROOM_LIGHT = "follow_room_light"
 
     // Persistent spatial anchors (XR_EXT_spatial_entity). Default on — placed models stay in the
     // real room across sessions. Users who don't want the runtime to persist spatial data can
@@ -265,6 +266,13 @@ object SettingsManager {
     var thermalAutoDowngrade: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_THERMAL_AUTO_DOWNGRADE, true) }
         set(value) { ensureInit(); prefs.edit().putBoolean(KEY_THERMAL_AUTO_DOWNGRADE, value).apply() }
+
+    // Galaxy XR: while Auto Light is on, also steer the key light's DIRECTION from
+    // XR_ANDROID_light_estimation so shadows align with the real room. Manual
+    // azimuth/elevation edits flip this off (same contract as ambient/autoAmbient).
+    var followRoomLight: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_FOLLOW_ROOM_LIGHT, true) }
+        set(value) { ensureInit(); prefs.edit().putBoolean(KEY_FOLLOW_ROOM_LIGHT, value).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 

@@ -436,3 +436,145 @@ Phase 2 is the next move.
   need sign/wrap conventions to match. Current best-guess alignment may be off.
 - Independent of above: the existing commit (hash after push) is a safe restore
   point. `git revert HEAD` brings you back to pre-extraction TWERK.
+
+## [Claude] 2026-06-10
+
+### On-device verification (Quest 3, wireless adb @ 192.168.1.156)
+
+- R6 color pass verified live: aniso 4x supported+active, sRGB baseColor upload OK (no AOSP black-model trap), PBR Neutral + fill-BRDF shaders compile and render.
+- RECORD_AUDIO granted via `pm grant` — Visualizer/trigger box now has a data feed on this headset.
+- Audit finding confirmed in logs: "disabling normal-map tangent-space shading on skinned model — flat PBR only" (R3/D11 is real, fix first).
+- Rig has Foot + 14 twist bones (D6/D12 ready), auto budget caps 4096 textures to 2048px.
+
+### BUG (pre-existing): renderer re-init breaks shadow FBO
+
+Exiting/relaunching FilamentModelActivity in the same process destroys+recreates GlesModelRenderer, after which every frame logs "Shadow FBO broke: 0x0 / FBO incomplete: 0x0" (status 0 = check itself failing → GL objects created on a context/thread that isn't current on the new render thread). First cold start is always clean; `am force-stop` clears it. Fix: tie FBO (re)creation to the render thread's context lifecycle, not activity onCreate.
+
+## [Claude] 2026-06-10 — R2 implemented (Follow Room Light)
+
+R2 from RENDERING_REALISM_PLAN.md implemented end-to-end. `assembleDebug` BUILD
+SUCCESSFUL, both flavors, native included. NOT yet device-verified — the whole
+feature is gated on XR_ANDROID_light_estimation, so it needs the Galaxy XR
+(inert on Quest by design; consumption sits inside the hasXrLight branch).
+
+### What landed
+- **Direction consumption** (FilamentModelActivity ~2216-2256): XR directional
+  estimate steers lightAngleDeg/lightElevDeg when Follow Room Light is on.
+  Gates: mean dirRGB > 0.3 AND length > 0.5 (the INVALID default is dir=(0,1,0)
+  — length 1.0! — with intensity 0; only the intensity gate filters it),
+  60-frame warm-up (~20 native polls), EMA aD=0.12 into the previously-dead
+  smoothLightDir. Hysteresis is CLAMPED-CANDIDATE: build candidate az/el first
+  (elev clamped [5..85], azimuth FROZEN when horizontal component < 5% of the
+  vector — atan2 near zenith is pure noise), then 5° dot-test vs applied dir.
+  Comparing the raw estimate instead deadlocks >5° for overhead/below-horizon
+  lights and writes angles every frame → emitter gizmo + shadow crawl (review
+  caught this; original implementation had it).
+- **Follow Room Light toggle**: SettingsManager-persisted ("follow_room_light",
+  default ON). No room for a new param row (hit rows ≥25 collide with the
+  action-button band at by≥1054), so param 24 Auto Light now CYCLES
+  OFF → ON+DIR → ON. Badge shows "ON+DIR*" when selected but XR light data
+  isn't flowing. Flip-off contract (mirrors ambient-slider/autoAmbient):
+  azimuth/elevation slider + thumbstick nudge + A-reset, emitter drag (grab
+  start), lighting-preset apply. Scene load is EXEMPT (global preference).
+- **colorCorrection wired into SH path** (GlesModelRenderer shader ~2926-2941):
+  shIrrad diffuse + specEnv now multiply uAmbientColor (was fallback-only).
+- **useSH un-stick**: drops to hemisphere fallback after 270 frames (~90 native
+  polls) without valid SH, and immediately when Auto Light toggles off. Native
+  side ages out lastLightEstimate_ after 10 consecutive failed real polls —
+  without that, the 3-frame cache replay echoes valid=1/shValid=1 on 2 of 3
+  frames forever, resetting the Kotlin counter so the un-stick could NEVER fire
+  on hard outages (review caught this).
+- **AMBIENT-kind SH** (xr_renderer.cpp pollLightEstimate, new
+  queryLightEstimate() helper): while Follow is active, SH is queried with
+  kind=AMBIENT so the explicit key light isn't double-counted (TOTAL already
+  contains the directional term). Fallback to TOTAL covers ALL THREE rejection
+  shapes — XR_FAILED, root-INVALID, sh-INVALID (original only covered the
+  polite sh-INVALID shape; a hard-rejecting runtime would have silently killed
+  ALL light estimation with Follow on — review caught this). Unsupported-kind
+  latch: 30 evidence polls (TOTAL-valid-while-AMBIENT-invalid; both-invalid is
+  neutral), guarded to skip the estimator's first ~2s, cleared on Follow
+  re-engage so the param-24 cycle can retry a wrong latch. Pre-latch fallback
+  polls deliver shValid=false so TOTAL coefficients never blend into the
+  AMBIENT-basis smoothSH EMA (brightness pumping).
+- **Dead duplicate struct chain deleted** (the old shLight/dirLight/ambLight at
+  xr_renderer.cpp:1449-1463 incl. stale ":1457 padding" comment).
+- Light-estimation function statics (frameCount/errCount/logCount) hoisted to
+  instance members (lightFrameCount_/lightErrCount_/lightLogCount_) reset per
+  estimator — process-lifetime statics survived the documented same-process
+  renderer re-creation and suppressed warm-up + first-5 diagnostics.
+- 'XR Light' logcat: first 5 valid estimates + (debug builds only) one line per
+  ~150 valid polls (~6s) with a `sh=AMBIENT|TOTAL|off` tag for lamp-moving
+  verification. Sensor HUD line now appends `FOLLOW az=.. el=..`.
+- New JNI: nativeSetLightShAmbient(Boolean) — private external fun (Invariant
+  8 pattern), called only on state change. **41-float buffer layout UNCHANGED**
+  (no contract-test edit needed).
+
+### Process note
+Implementation was reviewed by a 20-agent adversarial workflow (4 lenses ×
+verify-each-finding); 16 confirmed findings → 9 distinct fixes, all applied and
+re-build-verified. The three majors (hard-fail fallback gap, cache-replay
+defeating the un-stick, clamp-vs-hysteresis deadlock) are called out inline
+above.
+
+### ✅ VERIFIED ON GALAXY XR 2026-06-10 (same day, evening session)
+
+R2 confirmed working on hardware. User verdict: "looks good!" Findings:
+
+1. **Direction sign convention is INVERTED from the docs.** The runtime reports
+   the direction light TRAVELS (ceiling-lit room → consistent -Y), NOT "toward
+   the light" as developer.android.com claims. Fixed by negating at consumption
+   (FilamentModelActivity, comment marks it HARDWARE-VERIFIED). Without the
+   negation the key light pinned to the 5° elevation clamp floor.
+2. **AMBIENT-kind SH WORKS on this runtime** — `sh=AMBIENT` streamed
+   continuously, no fallback, no latch. Double-counting fix fully live. The
+   latch-clear-on-re-engage also verified (AMBIENT resumed after a flip-off).
+3. **Emitter-drag flip-off verified live** (fired twice, logged with reason).
+   FOOTGUN: default emitterPos (0.3, 1.5, 0.5) sits in the model spawn zone —
+   gripping near the girl can steal the grab and silently kill Follow.
+   Consider relocating the default emitter or gating its grab on menuVisible.
+4. NOT yet verified: scene-load exemption, useSH un-stick timing, long-run
+   ceiling-light azimuth-freeze stability. All low-risk; verify opportunistically.
+
+### Bonus runtime discoveries (startup extension dump, OTA'd runtime)
+- **`XR_ANDROID_light_estimation_cubemap v1` IS enumerated** — R5 Tier A's
+  "Revision 2 only" dismissal (xr_light_estimation.h:19) is WRONG, as the plan
+  suspected. Specular IBL from a live room probe is on the table.
+- **`XR_ANDROID_recommended_resolution v1` present** — R7 item 5 is real.
+- Recommended per-eye res 1856x2160, max 3152x3682; refresh rates 60/72/90.
+
+### Galaxy XR regressions found+fixed this session (NOT R2-related)
+1. **Viewer bounced to desktop on every launch** ("welcome back" sound): a
+   runtime OTA added a BoundarySetupActivity interceptor to every unmanaged-XR
+   launch; when its empty task finished, focus returned to the LAUNCHING task,
+   demoting the viewer (session killed ~0.5s after FOCUSED). FIX: removed
+   FilamentModelActivity's separate android:taskAffinity (manifest) so the
+   viewer shares MainActivity's task and IS the focus-return target. The
+   affinity dated from c59e6e2 (March "focus loss" shotgun fix) — its
+   lifecycle/session-state handling was the real cure back then.
+2. **"Invisible walls" clipping the dancer**: SceneOcclusionManager's
+   depth-only occluders persisted after Room Track OFF (stale plane geometry
+   from a bad post-reboot room scan kept clipping models). FIX: param 17 now
+   wires sceneOcclusion.enabled to follow roomTrackingEnabled (&& the
+   occlusionEnabled setting). The "pixelated walls at distance" the user saw
+   were the aliased shadow-catcher planes at the bogus plane positions (no
+   MSAA yet — R1).
+3. **MainActivity startup crash (~50% of launches, UNFIXED framework bug)**:
+   SIGABRT in Samsung's android.extensions.xr.node.Node.setIsRenderableAndAttached
+   (NPE: View.getWindowToken on null) when a CPM panel transform update races
+   panel View attach. Jetpack XR runtime alpha12 + OTA'd shell. Workarounds:
+   relaunch (race is ~50/50), or launch the viewer directly — manifest now sets
+   FilamentModelActivity exported=true so
+   `adb shell am start -n com.ashairfoil.prism/.FilamentModelActivity` works.
+   Real fix candidates: delay panel/Session creation until after first
+   onWindowFocusChanged, or update androidx.xr alphas.
+
+### Device access notes
+- Galaxy XR wireless adb: `adb tcpip 5555` from USB, then connect to its wlan
+  IP (was .177, then .179 after reboot — DHCP, CHECK EACH TIME). tcpip mode
+  does NOT survive reboot; needs USB re-arm.
+- Native log tags are `ChloeVR-XRRenderer` / `ChloeVR-OpenXR` / `ChloeVR-ModelActivity` —
+  CLAUDE.md's `logcat -s OpenXR:* ChloeVR:*` filter is STALE and misses them.
+- Old (pre-2026-06-10) install was signed with the Kali machine's debug key —
+  reinstalls from this Windows box needed one uninstall; scenes + prefs were
+  backed up via run-as to C:\Users\coldb\ChloeVR\galaxyxr_backup_2026-06-10\
+  and restored.

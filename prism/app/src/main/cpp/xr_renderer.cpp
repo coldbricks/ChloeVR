@@ -1414,7 +1414,47 @@ bool XrRenderer::initLightEstimation() {
     }
 
     XR_LOGI("Light estimation initialized successfully");
+    // Warm-up and cache state are per-estimator, not per-process
+    lightFrameCount_ = 0;
+    lightQueryFails_ = 0;
     return true;
+}
+
+// Build the out→amb→dir→sh output chain and run one xrGetLightEstimate query.
+// kind selects whether SH includes the directional component (TOTAL) or
+// excludes it (AMBIENT — used when the key light is driven separately from the
+// directional estimate, so the room light isn't counted twice).
+XrResult XrRenderer::queryLightEstimate(XrTime time, XrSphericalHarmonicsKindANDROID kind,
+        XrAmbientLightANDROID& amb, XrDirectionalLightANDROID& dir,
+        XrSphericalHarmonicsANDROID& sh, XrLightEstimateANDROID& out) {
+    XrLightEstimateGetInfoANDROID getInfo = {};
+    getInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID;
+    getInfo.next = nullptr;
+    getInfo.space = appSpace_;
+    getInfo.time = time;
+
+    // (Fixed: type enum values were swapped in developer.android.com docs vs actual runtime)
+    sh = {};
+    sh.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
+    sh.next = nullptr;
+    sh.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+    sh.kind = kind;
+
+    dir = {};
+    dir.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
+    dir.next = &sh;
+    dir.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
+    amb = {};
+    amb.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
+    amb.next = &dir;
+    amb.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+
+    out = {};
+    out.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
+    out.next = &amb;
+
+    return xrGetLightEstimate_(lightEstimator_, &getInfo, &out);
 }
 
 bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
@@ -1437,61 +1477,13 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
     if (lastPredictedTime_ == 0) return false;
     XrTime now = lastPredictedTime_;
 
-    // Query light estimate
-    // Step 1: Try root-only call first to verify basic function works
-    XrLightEstimateGetInfoANDROID getInfo = {};
-    getInfo.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_GET_INFO_ANDROID;
-    getInfo.next = nullptr;
-    getInfo.space = appSpace_;
-    getInfo.time = now;
-
-    // Chain output structs onto root.next
-    XrSphericalHarmonicsANDROID shLight = {};
-    shLight.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
-    shLight.next = nullptr;
-    shLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-    shLight.kind = XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID;
-
-    XrDirectionalLightANDROID dirLight = {};
-    dirLight.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dirLight.next = nullptr;  // SH disabled until padding issue resolved
-    dirLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-
-    XrAmbientLightANDROID ambLight = {};
-    ambLight.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
-    ambLight.next = &dirLight;
-    ambLight.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-
     // Skip first 60 frames (~1 second) to let runtime warm up, then poll every 3 frames
-    static int frameCount = 0;
-    frameCount++;
-    if (frameCount < 60) return false;
-    if (frameCount % 3 != 0) {
+    lightFrameCount_++;
+    if (lightFrameCount_ < 60) return false;
+    if (lightFrameCount_ % 3 != 0) {
         estimate = lastLightEstimate_;
         return estimate.valid;
     }
-
-    // Full chain: ambient → directional → spherical harmonics
-    // (Fixed: type enum values were swapped in developer.android.com docs vs actual runtime)
-    XrSphericalHarmonicsANDROID sh = {};
-    sh.type = (XrStructureType)XR_TYPE_SPHERICAL_HARMONICS_ANDROID;
-    sh.next = nullptr;
-    sh.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-    sh.kind = XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID;
-
-    XrDirectionalLightANDROID dir = {};
-    dir.type = (XrStructureType)XR_TYPE_DIRECTIONAL_LIGHT_ANDROID;
-    dir.next = &sh;
-    dir.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-
-    XrAmbientLightANDROID amb = {};
-    amb.type = (XrStructureType)XR_TYPE_AMBIENT_LIGHT_ANDROID;
-    amb.next = &dir;
-    amb.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
-
-    XrLightEstimateANDROID out = {};
-    out.type = (XrStructureType)XR_TYPE_LIGHT_ESTIMATE_ANDROID;
-    out.next = &amb;
 
     // Log struct sizes for debugging
     static bool loggedSizes = false;
@@ -1504,15 +1496,61 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
         loggedSizes = true;
     }
 
-    XrResult r = xrGetLightEstimate_(lightEstimator_, &getInfo, &out);
+    XrAmbientLightANDROID amb;
+    XrDirectionalLightANDROID dir;
+    XrSphericalHarmonicsANDROID sh;
+    XrLightEstimateANDROID out;
+    bool wantAmbientKind = shKindAmbient_ && !ambientShKindUnsupported_;
+    bool shFromAmbientKind = wantAmbientKind;
+    XrResult r = queryLightEstimate(now,
+        wantAmbientKind ? XR_SPHERICAL_HARMONICS_KIND_AMBIENT_ANDROID
+                        : XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID,
+        amb, dir, sh, out);
+    bool rootValid = !XR_FAILED(r) && out.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID;
 
-    if (XR_FAILED(r)) {
-        static int errCount = 0;
-        if (errCount++ < 5) XR_LOGE("xrGetLightEstimate failed: %d", (int)r);
-        return false;
+    if (wantAmbientKind && (!rootValid || sh.state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID)) {
+        // The AMBIENT kind is unverified on the Samsung runtime — it may reject
+        // it as a hard error, an INVALID root estimate, or a politely-INVALID
+        // sh.state. ALL three shapes fall back to a TOTAL re-query, otherwise an
+        // unsupported kind would kill the whole estimator while Follow is on.
+        // (kind is an INPUT field on the chained struct — fallback = 2nd query.)
+        bool hardFail = !rootValid;
+        shFromAmbientKind = false;
+        r = queryLightEstimate(now, XR_SPHERICAL_HARMONICS_KIND_TOTAL_ANDROID, amb, dir, sh, out);
+        rootValid = !XR_FAILED(r) && out.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID;
+        if (rootValid && (hardFail || sh.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID)) {
+            // TOTAL works where AMBIENT didn't — evidence the runtime doesn't
+            // implement the AMBIENT kind (a both-invalid SH dropout is neutral
+            // and doesn't count). Latch off to stop double-querying. Skip the
+            // estimator's first ~2s, when transient AMBIENT misses are likely.
+            if (lightFrameCount_ >= 150 && ++ambientShKindFails_ >= 30) {
+                ambientShKindUnsupported_ = true;
+                XR_LOGI("XR Light: SH kind AMBIENT unsupported by runtime - latching TOTAL");
+            }
+            // Until the latch makes TOTAL the steady kind, don't hand Kotlin
+            // TOTAL coefficients — it would blend two SH bases into one EMA
+            // (brightness pumping). amb/dir from the re-query are kind-neutral.
+            if (!ambientShKindUnsupported_) sh.state = XR_LIGHT_ESTIMATE_STATE_INVALID_ANDROID;
+        }
+    } else if (wantAmbientKind) {
+        ambientShKindFails_ = 0;
     }
 
-    if (out.state != XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) return false;
+    if (XR_FAILED(r)) {
+        if (lightErrCount_++ < 5) XR_LOGE("xrGetLightEstimate failed: %d", (int)r);
+    }
+    if (!rootValid) {
+        // Age out the cached estimate on sustained hard failure: a few failed
+        // polls still replay the cache (transient-hiccup smoothing), but beyond
+        // that Kotlin must see the outage or its useSH un-stick never fires —
+        // the cached frames would keep echoing shValid=true forever.
+        if (++lightQueryFails_ >= 10) {
+            lastLightEstimate_.valid = false;
+            lastLightEstimate_.shValid = false;
+        }
+        return false;
+    }
+    lightQueryFails_ = 0;
 
     if (amb.state == XR_LIGHT_ESTIMATE_STATE_VALID_ANDROID) {
         estimate.ambientR = amb.intensity.x;
@@ -1546,13 +1584,22 @@ bool XrRenderer::pollLightEstimate(LightEstimate& estimate) {
 
     lastLightEstimate_ = estimate;
 
-    static int logCount = 0;
-    if (estimate.valid && logCount++ < 5) {
-        XR_LOGI("XR Light: amb=(%.3f,%.3f,%.3f) dir=(%.2f,%.2f,%.2f) int=(%.3f,%.3f,%.3f)",
+    // First 5 valid estimates always; debug builds also log one line every ~150
+    // valid polls (~6s) so direction sign/stability can be verified on hardware
+    // by moving a lamp (R2 trap 7). Release builds keep the first-5 gate only.
+#ifndef NDEBUG
+    const bool periodicLightLog = (lightLogCount_ % 150 == 0);
+#else
+    const bool periodicLightLog = false;
+#endif
+    if (estimate.valid && (lightLogCount_ < 5 || periodicLightLog)) {
+        XR_LOGI("XR Light: amb=(%.3f,%.3f,%.3f) dir=(%.2f,%.2f,%.2f) int=(%.3f,%.3f,%.3f) sh=%s",
             estimate.ambientR, estimate.ambientG, estimate.ambientB,
             estimate.dirX, estimate.dirY, estimate.dirZ,
-            estimate.dirIntensityR, estimate.dirIntensityG, estimate.dirIntensityB);
+            estimate.dirIntensityR, estimate.dirIntensityG, estimate.dirIntensityB,
+            !estimate.shValid ? "off" : (shFromAmbientKind ? "AMBIENT" : "TOTAL"));
     }
+    if (estimate.valid) lightLogCount_++;
 
     return estimate.valid;
 }
