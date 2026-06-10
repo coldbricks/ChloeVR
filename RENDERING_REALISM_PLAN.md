@@ -28,7 +28,7 @@ The renderer is a hand-rolled GLES 3.0 forward pipeline (`GlesModelRenderer.kt`,
 
 | Item | Status |
 |------|--------|
-| **R1** (4x MSAA + specular AA) | **IMPLEMENTED 2026-06-10 (evening) — build-verified both flavors, adversarially reviewed (4 lenses × 3 verifiers per finding, 0 confirmed). APK installed on Galaxy XR but session stayed IDLE (headset not worn) — ON-HEAD VERIFICATION PENDING on both devices. See NOTES.md for the exact logcat lines to confirm.** |
+| **R1** (4x MSAA + specular AA) | **DONE — LOGCAT-VERIFIED ON GALAXY XR 2026-06-10 (evening): `MSAA EXT ready: max 4 samples` → `MSAA 4x enabled` → `MSAA 4x eye FBO complete 1856x2160 (glGetError=0x0)` with session FOCUSED — the sRGB swapchain + implicit resolve + foveated SCALED_BIN combination composes cleanly, no fallback fired. Visual verdict + Quest 3 check still pending.** |
 | **R6** (color hygiene) | **DONE — landed + device-verified on Quest 3 (2026-06-10)** |
 | **R2** (consume light direction) | **DONE — VERIFIED ON GALAXY XR 2026-06-10.** Two hardware corrections: direction convention is INVERTED from docs (runtime reports light-travel direction; negated at consumption), and AMBIENT-kind SH works natively (no fallback needed in practice). See NOTES.md for the session's bonus fixes (boundary-interceptor task demotion, occlusion un-stick) + discoveries (light_estimation_cubemap v1 enumerated → R5 Tier A viable; recommended_resolution v1 present → R7). |
 

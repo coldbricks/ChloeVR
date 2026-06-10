@@ -755,3 +755,14 @@ tempo-less static pose = deepest squat (hasTempo gates).
    Stop a deep-squat dance → she stands up to bind pose, feet ON floor.
 4. IMPROV fill bars: no knee/root snap at fill start/end.
 5. Multi-model: heads must NOT flick in unison.
+
+### ✅ R1 LOGCAT-VERIFIED ON GALAXY XR (same evening, user on-head)
+`MSAA EXT ready: max 4 samples` → `MSAA 4x enabled (EXT implicit resolve,
+device max 4)` → `MSAA 4x eye FBO complete 1856x2160 (glGetError=0x0)`,
+session FOCUSED. The sRGB + implicit-resolve + foveated-SCALED_BIN combo
+composes cleanly on the Samsung runtime; no fallback fired across multiple
+launches. User in-headset session live ("we're in"). Visual verdicts (edge
+AA, specular crawl, D1 timing feel, D3 idle life) + Quest 3 pass still open.
+Mid-session the documented MainActivity panel-race SIGABRT fired once
+(launcher-icon path, framework bug, NOT today's code) — direct viewer
+launch worked around it as documented.
