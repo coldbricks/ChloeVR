@@ -97,6 +97,7 @@ object SettingsManager {
     private const val KEY_EYE_TRACKED_FOVEATION = "eye_tracked_foveation"
     private const val KEY_THERMAL_AUTO_DOWNGRADE = "thermal_auto_downgrade"
     private const val KEY_FOLLOW_ROOM_LIGHT = "follow_room_light"
+    private const val KEY_ROOM_TRACKING = "room_tracking"
 
     // Persistent spatial anchors (XR_EXT_spatial_entity). Default on — placed models stay in the
     // real room across sessions. Users who don't want the runtime to persist spatial data can
@@ -273,6 +274,14 @@ object SettingsManager {
     var followRoomLight: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_FOLLOW_ROOM_LIGHT, true) }
         set(value) { ensureInit(); prefs.edit().putBoolean(KEY_FOLLOW_ROOM_LIGHT, value).apply() }
+
+    // Room Track (plane detection + scene occlusion). Persisted so the user's
+    // last choice IS the default ("save default" request, 2026-06-10). Fresh
+    // installs default OFF — a bad post-reboot room scan left invisible walls
+    // clipping the dancer, and most sessions don't need occluders.
+    var roomTracking: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_ROOM_TRACKING, false) }
+        set(value) { ensureInit(); prefs.edit().putBoolean(KEY_ROOM_TRACKING, value).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 

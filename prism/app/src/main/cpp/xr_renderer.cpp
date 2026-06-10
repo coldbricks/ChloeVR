@@ -2025,6 +2025,27 @@ int XrRenderer::getAvailableRefreshRates(float* out, int maxCount) {
     return (int)count;
 }
 
+// AUTO refresh policy: 72Hz, NOT highest-enumerated. Samsung ships the
+// Galaxy XR defaulting to 72Hz (90 is an explicit opt-in on the official
+// spec sheet — web-verified 2026-06-10), and picking 90 cost this app 25%
+// of its GPU frame budget: at full 1856x2160 + 4x MSAA the scene dropped
+// 40-60 frames/sec at 90Hz (hardware-measured). Higher rates remain
+// available as explicit user selections. (R7 will make this per-device.)
+float XrRenderer::autoRefreshTarget() const {
+    float best = 0.0f;
+    for (int i = 0; i < availableRefreshRateCount_; i++) {
+        const float r = availableRefreshRates_[i];
+        if (fabsf(r - 72.0f) < 0.5f) return r;   // the platform default
+        if (r <= 72.5f && r > best) best = r;    // else highest <= 72
+    }
+    if (best > 0.0f) return best;
+    for (int i = 0; i < availableRefreshRateCount_; i++) {  // last resort: lowest
+        const float r = availableRefreshRates_[i];
+        if (best == 0.0f || r < best) best = r;
+    }
+    return best;
+}
+
 void XrRenderer::primeDisplayRefreshRate() {
     if (refreshRatePrimed_) return;
     if (!refreshRateSupported_ || !xrEnumRefreshRates_ || !session_) return;
@@ -2044,7 +2065,7 @@ void XrRenderer::primeDisplayRefreshRate() {
     }
     availableRefreshRateCount_ = (int)get;
 
-    // Pick the target: preferred if supported, else the highest.
+    // Pick the target: preferred if supported, else the auto policy.
     float target = 0.0f;
     if (preferredRefreshRate_ > 0.0f) {
         for (int i = 0; i < availableRefreshRateCount_; i++) {
@@ -2055,11 +2076,7 @@ void XrRenderer::primeDisplayRefreshRate() {
             }
         }
     }
-    if (target == 0.0f) {
-        for (int i = 0; i < availableRefreshRateCount_; i++) {
-            if (availableRefreshRates_[i] > target) target = availableRefreshRates_[i];
-        }
-    }
+    if (target == 0.0f) target = autoRefreshTarget();
 
     char rateList[256];
     int off = 0;
@@ -2097,10 +2114,8 @@ bool XrRenderer::requestDisplayRefreshRate(float rate) {
 
     float target = rate;
     if (target <= 0.0f) {
-        // Auto mode: highest available.
-        for (int i = 0; i < availableRefreshRateCount_; i++) {
-            if (availableRefreshRates_[i] > target) target = availableRefreshRates_[i];
-        }
+        // Auto mode: see autoRefreshTarget() — 72Hz, not highest.
+        target = autoRefreshTarget();
         if (target <= 0.0f) {
             // Cache not populated yet — try a live enumeration once.
             primeDisplayRefreshRate();
@@ -2252,6 +2267,74 @@ int XrRenderer::getPassthroughState() {
 // ── Foveated Rendering ──
 // ═══════════════════════════════════════════════════════════════════════
 
+bool XrRenderer::forceFoveationOff() {
+    // Nothing to clear when foveation infrastructure never came up.
+    if (!foveationSupported_ || !foveationSwapchainConfigured_ || !xrUpdateSwapchainFB_) {
+        return true;
+    }
+    if (!session_ || !sessionReady_ || !running_) return false;  // retry later
+
+    auto pushProfile = [&](XrFoveationProfileFB profile, bool logFail) -> bool {
+        for (int eye = 0; eye < 2; eye++) {
+            if (swapchains_[eye] == XR_NULL_HANDLE) continue;
+            XrSwapchainStateFoveationFB fovState{};
+            fovState.type = XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB;
+            fovState.flags = 0;
+            fovState.profile = profile;
+            XrResult ur = xrUpdateSwapchainFB_(
+                swapchains_[eye], (XrSwapchainStateBaseHeaderFB*)&fovState);
+            if (XR_FAILED(ur)) {
+                if (logFail) XR_LOGE("foveation-off push eye %d failed: %d", eye, (int)ur);
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // Attempt 1 — Khronos spec: a NULL profile disables foveation.
+    if (pushProfile(XR_NULL_HANDLE, false)) {
+        if (foveationProfile_ != XR_NULL_HANDLE && xrDestroyFoveationProfileFB_) {
+            xrDestroyFoveationProfileFB_(foveationProfile_);
+            foveationProfile_ = XR_NULL_HANDLE;
+        }
+        foveationLevel_ = 0;
+        XR_LOGI("Foveation disabled (NULL profile accepted)");
+        return true;
+    }
+
+    // Attempt 2 — the Samsung runtime rejects NULL with -12
+    // XR_ERROR_VALIDATION_FAILURE (hardware-verified 2026-06-10): apply an
+    // explicit LEVEL_NONE profile instead, dynamic DISABLED so the runtime
+    // can't re-escalate it.
+    if (!xrCreateFoveationProfileFB_ || !xrDestroyFoveationProfileFB_) return true;
+    XrFoveationLevelProfileCreateInfoFB levelCI{};
+    levelCI.type = XR_TYPE_FOVEATION_LEVEL_PROFILE_CREATE_INFO_FB;
+    levelCI.level = XR_FOVEATION_LEVEL_NONE_FB;
+    levelCI.verticalOffset = 0.0f;
+    levelCI.dynamic = XR_FOVEATION_DYNAMIC_DISABLED_FB;
+    XrFoveationProfileCreateInfoFB profileCI{};
+    profileCI.type = XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB;
+    profileCI.next = &levelCI;
+    XrFoveationProfileFB noneProfile = XR_NULL_HANDLE;
+    XrResult r = xrCreateFoveationProfileFB_(session_, &profileCI, &noneProfile);
+    if (XR_FAILED(r)) {
+        XR_LOGE("LEVEL_NONE profile create failed: %d — runtime default binning persists", (int)r);
+        return true;  // hard failure — don't retry forever
+    }
+    if (!pushProfile(noneProfile, true)) {
+        xrDestroyFoveationProfileFB_(noneProfile);
+        XR_LOGE("LEVEL_NONE profile apply failed — runtime default binning persists");
+        return true;
+    }
+    if (foveationProfile_ != XR_NULL_HANDLE) {
+        xrDestroyFoveationProfileFB_(foveationProfile_);
+    }
+    foveationProfile_ = noneProfile;
+    foveationLevel_ = 0;
+    XR_LOGI("Foveation disabled via explicit LEVEL_NONE profile (Samsung NULL-reject path)");
+    return true;
+}
+
 void XrRenderer::setFoveationLevel(int level) {
     if (level < 0) level = 0;
     if (level > 3) level = 3;
@@ -2289,10 +2372,16 @@ void XrRenderer::setFoveationLevel(int level) {
     XrFoveationProfileFB oldProfile = foveationProfile_;
 
     if (level == 0) {
-        if (!applyProfileToSwapchains(XR_NULL_HANDLE)) {
+        // Delegates to the two-attempt disable: the Samsung runtime rejects
+        // the spec's NULL-profile path with -12 VALIDATION_FAILURE and needs
+        // an explicit LEVEL_NONE profile (hardware-verified 2026-06-10) —
+        // meaning the menu's FFR OFF had silently never worked on-device.
+        if (!forceFoveationOff()) {
             XR_LOGE("Failed to disable foveation; preserving previous state");
-            return;
         }
+        return;
+    }
+    if (false) {  // (old NULL-handle disable path folded into forceFoveationOff)
         if (oldProfile != XR_NULL_HANDLE) {
             xrDestroyFoveationProfileFB_(oldProfile);
         }

@@ -756,6 +756,67 @@ tempo-less static pose = deepest squat (hasTempo gates).
 4. IMPROV fill bars: no knee/root snap at fill start/end.
 5. Multi-model: heads must NOT flick in unison.
 
+## [Claude] 2026-06-10 — THE PIXELATION MYSTERY SOLVED (it was never aliasing)
+
+User on-head with R1+D1+D3: "it STARTED ok.. then the pixelation started."
+Screenshot analysis (2880x2880 capture, user-provided) + live logcat nailed a
+THREE-STAGE self-inflicted quality collapse, ~10s after EVERY launch:
+
+1. **Samsung perf-settings notifications are GARBAGE on this runtime:**
+   xrPerfSettings reports notification level 75 (IMPAIRED_EXT) on BOTH
+   domains ~8s post-launch with GPU at ~33% utilization and Android thermal
+   status nominal. Hardware-verified — yet another Samsung divergence.
+2. Our thermal ladder trusted it: stage 1 → **foveation HIGH (center-
+   fixated)**, stage 2 → 90→72Hz, stage 3 → **renderScale 0.75x** — all
+   within 2 seconds. Never recovers (signal stays 75). The screenshot's
+   blocky head/arms = HIGH scaled-bin binning away from lens center (model
+   interior near view center stays sharp — that's how it was distinguished
+   from alpha/edge artifacts).
+3. **The menu's FFR OFF never worked either:** the Samsung runtime REJECTS
+   the Khronos NULL-profile disable with -12 XR_ERROR_VALIDATION_FAILURE.
+   And at startup level==0 early-outs, so the SCALED_BIN create-flag default
+   profile was never explicitly cleared.
+
+### Fixes landed (build-verified, installed)
+- `XrRenderer::forceFoveationOff()` — two-attempt disable: NULL profile
+  (spec) → explicit LEVEL_NONE profile with dynamic DISABLED (Samsung
+  reality). Called one-shot from the render loop once the session renders
+  (galaxyxr only; quest keeps the xrUpdateSwapchainFB SIGSEGV guard).
+  setFoveationLevel(0) (menu OFF) now delegates to the same path.
+- Thermal ladder stage-ups now require corroboration from REAL measured GPU
+  frame time (sensorPoller.gpuFrameTimeMs > 80% of frame budget); devices
+  without perf metrics keep old behavior. Stage 1 no longer touches
+  foveation AT ALL (bloom-off only) — center-fixated binning on the dancer
+  is the worst visual lever this app has.
+- NOTE: this thermal collapse predates today — "pixelation at distance" had
+  THREE stacked causes: no MSAA (fixed by R1), bogus-plane shadow catchers
+  (fixed in R2 session), and this ladder (fixed now). R7/R8 should rebuild
+  the ladder properly (real budgets, eye-tracked FFR as the lever) and add
+  an explicit HUD indicator whenever ANY downgrade lever is active.
+- User idea worth keeping: re-run Galaxy XR system EYE CALIBRATION before
+  any future eye-tracked-FFR work — the level-3 profile was eye-chained but
+  binning sat at lens center, suggesting gaze data wasn't flowing.
+- IMPORTANT NUANCE observed live: once the user actually LOADED the scene up
+  (dancing model, 90Hz), GPU hit 94-99% with real frame drops and Android
+  thermal status 3 — so the perf signal isn't ALWAYS fake; it's fake at
+  idle. The gpu-frame-time corroboration gate handles both cases: ladder
+  stays quiet at idle, engages under genuine load (bloom→72Hz→0.75x, but
+  never foveation).
+- 90Hz follow-through (FIXED same session): un-degrading exposed that the
+  auto refresh policy picked highest-enumerated (90Hz) — but Samsung SHIPS
+  the Galaxy XR defaulting to 72Hz (90 is spec-sheet opt-in; web-verified).
+  At 90Hz full-res MSAA the scene dropped 40-60 frames/sec ("menu flashing,
+  perf looks like shit" — user). autoRefreshTarget() now picks 72Hz (or
+  highest ≤72) in BOTH native sites (prime + request); 90 stays an explicit
+  user pick. R7's budget math must use 72Hz/13.9ms as the baseline.
+
+### Room Track now persisted (user request, same session)
+SettingsManager.roomTracking ("room_tracking", default OFF for fresh
+installs): the user's last toggle IS the startup default. Applied at
+activity init (plane detection + scene occlusion follow it); persisted at
+the param-17 click, thumbstick toggle, and reset sites. The room-edit-mode
+auto-enable deliberately does NOT persist (mode side-effect, not a choice).
+
 ### ✅ R1 LOGCAT-VERIFIED ON GALAXY XR (same evening, user on-head)
 `MSAA EXT ready: max 4 samples` → `MSAA 4x enabled (EXT implicit resolve,
 device max 4)` → `MSAA 4x eye FBO complete 1856x2160 (glGetError=0x0)`,

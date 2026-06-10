@@ -474,6 +474,49 @@ class InputHandler(private val activity: FilamentModelActivity) {
         }
     }
 
+    // Scratch for capsule end-cap sphere tests (zero-alloc hot loop).
+    private val scratchCapsuleEnd = FloatArray(3)
+
+    /**
+     * Ray vs world-vertical capsule: axis segment at (cx, cz), y spanning
+     * [cy-halfH+r .. cy+halfH-r], radius r. Returns ray-t of the hit, or -1.
+     * Used for model hover/selection — a humanoid fits a capsule far better
+     * than her arm-span bounding sphere (selection-bubble complaint).
+     */
+    fun rayVerticalCapsuleIntersect(
+        rayOrigin: FloatArray, rayDir: FloatArray,
+        cx: Float, cy: Float, cz: Float, halfH: Float, radius: Float
+    ): Float {
+        val segTop = cy + (halfH - radius).coerceAtLeast(0f)
+        val segBot = cy - (halfH - radius).coerceAtLeast(0f)
+        // Cylinder side: solve closest XZ approach (segment is a point in XZ).
+        val ox = rayOrigin[0] - cx
+        val oz = rayOrigin[2] - cz
+        val a = rayDir[0] * rayDir[0] + rayDir[2] * rayDir[2]
+        if (a > 1e-6f) {
+            val t0 = -(ox * rayDir[0] + oz * rayDir[2]) / a
+            if (t0 > 0.01f) {
+                val px = ox + t0 * rayDir[0]
+                val pz = oz + t0 * rayDir[2]
+                if (px * px + pz * pz <= radius * radius) {
+                    val y = rayOrigin[1] + t0 * rayDir[1]
+                    if (y in segBot..segTop) return t0
+                }
+            }
+        }
+        // End caps — also covers near-vertical rays and over/under approaches.
+        scratchCapsuleEnd[0] = cx; scratchCapsuleEnd[2] = cz
+        scratchCapsuleEnd[1] = segTop
+        val dTop = raySphereIntersect(rayOrigin, rayDir, scratchCapsuleEnd, radius)
+        scratchCapsuleEnd[1] = segBot
+        val dBot = raySphereIntersect(rayOrigin, rayDir, scratchCapsuleEnd, radius)
+        return when {
+            dTop >= 0f && dBot >= 0f -> minOf(dTop, dBot)
+            dTop >= 0f -> dTop
+            else -> dBot
+        }
+    }
+
     /** Set an absolute value for slider param 0-12 */
     fun setParamValue(idx: Int, value: Float) {
         val renderer = activity.glesRenderer ?: return
@@ -1140,22 +1183,33 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     scratchGizmoPos[0] = worldCx; scratchGizmoPos[1] = worldCy; scratchGizmoPos[2] = worldCz
                     val sx = kotlin.math.sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2])
                     val worldR = gpuModel.boundsRadius * sx
-                    var dist = raySphereIntersect(laserHandPos, rayDir, scratchGizmoPos, worldR)
+                    // Humanoid-fit hit volume (user 2026-06-10: "selection area
+                    // WAY too big — hard to deselect"): the bounding SPHERE
+                    // includes arm span + half-height, so the selectable bubble
+                    // reached ~a meter past her body. Test a world-vertical
+                    // CAPSULE through her bounds instead — radius a torso-ish
+                    // fraction of the sphere clamped to human scale, height
+                    // from the real bounds. Dance tilt (≤20°) stays inside the
+                    // radius margin; tiny props ride the 0.12m floor.
+                    val capR = (worldR * 0.30f).coerceIn(0.12f, 0.40f)
+                    val capHalfH = ((gpuModel.boundsCenterY - gpuModel.boundsMinY) * sx)
+                        .coerceAtLeast(capR + 0.01f)
+                    var dist = rayVerticalCapsuleIntersect(laserHandPos, rayDir,
+                        worldCx, worldCy, worldCz, capHalfH, capR)
                     if (dist < 0f) {
-                        val coreR = (worldR * 0.15f).coerceIn(0.05f, 0.15f)
-                        dist = raySphereIntersect(laserHandPos, rayDir, scratchGizmoPos, coreR)
-                    }
-                    if (dist < 0f) {
-                        // Close-range fallback: when the controller is inside/at her bounding
-                        // sphere the ray "starts past" her, so raySphereIntersect misses and she
-                        // can't be grabbed up close until you yank your hand back out. Treat being
-                        // within ~1.3x her radius of her center as a point-blank hover.
-                        val ocx = laserHandPos[0] - worldCx
-                        val ocy = laserHandPos[1] - worldCy
-                        val ocz = laserHandPos[2] - worldCz
-                        val originDist = kotlin.math.sqrt(ocx * ocx + ocy * ocy + ocz * ocz)
-                        if (originDist < worldR * 1.3f) {
-                            dist = kotlin.math.max(originDist * 0.5f, 0.05f)
+                        // Close-range fallback: when the controller is inside/at the
+                        // capsule the ray "starts past" her and the intersect misses,
+                        // so she can't be grabbed up close until you yank your hand
+                        // back out. Hand within 1.5x the capsule wall = point-blank
+                        // hover (distance measured to the capsule AXIS, not center —
+                        // the old center-sphere version made the grab bubble huge).
+                        val pdx = laserHandPos[0] - worldCx
+                        val pdz = laserHandPos[2] - worldCz
+                        val pyClamped = laserHandPos[1].coerceIn(worldCy - capHalfH, worldCy + capHalfH)
+                        val pdy = laserHandPos[1] - pyClamped
+                        val handDist = kotlin.math.sqrt(pdx * pdx + pdy * pdy + pdz * pdz)
+                        if (handDist < capR * 1.5f) {
+                            dist = kotlin.math.max(handDist * 0.5f, 0.05f)
                         }
                     }
                     if (dist in 0.01f..nearestDist) { nearestDist = dist; nearestIdx = i }
@@ -2092,6 +2146,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else if (hoveredMenuParam == 17) {
                     activity.roomTrackingEnabled = !activity.roomTrackingEnabled
                     activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
+                    // Persisted: the user's last choice IS the startup default.
+                    com.ashairfoil.prism.settings.SettingsManager.roomTracking = activity.roomTrackingEnabled
                     // Scene occlusion must follow room tracking: its depth-only
                     // occluder geometry otherwise persists and keeps clipping
                     // models ("invisible walls") long after tracking stops.
@@ -2521,6 +2577,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                             activity.roomTrackToggleLatch = true
                             activity.roomTrackingEnabled = !activity.roomTrackingEnabled
                             activity.sensorPoller.planeDetectionEnabled = activity.roomTrackingEnabled
+                            com.ashairfoil.prism.settings.SettingsManager.roomTracking = activity.roomTrackingEnabled
                             if (!activity.roomTrackingEnabled) {
                                 activity.sensorPoller.detectedPlaneCount = 0
                                 activity.glesRenderer?.shadowPlanes = emptyList()
@@ -2591,6 +2648,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.sensorPoller.planeDetectionEnabled = false
                         activity.sensorPoller.detectedPlaneCount = 0
                         activity.glesRenderer?.shadowPlanes = emptyList()
+                        com.ashairfoil.prism.settings.SettingsManager.roomTracking = false
                     }
                     18 -> {
                         // Reset: clear selected plane's adjustment, or all if none selected

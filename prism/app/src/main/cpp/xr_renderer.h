@@ -189,6 +189,18 @@ public:
     bool hasEyeTrackedFoveation() const { return eyeTrackedFoveationSupported_; }
     void setFoveationLevel(int level); // 0=off, 1=low, 2=medium, 3=high
     int getFoveationLevel() const { return foveationLevel_; }
+    // AUTO refresh-rate policy: 72Hz (the Galaxy XR platform default), not
+    // highest-enumerated — see the definition for the budget math.
+    float autoRefreshTarget() const;
+
+    // Explicitly push "no foveation" to both eye swapchains. The SCALED_BIN
+    // create flag alone leaves the Samsung runtime's DEFAULT center-fixated
+    // profile active (hardware-verified 2026-06-10: blocky binning on content
+    // away from lens center while the app believed FFR was off), and
+    // setFoveationLevel(0) can't clear it because the level is already 0.
+    // Returns false while the session isn't ready yet (caller retries);
+    // true once pushed, or when there's nothing to do / on hard failure.
+    bool forceFoveationOff();
     // Toggle eye-tracked foveation on subsequent setFoveationLevel calls.
     // Returns the actual state (may be forced false if system lacks support).
     bool setEyeTrackedFoveation(bool enabled);

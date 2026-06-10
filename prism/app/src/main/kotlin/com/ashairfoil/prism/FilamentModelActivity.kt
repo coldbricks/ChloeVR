@@ -56,7 +56,12 @@ class FilamentModelActivity : ComponentActivity() {
     internal var sensorHub: SensorHub? = null
 
     @Volatile internal var roomLux = 200f  // default indoor
-    @Volatile internal var autoAmbient = true
+    // Default OFF (user request 2026-06-10): with Auto Light on, the XR light
+    // estimate steers ambient/SH (and direction when Follow is on) every
+    // frame — a noisy evening-room estimate makes lighting/shadows subtly
+    // swim, which reads as "something is off / ground unstable". Opt-in via
+    // param 24; scenes saved with it on still restore it per-scene.
+    @Volatile internal var autoAmbient = false
     // R2: while Auto Light is on, also steer the key light's DIRECTION from the
     // XR directional estimate so shadows align with the real room. Persisted in
     // SettingsManager; manual angle edits flip it off (same contract as the
@@ -269,6 +274,7 @@ class FilamentModelActivity : ComponentActivity() {
     private var lightLevelLastNs = 0L
     private var beatWashAlpha = 0f
     @Volatile internal var foveationLevel = 0  // 0=off, 1=low, 2=med, 3=high
+    private var foveationOffPushed = false  // one-shot startup default-profile clear
     @Volatile internal var foveationAvailable = false
     @Volatile internal var eyeTrackedFoveationAvailable = false
     @Volatile internal var perfSettingsAvailable = false
@@ -517,13 +523,17 @@ class FilamentModelActivity : ComponentActivity() {
             // menu checkbox greyed-out state.
             val caps = nativeGetSensorCapabilities()
             sceneOcclusion.isExtensionSupported = (caps and (1 shl 3)) != 0
-            sceneOcclusion.enabled = sceneOcclusion.isExtensionSupported &&
+            // Room Track is persisted: the user's last menu choice is the
+            // startup default (fresh installs OFF — bad post-reboot room
+            // scans left invisible walls clipping the dancer, and most
+            // sessions don't need occluders). Plane detection and scene
+            // occlusion both follow it.
+            roomTrackingEnabled = com.ashairfoil.prism.settings.SettingsManager.roomTracking
+            sensorPoller.planeDetectionEnabled = roomTrackingEnabled
+            sceneOcclusion.enabled = roomTrackingEnabled &&
+                sceneOcclusion.isExtensionSupported &&
                 com.ashairfoil.prism.settings.SettingsManager.occlusionEnabled
-            // Occlusion piggy-backs on plane detection: when the user toggles
-            // "Room Track" in the menu (PARAM index 17), InputHandler flips
-            // sensorPoller.planeDetectionEnabled, which drives onRawPlaneBufferUpdated,
-            // which feeds sceneOcclusion. No auto-enable here — respect the
-            // user's room-tracking choice.
+            Log.i(TAG, "Room tracking (persisted): $roomTrackingEnabled (occlusion=${sceneOcclusion.enabled})")
 
             foveationAvailable = nativeHasFoveation()
             foveationLevel = 0
@@ -1829,8 +1839,20 @@ class FilamentModelActivity : ComponentActivity() {
             Log.i(TAG, "Thermal level: $newLevel (CPU=$cpu GPU=$gpu)")
         }
 
-        val warn = newLevel >= 25 // WARNING_EXT
-        val impaired = newLevel >= 75 // IMPAIRED_EXT
+        // SAMSUNG TRAP (hardware-verified 2026-06-10): this runtime reports
+        // notification level 75 (IMPAIRED) on BOTH domains ~8s after launch
+        // with the GPU at ~33% utilization and Android thermal status nominal.
+        // Trusting the bare level walked the ladder to stage 3 within two
+        // seconds on EVERY session — foveation HIGH + 72Hz + 0.75x render
+        // scale (the user-visible "pixelation"). Corroborate with the REAL
+        // measured GPU frame time (perf-metrics, polled every 15 frames):
+        // only allow stage-ups when the GPU is actually near frame budget.
+        // Devices without perf metrics (gpuMs == 0) keep the old behavior.
+        val gpuMs = sensorPoller.gpuFrameTimeMs
+        val hz = sensorPoller.displayRefreshRate.takeIf { it > 0f } ?: 72f
+        val gpuBusy = if (gpuMs > 0f) gpuMs > (1000f / hz) * 0.8f else true
+        val warn = newLevel >= 25 && gpuBusy // WARNING_EXT
+        val impaired = newLevel >= 75 && gpuBusy // IMPAIRED_EXT
 
         // Decide target stage. IMPAIRED → stage 3; WARNING → stage 1; NORMAL → 0.
         // We never jump more than one stage per call to avoid visual shock.
@@ -1874,15 +1896,16 @@ class FilamentModelActivity : ComponentActivity() {
                 nativeRequestDisplayRefreshRate(savedRefreshRatePref.toFloat())
                 // Restore effects
                 gr?.bloomEnabled = true
-                // Restore foveation to user-selected level
-                if (savedFoveationLevel != foveationLevel) setFoveationLevelSafe(savedFoveationLevel)
             }
             1 -> {
-                // Stage 1: disable effects (here: bloom) and bump foveation up
-                // to high so GPU is freed immediately.
-                savedFoveationLevel = foveationLevel
+                // Stage 1: disable effects (here: bloom). The old foveation→
+                // HIGH escalation is REMOVED: center-fixated binning visibly
+                // blocks the dancer — the one thing the user is looking at —
+                // the worst possible visual trade for this app, and it fired
+                // on the bogus Samsung notif=75 signal every session
+                // (hardware-verified 2026-06-10). R7/R8 rebuild the ladder on
+                // real GPU-time budgets with eye-tracked FFR as the lever.
                 gr?.bloomEnabled = false
-                if (foveationLevel < 3) setFoveationLevelSafe(3)
             }
             2 -> {
                 // Stage 2: drop refresh rate one tier.
@@ -2087,6 +2110,19 @@ class FilamentModelActivity : ComponentActivity() {
 
                 val shouldRender = frameData[0] > 0.5f
                 if (shouldRender) {
+                    // One-shot: clear the runtime's DEFAULT foveation profile.
+                    // The SCALED_BIN swapchain create flag leaves Samsung's
+                    // center-fixated binning active even though the app's
+                    // level is 0 (hardware-verified: blocky head/arms away
+                    // from lens center). setFoveationLevel(0) can't send the
+                    // disable (level unchanged), so push it explicitly once
+                    // the session renders. Quest excluded: xrUpdateSwapchainFB
+                    // SIGSEGVs in Meta's driver (see setFoveationLevelSafe).
+                    if (!foveationOffPushed) {
+                        foveationOffPushed =
+                            if (com.ashairfoil.prism.BuildConfig.FLAVOR == "quest") true
+                            else nativeForceFoveationOff()
+                    }
                     val leftTexId = frameData[1].toInt()
                     val rightTexId = frameData[2].toInt()
                     System.arraycopy(frameData, 3, leftProjBuf, 0, 16)
@@ -4767,6 +4803,7 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeGetEglDisplay(): Long
     private external fun nativeGetSwapchainSize(): IntArray
     private external fun nativeWaitFrame(frameData: FloatArray): Boolean
+    private external fun nativeForceFoveationOff(): Boolean
     private external fun nativeSubmitFrame()
     private external fun nativePollInput(outState: FloatArray): Boolean
     private external fun nativeRendererShutdown()

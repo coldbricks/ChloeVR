@@ -477,6 +477,17 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeSetFoveationLevel(
     if (g_renderer) g_renderer->setFoveationLevel(level);
 }
 
+// One-shot startup push of "no foveation" — clears the Samsung runtime's
+// default center-fixated profile that the SCALED_BIN create flag leaves
+// active. Returns false while the session isn't ready (caller retries).
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeForceFoveationOff(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    return g_renderer->forceFoveationOff() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeGetFoveationLevel(
         JNIEnv* env, jobject thiz) {
