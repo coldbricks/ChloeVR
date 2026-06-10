@@ -28,6 +28,7 @@ The renderer is a hand-rolled GLES 3.0 forward pipeline (`GlesModelRenderer.kt`,
 
 | Item | Status |
 |------|--------|
+| **R1** (4x MSAA + specular AA) | **IMPLEMENTED 2026-06-10 (evening) — build-verified both flavors, adversarially reviewed (4 lenses × 3 verifiers per finding, 0 confirmed). APK installed on Galaxy XR but session stayed IDLE (headset not worn) — ON-HEAD VERIFICATION PENDING on both devices. See NOTES.md for the exact logcat lines to confirm.** |
 | **R6** (color hygiene) | **DONE — landed + device-verified on Quest 3 (2026-06-10)** |
 | **R2** (consume light direction) | **DONE — VERIFIED ON GALAXY XR 2026-06-10.** Two hardware corrections: direction convention is INVERTED from docs (runtime reports light-travel direction; negated at consumption), and AMBIENT-kind SH works natively (no fallback needed in practice). See NOTES.md for the session's bonus fixes (boundary-interceptor task demotion, occlusion un-stick) + discoveries (light_estimation_cubemap v1 enumerated → R5 Tier A viable; recommended_resolution v1 present → R7). |
 
@@ -48,6 +49,7 @@ Impact tiers as ranked by the audit: R1-R5 transformative, R6-R13 high, R14-R16 
 
 ## R1: 4x MSAA via GL_EXT_multisampled_render_to_texture (tile-memory implicit resolve) + shader specular AA
 
+**STATUS: IMPLEMENTED 2026-06-10 — build-verified both flavors; on-head verification pending.** Implementation deviations: renderUiOverlay turned out to be DEAD CODE (zero call sites — the panel renders via the native UI quad composition layer), but was made attach-consistent anyway; bloom pass 4 was the only live mid-frame re-attach. Depth invalidate placed in finishEyePass AND before the bloom lazy-init/pass-1 FBO switch. Fallback: FBO-incomplete with MSAA on → drop to single-sample (depth reallocs via the samples-mismatch gate), one skipped eye, mirrors the two-attempt pattern.
 `category=display-pipeline · devices=both · impact=transformative · effort=days · verdict=confirmed`
 **Files:** `GlesModelRenderer.kt`, `cpp/renderer_jni_bridge.cpp`, `cpp/xr_renderer.cpp`
 

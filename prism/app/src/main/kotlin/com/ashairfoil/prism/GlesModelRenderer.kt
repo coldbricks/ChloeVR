@@ -116,6 +116,22 @@ class GlesModelRenderer {
     private var depthRb = 0
     private var lastDepthW = 0
     private var lastDepthH = 0
+    private var lastDepthSamples = -1
+
+    // R1: 4x MSAA via GL_EXT_multisampled_render_to_texture — implicit
+    // tile-memory resolve, XR swapchain stays single-sample. 0 = off/unsupported.
+    private var msaaSamples = 0
+    private var msaaStatusLogged = false
+    private val depthAttachment = intArrayOf(GLES30.GL_DEPTH_ATTACHMENT)  // preallocated (Invariant 6)
+
+    // JNI shim in renderer_jni_bridge.cpp resolves the EXT entry points via
+    // eglGetProcAddress (android.opengl.GLES30 has no bindings for them).
+    // Invariant 8: private external fun, never internal (debug name mangling).
+    private external fun nativeInitMsaaExt(): Int
+    private external fun nativeFramebufferTexture2DMultisample(
+        target: Int, attachment: Int, textarget: Int, texture: Int, level: Int, samples: Int)
+    private external fun nativeRenderbufferStorageMultisample(
+        target: Int, samples: Int, internalformat: Int, width: Int, height: Int)
 
     // Shadow map resources
     private var shadowDepthProgramId = 0
@@ -608,6 +624,14 @@ class GlesModelRenderer {
         GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, maxTexBuf, 0)
         maxTextureSize = if (maxTexBuf[0] > 0) maxTexBuf[0] else 4096
         Log.i(TAG, "GPU max texture size: $maxTextureSize")
+
+        val maxMsaa = nativeInitMsaaExt()
+        msaaSamples = if (maxMsaa >= 2) minOf(4, maxMsaa) else 0  // Meta guidance: never more than 4
+        msaaStatusLogged = false
+        lastDepthSamples = -1
+        Log.i(TAG, if (msaaSamples > 0)
+            "MSAA ${msaaSamples}x enabled (EXT implicit resolve, device max $maxMsaa)"
+        else "MSAA unavailable — single-sample rendering")
 
         initialized = true
         Log.i(TAG, "GLES renderer initialized (shadows, gizmo, laser, grid)")
@@ -1669,27 +1693,60 @@ class GlesModelRenderer {
 
     // ── Eye Render ──
 
+    // EVERY color attach to the shared eye FBO must go through here: with the
+    // implicit-resolve path, a plain glFramebufferTexture2D mid-frame demotes
+    // the attachment to single-sample and the 4x depth RB makes the FBO
+    // incomplete. Callers: renderEye, renderBloom pass 4, renderUiOverlay.
+    private fun attachEyeColor(texId: Int) {
+        if (msaaSamples > 0) {
+            nativeFramebufferTexture2DMultisample(GLES30.GL_FRAMEBUFFER,
+                GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, texId, 0, msaaSamples)
+        } else {
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
+                GLES30.GL_TEXTURE_2D, texId, 0)
+        }
+    }
+
+    private fun ensureEyeDepth(width: Int, height: Int) {
+        if (width == lastDepthW && height == lastDepthH && msaaSamples == lastDepthSamples) return
+        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, depthRb)
+        if (msaaSamples > 0) {
+            nativeRenderbufferStorageMultisample(GLES30.GL_RENDERBUFFER, msaaSamples,
+                GLES30.GL_DEPTH_COMPONENT24, width, height)
+        } else {
+            GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, width, height)
+        }
+        GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT,
+            GLES30.GL_RENDERBUFFER, depthRb)
+        lastDepthW = width; lastDepthH = height; lastDepthSamples = msaaSamples
+    }
+
     fun renderEye(swapchainTexId: Int, width: Int, height: Int,
                   projection: FloatArray, viewMatrix: FloatArray) {
         if (!initialized) return
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
-            GLES30.GL_TEXTURE_2D, swapchainTexId, 0)
-        if (width != lastDepthW || height != lastDepthH) {
-            GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, depthRb)
-            GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, width, height)
-            GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT,
-                GLES30.GL_RENDERBUFFER, depthRb)
-            lastDepthW = width; lastDepthH = height
-        }
+        attachEyeColor(swapchainTexId)
+        ensureEyeDepth(width, height)
         GLES30.glViewport(0, 0, width, height)
 
         val fboStatus = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         if (fboStatus != GLES30.GL_FRAMEBUFFER_COMPLETE) {
-            if (frameCount < 10 || frameCount % 500 == 0)
+            if (msaaSamples > 0) {
+                // Clean fallback (mirrors the foveated-swapchain two-attempt
+                // pattern): drop to single-sample; ensureEyeDepth reallocates
+                // next frame on the samples mismatch. Costs one skipped eye.
+                Log.e(TAG, "Eye FBO incomplete with ${msaaSamples}x MSAA: " +
+                    "0x${Integer.toHexString(fboStatus)} — disabling MSAA")
+                msaaSamples = 0
+            } else if (frameCount < 10 || frameCount % 500 == 0)
                 Log.e(TAG, "FBO incomplete: 0x${Integer.toHexString(fboStatus)}")
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             return
+        }
+        if (msaaSamples > 0 && !msaaStatusLogged) {
+            msaaStatusLogged = true
+            Log.i(TAG, "MSAA ${msaaSamples}x eye FBO complete ${width}x${height} " +
+                "(glGetError=0x${Integer.toHexString(GLES30.glGetError())})")
         }
 
         GLES30.glClearColor(0f, 0f, 0f, 0f)
@@ -2129,7 +2186,13 @@ class GlesModelRenderer {
         GLES30.glDisable(GLES30.GL_BLEND)
     }
 
-    fun finishEyePass() { GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0) }
+    fun finishEyePass() {
+        // Depth is dead after the eye's last pass — invalidate so the tiler
+        // never stores the (multisampled) depth buffer to memory on unbind.
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, depthAttachment, 0)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
 
     // Panel position — settable for drag
     var panelX = 0f; var panelY = 0f; var panelZ = -1f
@@ -2139,8 +2202,7 @@ class GlesModelRenderer {
                         projection: FloatArray, viewMatrix: FloatArray) {
         if (uiProgramId == 0 || uiVao == 0) return
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
-            GLES30.GL_TEXTURE_2D, swapchainTexId, 0)
+        attachEyeColor(swapchainTexId)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glDisable(GLES30.GL_DEPTH_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
@@ -2230,6 +2292,14 @@ class GlesModelRenderer {
 
     fun renderBloom(swapchainTexId: Int, width: Int, height: Int) {
         if (!bloomEnabled || bloomBrightProgramId == 0 || bloomIntensity <= 0f) return
+
+        // The first FBO switch away from the eye FBO (lazy-init below, or
+        // pass 1) forces the tile store and the implicit MSAA color resolve —
+        // the bright pass then samples the resolved swapchain texture. Depth
+        // is dead by this point, so invalidate it first; only color gets stored.
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
+        GLES30.glInvalidateFramebuffer(GLES30.GL_FRAMEBUFFER, 1, depthAttachment, 0)
+
         // Lazy init bloom FBOs at correct resolution
         if (bloomW != width / 4 || bloomH != height / 4) initBloomFBOs(width, height)
 
@@ -2268,8 +2338,7 @@ class GlesModelRenderer {
 
         // Pass 4: Composite bloom onto scene (additive RGB only — preserve alpha for passthrough)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
-            GLES30.GL_TEXTURE_2D, swapchainTexId, 0)
+        attachEyeColor(swapchainTexId)
         GLES30.glViewport(0, 0, width, height)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)  // additive
@@ -2894,6 +2963,16 @@ void main() {
         roughness *= mr.g;  // glTF: G = roughness
         metallic *= mr.b;   // glTF: B = metallic
     }
+
+    // Specular AA: fp16-safe roughness floor (Filament's 0.089), then the
+    // Vlachos GDC2015 geometric term — widens the lobe where the interpolated
+    // vertex normal bends fast across a pixel (skinned animated curvature),
+    // killing the highlight crawl MSAA can't reach. Must precede alpha = r^2.
+    roughness = max(roughness, 0.089);
+    vec3 saaDx = dFdx(vNormal);
+    vec3 saaDy = dFdy(vNormal);
+    float saaRough = pow(clamp(max(dot(saaDx, saaDx), dot(saaDy, saaDy)), 0.0, 1.0), 0.333);
+    roughness = max(roughness, saaRough);
 
     float NdotL = max(dot(N, L), 0.0);
     float NdotH = max(dot(N, H), 0.0);

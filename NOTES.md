@@ -608,3 +608,69 @@ model spawn (grab steals → Follow flips off — relocate or gate on menuVisibl
 scene-load exemption + useSH un-stick timing still unverified on device;
 MainActivity panel-race crash (framework) — consider delaying panel/Session
 creation until after first onWindowFocusChanged, or bumping androidx.xr alphas.
+
+## [Claude] 2026-06-10 — R1 implemented (4x MSAA + specular AA)
+
+R1 from RENDERING_REALISM_PLAN.md implemented end-to-end. `assembleDebug` BUILD
+SUCCESSFUL both flavors; all three new JNI symbols confirmed exported in the
+built arm64 .so via llvm-nm. NOT yet verified on-head: the galaxyxr APK was
+installed on the Galaxy XR (wireless adb @ 192.168.1.179) and the viewer
+launched, but the session stayed at IDLE — headset not being worn, so the GL
+renderer (where MSAA init lives) never spun up. Quest 3 not connected.
+
+### What landed
+- **JNI shim** (renderer_jni_bridge.cpp, bottom of file): nativeInitMsaaExt
+  (GL_EXT_multisampled_render_to_texture extension-string gate +
+  eglGetProcAddress for glFramebufferTexture2DMultisampleEXT /
+  glRenderbufferStorageMultisampleEXT + GL_MAX_SAMPLES_EXT query; returns max
+  samples or 0), plus the two pass-through entry points. Pure GL, no
+  g_renderer/g_mutex. Kotlin externals are `private external fun` per
+  Invariant 8.
+- **attachEyeColor() helper** — EVERY color attach to the shared eye FBO
+  routes through it (renderEye, renderBloom pass 4, renderUiOverlay): with
+  implicit resolve, ONE plain glFramebufferTexture2D mid-frame demotes the
+  attachment to single-sample and the 4x depth RB makes the FBO incomplete.
+  DISCOVERY: renderUiOverlay is DEAD CODE (zero call sites — the menu panel
+  goes through the native UI quad composition layer); made consistent anyway.
+  Bloom pass 4 was the only live mid-frame re-attach.
+- **ensureEyeDepth() helper** — depth realloc gated on size AND sample-count
+  change (lastDepthSamples), so the runtime fallback transition reallocates.
+- **Clean fallback**: FBO-incomplete while MSAA on → log, msaaSamples=0, skip
+  that eye; the other eye recovers the same frame (samples-mismatch realloc).
+  Init caps at min(4, device max), 0 if EXT missing → plain single-sample.
+- **Depth invalidate** (preallocated IntArray — Invariant 6): in
+  finishEyePass (bind fbo → invalidate GL_DEPTH_ATTACHMENT → bind 0) and in
+  renderBloom BEFORE the lazy-init/pass-1 FBO switch, so multisampled depth
+  is never stored to memory.
+- **Shader specular AA** (FRAGMENT_SHADER, right after the MR fetch, before
+  `alpha = roughness * roughness`): fp16-safe floor `max(roughness, 0.089)` +
+  Vlachos GDC2015 geometric term from dFdx/dFdy(vNormal). Single mutation
+  point feeds key light D/G, fill light fD/fG, AND env specular consistently.
+- xr_renderer.cpp UNCHANGED (swapchain sampleCount already 1 at both creation
+  sites — required by the implicit-resolve path). Shadow-map FBO untouched.
+
+### Process note
+Reviewed by a 19-agent adversarial workflow (4 lenses × 3 refuter-verifiers
+per finding): 5 findings raised, 0 confirmed — all refuted by majority vote.
+One refuted-as-inconsequential ordering nit (bloom depth-invalidate landing
+after the lazy-init FBO switch on bloom-(re)alloc frames) was fixed anyway
+since the reorder was free.
+
+### ON-HEAD VERIFICATION CHECKLIST (next time someone wears a headset)
+Tag is ChloeVR-GLRenderer (Kotlin) / ChloeVR-XRRenderer (native shim). Expect:
+1. `MSAA EXT ready: max N samples` (native) then `MSAA 4x enabled (EXT
+   implicit resolve, device max N)` — confirms enumeration on BOTH devices.
+2. `MSAA 4x eye FBO complete WxH (glGetError=0x0)` — one-shot, confirms the
+   sRGB swapchain + implicit-resolve + foveated-swapchain (SCALED_BIN bit)
+   combination actually composes. THE critical Samsung-runtime check.
+3. If instead `Eye FBO incomplete with 4x MSAA: 0x... — disabling MSAA`
+   appears: the clean fallback fired; capture the hex status. App keeps
+   rendering single-sample (today's behavior) — not a regression, but R1's
+   payoff is off. 0x8D56 = SAMPLE mismatch — would point at the foveation
+   SCALED_BIN interaction.
+4. Visual: edge pixelation at distance (the thing the user noticed on Galaxy
+   XR) should be visibly reduced; specular highlights on skin should stop
+   crawling/shimmering during dance motion (shader AA, active even if MSAA
+   were to fall back).
+5. Perf sanity: budget says +0.5-1.5 ms GPU. Watch the perf HUD / thermal
+   ladder for unexpected escalation, esp. with bloom ON (early-resolve cost).

@@ -1,6 +1,8 @@
 #include "xr_renderer.h"
 #include "xr_scene_occlusion.h"
+#include <GLES2/gl2ext.h>
 #include <jni.h>
+#include <cstring>
 #include <mutex>
 
 static XrRenderer* g_renderer = nullptr;
@@ -817,6 +819,68 @@ Java_com_ashairfoil_prism_scene_SpatialAnchorManager_nativeUnpersist(
     chloe::AnchorUuid u;
     env->GetByteArrayRegion(uuid, 0, XR_UUID_SIZE, reinterpret_cast<jbyte*>(u.bytes));
     g_renderer->anchors().submitUnpersist(u);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// GL_EXT_multisampled_render_to_texture shim (R1: 4x MSAA with implicit
+// tile-memory resolve — the XR swapchain stays single-sample). The
+// android.opengl.GLES30 Kotlin bindings lack the EXT entry points, so
+// they're resolved once via eglGetProcAddress and exposed to
+// GlesModelRenderer. Pure GL — no g_renderer/g_mutex; called only on the
+// render thread with the EGL context current.
+// ═══════════════════════════════════════════════════════════════════════
+
+static PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC g_fbTex2DMultisampleEXT = nullptr;
+static PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC g_rbStorageMultisampleEXT = nullptr;
+
+// Returns max supported samples (>=2) when the extension and both entry
+// points are usable, else 0 (caller falls back to single-sample cleanly).
+JNIEXPORT jint JNICALL
+Java_com_ashairfoil_prism_GlesModelRenderer_nativeInitMsaaExt(
+        JNIEnv* env, jobject thiz) {
+    g_fbTex2DMultisampleEXT = nullptr;
+    g_rbStorageMultisampleEXT = nullptr;
+    const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    if (!exts || !strstr(exts, "GL_EXT_multisampled_render_to_texture")) {
+        XR_LOGI("MSAA EXT: GL_EXT_multisampled_render_to_texture not advertised");
+        return 0;
+    }
+    g_fbTex2DMultisampleEXT = reinterpret_cast<PFNGLFRAMEBUFFERTEXTURE2DMULTISAMPLEEXTPROC>(
+            eglGetProcAddress("glFramebufferTexture2DMultisampleEXT"));
+    g_rbStorageMultisampleEXT = reinterpret_cast<PFNGLRENDERBUFFERSTORAGEMULTISAMPLEEXTPROC>(
+            eglGetProcAddress("glRenderbufferStorageMultisampleEXT"));
+    if (!g_fbTex2DMultisampleEXT || !g_rbStorageMultisampleEXT) {
+        XR_LOGE("MSAA EXT: advertised but eglGetProcAddress failed (fb=%p rb=%p)",
+                reinterpret_cast<void*>(g_fbTex2DMultisampleEXT),
+                reinterpret_cast<void*>(g_rbStorageMultisampleEXT));
+        g_fbTex2DMultisampleEXT = nullptr;
+        g_rbStorageMultisampleEXT = nullptr;
+        return 0;
+    }
+    GLint maxSamples = 0;
+    glGetIntegerv(GL_MAX_SAMPLES_EXT, &maxSamples);
+    XR_LOGI("MSAA EXT ready: max %d samples", maxSamples);
+    return (maxSamples >= 2) ? (jint)maxSamples : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_GlesModelRenderer_nativeFramebufferTexture2DMultisample(
+        JNIEnv* env, jobject thiz, jint target, jint attachment, jint textarget,
+        jint texture, jint level, jint samples) {
+    if (g_fbTex2DMultisampleEXT) {
+        g_fbTex2DMultisampleEXT((GLenum)target, (GLenum)attachment, (GLenum)textarget,
+                                (GLuint)texture, (GLint)level, (GLsizei)samples);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_ashairfoil_prism_GlesModelRenderer_nativeRenderbufferStorageMultisample(
+        JNIEnv* env, jobject thiz, jint target, jint samples, jint internalformat,
+        jint width, jint height) {
+    if (g_rbStorageMultisampleEXT) {
+        g_rbStorageMultisampleEXT((GLenum)target, (GLsizei)samples, (GLenum)internalformat,
+                                  (GLsizei)width, (GLsizei)height);
+    }
 }
 
 } // extern "C"
