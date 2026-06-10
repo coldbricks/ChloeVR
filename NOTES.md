@@ -810,6 +810,23 @@ THREE-STAGE self-inflicted quality collapse, ~10s after EVERY launch:
   highest ≤72) in BOTH native sites (prime + request); 90 stays an explicit
   user pick. R7's budget math must use 72Hz/13.9ms as the baseline.
 
+### USER AESTHETIC BAR (2026-06-10, on-head A/B): Tripo no-PBR > full PBR
+User A/B'd the same character (Chelsea, 8K) exported no-PBR (baked basecolor
+only) vs full PBR (8K base + 4K normal + 4K RM, 2M poly) on the live
+pipeline. Verdict: "the no-PBR looks amazing" — baked wins decisively today.
+Implications for the plans:
+- The BAKED TRIPO RENDER IS THE VISUAL REFERENCE BAR. R4 (self-shadow) and
+  R5 (specular IBL) acceptance test = re-run this exact A/B; PBR should beat
+  baked before those recs are called done. Until then, recommend no-PBR
+  exports for unrigged/statue models.
+- The one place baked CANNOT work: skinned dancers — baked shading is frozen
+  into the texture and contradicts the deforming pose (painted occlusion
+  stays put when limbs move). R3/R4/R5 are for THEM, not the statues.
+- Perf note: the 2M-poly export is at the edge of the 72Hz budget (drawn
+  twice per frame); ~500k mid-poly is the dance-scene sweet spot.
+- New tool: scripts\glb_peek.py (on the PC) — instant GLB rig/texture-dims
+  inspection before pushing to the headset.
+
 ### Room Track now persisted (user request, same session)
 SettingsManager.roomTracking ("room_tracking", default OFF for fresh
 installs): the user's last toggle IS the startup default. Applied at
