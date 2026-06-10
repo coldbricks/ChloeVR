@@ -93,6 +93,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private val gizmoDragStartModelPos = floatArrayOf(0f, 0f, 0f)
     private val scratchGizmoPos = FloatArray(3)
     private val scratchGizmoRot = FloatArray(4)
+    // Last azimuth/elevation (whole degrees) shown on the menu during an emitter
+    // drag — panel only repaints when the displayed value would actually change.
+    private var lastEmitterUiAz = Int.MIN_VALUE
+    private var lastEmitterUiEl = Int.MIN_VALUE
 
     // Pre-allocated scratch buffers for grab path (avoids per-frame floatArrayOf)
     private val scratchGrabHandPos = FloatArray(3)
@@ -1104,6 +1108,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         scX /= models.size; scY /= models.size; scZ /= models.size
                     }
                     renderer.updateLightFromEmitter(scX, scY, scZ)
+                    if (activity.menuVisible) {
+                        val az = renderer.lightAngleDeg.toInt()
+                        val el = renderer.lightElevDeg.toInt()
+                        if (az != lastEmitterUiAz || el != lastEmitterUiEl) {
+                            lastEmitterUiAz = az; lastEmitterUiEl = el
+                            activity.uiNeedsRefresh = true
+                        }
+                    }
                 }
             }
 

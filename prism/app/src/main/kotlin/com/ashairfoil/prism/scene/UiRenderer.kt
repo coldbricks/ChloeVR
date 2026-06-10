@@ -621,6 +621,41 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 }
             }
 
+            // Dead-spectrum diagnosis — Visualizer failures are otherwise silent
+            // (RECORD_AUDIO never granted, session busy, or nothing playing) and
+            // the trigger box just looks broken with no explanation.
+            var statusMsg: String? = null
+            var statusHint: String? = null
+            var statusUrgent = false
+            val reactorErr = reactor?.lastError
+            if (reactorErr != null) {
+                statusMsg = reactorErr
+                statusUrgent = true
+                statusHint = "Settings > Apps > ChloeVR > Permissions > Microphone: Allow"
+            } else if (reactor == null || !reactor.isActive) {
+                statusMsg = "reactor idle — toggle BeatReactor ON"
+            } else if (reactor.lastCaptureMs == 0L) {
+                statusMsg = "waiting for audio data…"
+            } else if (System.currentTimeMillis() - reactor.lastCaptureMs > 2000L) {
+                statusMsg = "NO AUDIO SIGNAL"
+                statusUrgent = true
+                statusHint = "play music in ChloeVR's audio player (BROWSE)"
+            }
+            if (statusMsg != null) {
+                val cx = (specLeft + specRight) / 2f
+                val cy = (specTop + specBot) / 2f
+                p.textAlign = Paint.Align.CENTER
+                p.textSize = 24f; p.isFakeBoldText = statusUrgent
+                p.color = if (statusUrgent) 0xFFFF5050.toInt() else ThemeManager.TEXT_DIM
+                canvas.drawText(statusMsg, cx, cy - 8f, p)
+                if (statusHint != null) {
+                    p.textSize = 16f; p.isFakeBoldText = false
+                    p.color = ThemeManager.TEXT_DIM
+                    canvas.drawText(statusHint, cx, cy + 20f, p)
+                }
+                p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+            }
+
             // Bounding box — mapped to visible range
             if (reactor != null) {
                 @Suppress("NAME_SHADOWING")

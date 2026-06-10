@@ -315,6 +315,14 @@ class AudioReactor {
     // ── Internal ──
     private var visualizer: Visualizer? = null
     private var started = false
+    // Why the Visualizer is dead, for on-panel display. The Visualizer needs the
+    // RECORD_AUDIO runtime permission, which this app never requests (permission
+    // dialogs kill the OpenXR session) — without it start() fails SILENTLY and
+    // the spectrum/trigger box just looks broken. Surface the reason instead.
+    @Volatile var lastError: String? = null
+        private set
+    @Volatile var lastCaptureMs = 0L
+        private set
     private var smoothedOutput = 0f  // the envelope-followed output (before dynRange)
     private var smoothedOutput2 = 0f // envelope for box B
     private var prevFillPct2 = 0f
@@ -363,6 +371,7 @@ class AudioReactor {
                 override fun onWaveFormDataCapture(v: Visualizer?, waveform: ByteArray?, samplingRate: Int) {}
                 override fun onFftDataCapture(v: Visualizer?, fft: ByteArray?, samplingRate: Int) {
                     if (fft != null) {
+                        lastCaptureMs = System.currentTimeMillis()
                         callCount++
                         if (callCount <= 3 || callCount % 200 == 0) {
                             Log.i(TAG, "FFT #$callCount: ${fft.size} bytes, rate=$samplingRate")
@@ -375,12 +384,18 @@ class AudioReactor {
             vis.enabled = true
             visualizer = vis
             started = true
+            lastError = null
             Log.i(TAG, "AudioReactor started, enabled=${vis.enabled}")
             return true
         } catch (e: Exception) {
             // Construction or setup failed (e.g. -3 = session already bound).
             // Release the half-initialized object without ever capturing from it.
             Log.e(TAG, "Failed to start Visualizer: ${e.message}", e)
+            lastError = when {
+                e is SecurityException -> "MIC PERMISSION DENIED"
+                e.message?.contains("-3") == true -> "AUDIO SESSION BUSY (-3)"
+                else -> "VISUALIZER FAILED: ${e.message}"
+            }
             try {
                 vis?.setDataCaptureListener(null, Visualizer.getMaxCaptureRate(), false, false)
             } catch (ignored: Exception) {}
@@ -415,6 +430,7 @@ class AudioReactor {
     fun stop() {
         teardownVisualizer()
         started = false
+        lastCaptureMs = 0L
         lastUpdateNanos = 0L
         bass = 0f; mid = 0f; high = 0f
         boxFillPct = 0f; smoothedOutput = 0f; prevFillPct = 0f

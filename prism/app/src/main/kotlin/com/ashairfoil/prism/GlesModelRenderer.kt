@@ -1,5 +1,6 @@
 package com.ashairfoil.prism
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.opengl.GLES30
 import android.opengl.GLUtils
@@ -12,6 +13,8 @@ import java.nio.IntBuffer
 class GlesModelRenderer {
     companion object {
         private const val TAG = "ChloeVR-GLRenderer"
+        // GL_EXT_texture_filter_anisotropic — not in android.opengl.GLES30 bindings
+        private const val GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
         const val GIZMO_AXIS_NONE = -1
         const val GIZMO_AXIS_X = 0
         const val GIZMO_AXIS_Y = 1
@@ -165,6 +168,11 @@ class GlesModelRenderer {
     var emitterVisible = true
     var emitterPos = floatArrayOf(0.3f, 1.5f, 0.5f)  // default: above-right-front
     val emitterRadius = 0.04f  // visual size
+    // Scene point the emitter orbits; refreshed on every emitter drag so that
+    // slider-driven repositioning keeps the marker at the user's chosen distance.
+    private val lightPivot = floatArrayOf(0f, 0f, 0f)
+    private var emitterSyncedAz = Float.NaN  // angles emitterPos currently reflects
+    private var emitterSyncedEl = Float.NaN
 
     // Color wash (fullscreen tint overlay)
     private var washProgramId = 0
@@ -336,10 +344,67 @@ class GlesModelRenderer {
         lightDir[1] = sinEl
         lightDir[2] = cosEl * cosAz
         updateFillLightDirFromMainLight()
+        syncEmitterToAngles()
+    }
+
+    /** Keep the emitter marker on the lightDir ray when azimuth/elevation change
+     *  via sliders, thumbstick nudge, reset, presets, or scene load. No-op while
+     *  the angles already match what the emitter reflects (e.g. the per-frame
+     *  auto-ambient call), so an in-progress emitter drag is never fought. */
+    private fun syncEmitterToAngles() {
+        if (lightAngleDeg == emitterSyncedAz && lightElevDeg == emitterSyncedEl) return
+        val dx = emitterPos[0] - lightPivot[0]
+        val dy = emitterPos[1] - lightPivot[1]
+        val dz = emitterPos[2] - lightPivot[2]
+        val dist = kotlin.math.sqrt(dx * dx + dy * dy + dz * dz).coerceAtLeast(0.5f)
+        emitterPos[0] = lightPivot[0] + lightDir[0] * dist
+        emitterPos[1] = lightPivot[1] + lightDir[1] * dist
+        emitterPos[2] = lightPivot[2] + lightDir[2] * dist
+        emitterSyncedAz = lightAngleDeg
+        emitterSyncedEl = lightElevDeg
     }
 
     private var initialized = false
     private var frameCount = 0
+
+    // ── Texture upload helpers ──
+    // GLUtils.texImage2D's internalformat overload is unusable for sRGB: AOSP
+    // passes the internalformat argument as the pixel FORMAT too, and
+    // GL_SRGB8_ALPHA8 is not a legal format enum in ES 3.0 (black texture or
+    // IllegalArgumentException depending on AOSP version). Upload explicitly.
+    private fun uploadTexture(bitmap: Bitmap, isSrgb: Boolean) {
+        val b = if (bitmap.config == Bitmap.Config.ARGB_8888) bitmap
+            else bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        if (!isSrgb || b.rowBytes != b.width * 4) {
+            // Linear data, or row padding we can't hand to glTexImage2D directly —
+            // GLUtils picks the matching RGBA8 internalformat and handles stride.
+            if (isSrgb) Log.w(TAG, "sRGB upload fell back to linear (rowBytes=${b.rowBytes}, w=${b.width})")
+            GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0)
+        } else {
+            val buf = ByteBuffer.allocateDirect(b.byteCount)
+            b.copyPixelsToBuffer(buf)
+            buf.position(0)
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_SRGB8_ALPHA8,
+                b.width, b.height, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, buf)
+        }
+        if (b !== bitmap) b.recycle()
+    }
+
+    // 4x anisotropic filtering on the bound texture — skin at grazing angles
+    // (thighs/arms in profile) blurs under plain trilinear at VR distances.
+    private var anisoChecked = false
+    private var anisoSupported = false
+    private fun applyAnisotropy() {
+        if (!anisoChecked) {
+            anisoChecked = true
+            anisoSupported = GLES30.glGetString(GLES30.GL_EXTENSIONS)
+                ?.contains("GL_EXT_texture_filter_anisotropic") == true
+            Log.i(TAG, "Anisotropic filtering: ${if (anisoSupported) "supported (4x)" else "unsupported"}")
+        }
+        if (anisoSupported) {
+            GLES30.glTexParameterf(GLES30.GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 4f)
+        }
+    }
 
     fun init(): Boolean {
         programId = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
@@ -936,7 +1001,7 @@ class GlesModelRenderer {
                 return BitmapFactory.decodeByteArray(texBytes, 0, texLen, decOpts)
             }
 
-            fun loadGltfTex(texIdx: Int, label: String): Int {
+            fun loadGltfTex(texIdx: Int, label: String, isSrgb: Boolean = false): Int {
                 if (texIdx < 0 || textures == null || images == null) return 0
                 if (texIdx >= textures.length()) return 0
                 val source = textures.getJSONObject(texIdx).optInt("source", 0)
@@ -954,9 +1019,9 @@ class GlesModelRenderer {
                 GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tb[0])
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
                 GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-                GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
+                uploadTexture(bitmap, isSrgb)
                 GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D)
-                Log.i(TAG, "$label: ${img.optString("name", "img[$source]")} (${bitmap.width}x${bitmap.height})")
+                Log.i(TAG, "$label: ${img.optString("name", "img[$source]")} (${bitmap.width}x${bitmap.height}${if (isSrgb) ", sRGB" else ""})")
                 bitmap.recycle()
                 return tb[0]
             }
@@ -979,19 +1044,20 @@ class GlesModelRenderer {
                         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, model.textureId)
                         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR_MIPMAP_LINEAR)
                         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
-                        GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, bitmap, 0)
+                        applyAnisotropy()
+                        uploadTexture(bitmap, isSrgb = true)
                         GLES30.glGenerateMipmap(GLES30.GL_TEXTURE_2D)
                         val imgName = img.optString("name", "image[$imgIdx]")
-                        Log.i(TAG, "Base color texture: $imgName (${bitmap.width}x${bitmap.height}, image[$imgIdx])")
+                        Log.i(TAG, "Base color texture: $imgName (${bitmap.width}x${bitmap.height}, image[$imgIdx], sRGB)")
                         bitmap.recycle()
                     }
                 }
             }
 
-            // Load PBR texture maps
+            // Load PBR texture maps — emissive is color data (sRGB); normal/MR stay linear
             model.normalMapTexId = loadGltfTex(normalTexIdx, "Normal map")
             model.metallicRoughnessTexId = loadGltfTex(metRoughTexIdx, "Metallic-roughness map")
-            model.emissiveTexId = loadGltfTex(emissiveTexIdx, "Emissive map")
+            model.emissiveTexId = loadGltfTex(emissiveTexIdx, "Emissive map", isSrgb = true)
             model.hasNormalMap = model.normalMapTexId != 0
 
             // ── Tier 4: SKIN PARSE ─────────────────────────────────────────
@@ -1479,6 +1545,7 @@ class GlesModelRenderer {
 
     /** Update light direction from scene center toward emitter */
     fun updateLightFromEmitter(sceneCenterX: Float = 0f, sceneCenterY: Float = 0f, sceneCenterZ: Float = 0f) {
+        lightPivot[0] = sceneCenterX; lightPivot[1] = sceneCenterY; lightPivot[2] = sceneCenterZ
         val dx = emitterPos[0] - sceneCenterX
         val dy = emitterPos[1] - sceneCenterY
         val dz = emitterPos[2] - sceneCenterZ
@@ -1489,6 +1556,10 @@ class GlesModelRenderer {
         var az = Math.toDegrees(kotlin.math.atan2(dx.toDouble(), dz.toDouble())).toFloat()
         if (az < 0f) az += 360f
         lightAngleDeg = az
+        // The emitter is already where the user put it — record the angles it
+        // reflects so syncEmitterToAngles() doesn't move it out from under a drag.
+        emitterSyncedAz = lightAngleDeg
+        emitterSyncedEl = lightElevDeg
     }
 
     // ── Room Occlusion ──
@@ -2811,7 +2882,9 @@ void main() {
     vec3 V = normalize(-vPosition);
     vec3 L = normalize(uLightDir);
     vec3 H = normalize(L + V);
-    vec3 albedo = pow(texture(uBaseColor, vTexCoord).rgb, vec3(2.2));
+    // Base color uploaded as SRGB8_ALPHA8 — hardware decodes to linear at sample
+    // time (and filters mips in linear light, unlike the old pow(2.2) approximation).
+    vec3 albedo = texture(uBaseColor, vTexCoord).rgb;
 
     // Metallic/roughness: from map or scalar uniforms
     float metallic = uMetallic;
@@ -2843,8 +2916,12 @@ void main() {
     float fNdotL = max(dot(N, fillL), 0.0);
     float fNdotH = max(dot(N, fillH), 0.0);
     float fD = alpha2 / (3.14159265 * pow(fNdotH * fNdotH * (alpha2 - 1.0) + 1.0, 2.0) + 0.0001);
-    vec3 fSpec = fD * F * G / (4.0 * NdotV * fNdotL + 0.0001);
-    color += (diffuse + fSpec * 0.5) * fNdotL * uFillLightColor * uFillLightIntensity;
+    // Fresnel + geometry terms for the FILL light's own angles — the key
+    // light's F and G are wrong here (G even contains the key NdotL).
+    vec3 fF = F0 + (1.0 - F0) * pow(1.0 - max(dot(fillH, V), 0.0), 5.0);
+    float fG = (NdotV / (NdotV * (1.0 - k) + k)) * (fNdotL / (fNdotL * (1.0 - k) + k));
+    vec3 fSpec = fD * fF * fG / (4.0 * NdotV * fNdotL + 0.0001);
+    color += (diffuse + fSpec) * fNdotL * uFillLightColor * uFillLightIntensity;
 
     // Ambient: SH irradiance or hemisphere fallback
     if (uUseSH > 0.5) {
@@ -2862,7 +2939,7 @@ void main() {
 
     // Emissive
     if (uHasEmissiveMap > 0.5) {
-        vec3 emissive = pow(texture(uEmissiveMap, vTexCoord).rgb, vec3(2.2)) * uEmissiveFactor;
+        vec3 emissive = texture(uEmissiveMap, vTexCoord).rgb * uEmissiveFactor;
         color += emissive;
     }
 
@@ -2870,8 +2947,21 @@ void main() {
     if (uSelected > 0.5) { float rim = pow(1.0 - NdotV, 5.0); color += vec3(0.0, 0.6, 0.8) * rim * 0.25; }
 
     color *= exp2(uExposure);
-    // ACES tone mapping
-    color = (color * (2.51 * color + 0.03)) / (color * (2.43 * color + 0.59) + 0.14);
+    // Khronos PBR Neutral tone mapping — identity below peak 0.76, so authored
+    // skin tones reach the display unshifted; ACES desaturated and pushed
+    // skin reds toward orange. Highlights compress with gentle desaturation.
+    {
+        float tmOff = min(color.r, min(color.g, color.b));
+        tmOff = tmOff < 0.08 ? tmOff - 6.25 * tmOff * tmOff : 0.04;
+        color -= tmOff;
+        float peak = max(color.r, max(color.g, color.b));
+        if (peak > 0.76) {
+            float newPeak = 1.0 - 0.0576 / (peak + 0.24 - 0.76);
+            color *= newPeak / peak;
+            float tmG = 1.0 - 1.0 / (0.15 * (peak - newPeak) + 1.0);
+            color = mix(color, vec3(newPeak), tmG);
+        }
+    }
     color = clamp(color, 0.0, 1.0);
     // Gamma contrast: >1.0 darkens darks while barely touching highlights
     color = pow(color, vec3(uContrast));
