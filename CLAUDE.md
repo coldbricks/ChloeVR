@@ -18,12 +18,19 @@ IMPORTANT: These are architectural facts and hard-won lessons, not suggestions. 
 
 ## Build and Deploy
 
-```bash
-cd /home/kali/ChloeVR/prism && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew assembleDebug
-adb install -r /home/kali/ChloeVR/prism/app/build/outputs/apk/debug/app-debug.apk
-adb logcat -s OpenXR:* ChloeVR:* AndroidRuntime:*
-cd /home/kali/ChloeVR/prism && JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ./gradlew lint
+```powershell
+# Windows dev box (since 2026-06; old Kali paths are dead)
+cd C:\Users\coldb\ChloeVR\prism; .\gradlew assembleDebug   # builds BOTH flavors
+# APKs: app\build\outputs\apk\{galaxyxr,quest}\debug\app-<flavor>-debug.apk
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"   # not on PATH
+& $adb install -r app\build\outputs\apk\galaxyxr\debug\app-galaxyxr-debug.apk
+& $adb logcat -s ChloeVR-XRRenderer:* ChloeVR-OpenXR:* ChloeVR-ModelActivity:* ChloeVR:* AndroidRuntime:E
 ```
+
+Wireless adb: `tcpip 5555` from USB, then connect to the headset's wlan IP
+(DHCP — check each time; does not survive reboot). Direct viewer launch
+(bypasses MainActivity's flaky panel startup):
+`am start -n com.ashairfoil.prism/.FilamentModelActivity`
 
 **Build after every change. Fix before continuing. Think through data flow with realistic values BEFORE building — each failed APK costs 5+ minutes of sideloading and testing on hardware.**
 
@@ -166,7 +173,11 @@ CRITICAL: When this conversation is compacted, the following MUST survive in the
 ## Active Work Context
 
 **Current task:** Check `NOTES.md` and `git log --oneline -10` for latest state.
-**Latest verified commit:** 5359c76 on master (revert + issue report)
+**Latest verified commit:** 19648f8 on master (R2 Follow Room Light, Galaxy XR verified)
+**Standing directive (2026-06-10):** implement ALL of `RENDERING_REALISM_PLAN.md`
+(R1–R16) and ALL of `DANCE_REALISM_PLAN.md` (D1–D12). Next: **R1 (4x MSAA +
+specular AA)**, then D1+D3, then down both plans. Re-verify plan line cites
+before editing — R2/R6 landed after the audit and shifted files.
 
 **FIXED in this session (BUILD SUCCESSFUL):**
 - Panel Y coordinate mapping: changed `by = v * 1024f` to `by = v * 1280f`, all hit regions now match UiRenderer's 1280-tall bitmap
@@ -199,8 +210,8 @@ CRITICAL: When this conversation is compacted, the following MUST survive in the
 
 ## Environment
 
-- **Dev:** Kali Linux, `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`
-- **SDK:** `/home/kali/android-sdk` and `/home/kali/ChloeVR/platforms/`
-- **Device:** Samsung Galaxy XR (ADB when available)
+- **Dev:** Windows 11 (ROG SCAR 18), repo at `C:\Users\coldb\ChloeVR\`, PowerShell
+  (the old Kali setup is retired — ignore any /home/kali paths in history)
+- **SDK/adb:** `%LOCALAPPDATA%\Android\Sdk\` (adb not on PATH)
+- **Devices:** Samsung Galaxy XR (SM-I610) + Meta Quest 3, both via wireless adb
 - **User:** coldbricks (Ash Airfoil)
-- Use `DEBIAN_FRONTEND=noninteractive` for apt/dpkg.

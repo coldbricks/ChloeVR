@@ -571,10 +571,40 @@ R2 confirmed working on hardware. User verdict: "looks good!" Findings:
 ### Device access notes
 - Galaxy XR wireless adb: `adb tcpip 5555` from USB, then connect to its wlan
   IP (was .177, then .179 after reboot — DHCP, CHECK EACH TIME). tcpip mode
-  does NOT survive reboot; needs USB re-arm.
+  does NOT survive reboot; needs USB re-arm. Quest 3 was at 192.168.1.156.
+- adb.exe lives at %LOCALAPPDATA%\Android\Sdk\platform-tools\ (not on PATH).
 - Native log tags are `ChloeVR-XRRenderer` / `ChloeVR-OpenXR` / `ChloeVR-ModelActivity` —
   CLAUDE.md's `logcat -s OpenXR:* ChloeVR:*` filter is STALE and misses them.
 - Old (pre-2026-06-10) install was signed with the Kali machine's debug key —
   reinstalls from this Windows box needed one uninstall; scenes + prefs were
   backed up via run-as to C:\Users\coldb\ChloeVR\galaxyxr_backup_2026-06-10\
   and restored.
+- Picker-crash workaround:
+  `adb shell am start -n com.ashairfoil.prism/.FilamentModelActivity`
+  (viewer is exported now) — skips MainActivity entirely.
+
+## [Claude] 2026-06-10 — session close + go-forward queue
+
+All of the above committed as 19648f8 and pushed; **master fast-forwarded to
+the quest-port line and pushed — master is the main branch again** (quest-port
+left as an identical label). Working tree clean except the untracked
+galaxyxr_backup_2026-06-10/ (user data — never commit).
+
+**USER DIRECTIVE: implement EVERYTHING — all of RENDERING_REALISM_PLAN.md and
+all of DANCE_REALISM_PLAN.md. Agreed order:**
+1. **R1 (4x MSAA + specular AA) — NEXT.** User specifically noticed the edge
+   pixelation at distance on Galaxy XR today.
+2. Then D1+D3 (dance quick wins: beat-grid epoch/Float fix + anticipation;
+   skeletal breath + idle layer), then continue down both plans.
+
+**WARNING for R1 (and all future recs):** both plans' line-number cites were
+verified at audit time (2026-06-10 morning) — R2/R6 have since landed and
+shifted GlesModelRenderer.kt, xr_renderer.cpp, and FilamentModelActivity.kt.
+Re-verify every cite before editing. R1's verifier notes also reference attach
+sites (renderUiOverlay, bloom passes) that must ALL be made MSAA-consistent.
+
+R2 follow-ups parked (cheap, opportunistic): emitter default position overlaps
+model spawn (grab steals → Follow flips off — relocate or gate on menuVisible);
+scene-load exemption + useSH un-stick timing still unverified on device;
+MainActivity panel-race crash (framework) — consider delaying panel/Session
+creation until after first onWindowFocusChanged, or bumping androidx.xr alphas.
