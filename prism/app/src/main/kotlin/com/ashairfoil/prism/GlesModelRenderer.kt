@@ -133,18 +133,30 @@ class GlesModelRenderer {
     private external fun nativeRenderbufferStorageMultisample(
         target: Int, samples: Int, internalformat: Int, width: Int, height: Int)
 
-    // Shadow map resources
+    // Shadow map resources — R4: depth-only target. shadowMapTexId is a real
+    // GL_DEPTH_COMPONENT24 texture with COMPARE_REF_TO_TEXTURE + LINEAR baked
+    // into its texture state, so a plain bind gives sampler2DShadow hardware
+    // 2x2 PCF. The PCSS blocker search still needs RAW depth values, which a
+    // compare-mode texture cannot deliver — shadowRawSampler (compare NONE +
+    // NEAREST; LINEAR on a non-compare depth texture is undefined in ES 3.0)
+    // is bound to a SECOND texture unit over the same texture for those reads.
     private var shadowDepthProgramId = 0
     private var shadowMapFbo = 0
     private var shadowMapTexId = 0
-    private var shadowColorRb = 0  // dummy color attachment for GPU compat
+    private var shadowRawSampler = 0
     private val shadowMapSize = 2048
     var shadowLightMatrix = FloatArray(16)
     var shadowDarkness = 0.7f
     var shadowSoftness = 2.0f
-    var shadowSpread = 8f  // ortho extent in meters — larger = wider shadow area
+    var shadowSpread = 8f  // user cap on ortho extent (m) — auto-fit tightens below it
     var lightSize = 1.0f   // PCSS light size — controls penumbra width
     var shadowEnabled = true
+    // R4 auto-fit: frustum tightened to the union AABB of the models (skinned
+    // bounds from posed joints) so 2048 texels cover ~1.5m instead of 16m —
+    // texel density is what makes chin/finger self-shadow resolvable.
+    private var shadowTexelWorld = 2f * 8f / 2048f
+    private val shadowFitPos = FloatArray(3)  // scratch (Invariant 6)
+    private val shadowFitBox = FloatArray(6)  // minXYZ, maxXYZ scratch
     var shadowPlanes: List<ShadowPlane> = emptyList()
     var occlusionEnabled = true  // room planes above floor block model rendering
 
@@ -259,6 +271,11 @@ class GlesModelRenderer {
     private var uShadowDepthSkinned = -1
     // Scratch palette buffer for UBO upload — sized for MAX_JOINTS_SHADER.
     private val jointPaletteScratch = FloatArray(MAX_JOINTS_SHADER * 16)
+    // Preallocated direct buffer for the UBO upload (Invariant 6 — the old
+    // per-eye ByteBuffer.allocateDirect was a per-frame allocation).
+    private val jointPaletteBuf: java.nio.FloatBuffer = java.nio.ByteBuffer
+        .allocateDirect(MAX_JOINTS_SHADER * 64)
+        .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
     // PBR map uniforms
     private var uHasNormalMap = -1
     private var uNormalMap = -1
@@ -267,6 +284,11 @@ class GlesModelRenderer {
     private var uHasEmissiveMap = -1
     private var uEmissiveMap = -1
     private var uEmissiveFactor = -1
+    // R4 — model receives/self-casts shadows (main program)
+    private var uLightVP = -1         // shadowLightMatrix (world → light clip)
+    private var uShadowNormOff = -1   // normal-offset bias, meters (1.5 texels)
+    private var uModelShadowMap = -1  // sampler2DShadow, unit 4
+    private var uShadowStrength = -1  // shadowDarkness, 0 = off
 
     // Grid shader uniforms (cached at init)
     private var uGridMVP = -1
@@ -278,6 +300,8 @@ class GlesModelRenderer {
     private var uGridShadowSoftness = -1
     private var uGridLightSize = -1
     private var uGridShadowMap = -1
+    private var uGridShadowMapRaw = -1  // R4: raw-depth unit for PCSS blocker search
+    private var uGridShadowKernel = -1  // R4: keeps PCSS kernels world-invariant under auto-fit
 
     // Laser shader uniforms (cached at init)
     private var uLaserMVP = -1
@@ -296,6 +320,8 @@ class GlesModelRenderer {
 
     // Shadow plane uniforms (cached at init)
     private var uSpShadowMap = -1
+    private var uSpShadowMapRaw = -1  // R4: raw-depth unit for PCSS blocker search
+    private var uSpShadowKernel = -1  // R4: keeps PCSS kernels world-invariant under auto-fit
     private var uSpShadowMVP = -1
     private var uSpShadowDarkness = -1
     private var uSpShadowSoftness = -1
@@ -462,6 +488,11 @@ class GlesModelRenderer {
         uGluteBRadius = GLES30.glGetUniformLocation(programId, "uGluteBRadius")
         uGluteAPush = GLES30.glGetUniformLocation(programId, "uGluteAPush")
         uGluteBPush = GLES30.glGetUniformLocation(programId, "uGluteBPush")
+        // R4 — key-light shadow on the model itself
+        uLightVP = GLES30.glGetUniformLocation(programId, "uLightVP")
+        uShadowNormOff = GLES30.glGetUniformLocation(programId, "uShadowNormOff")
+        uModelShadowMap = GLES30.glGetUniformLocation(programId, "uShadowMap")
+        uShadowStrength = GLES30.glGetUniformLocation(programId, "uShadowStrength")
         // Tier 4 — skinning uniforms + UBO block binding
         uSkinned = GLES30.glGetUniformLocation(programId, "uSkinned")
         val mainJointsBlock = GLES30.glGetUniformBlockIndex(programId, "Joints")
@@ -535,12 +566,16 @@ class GlesModelRenderer {
         uGridShadowSoftness = GLES30.glGetUniformLocation(gridProgramId, "uShadowSoftness")
         uGridLightSize = GLES30.glGetUniformLocation(gridProgramId, "uLightSize")
         uGridShadowMap = GLES30.glGetUniformLocation(gridProgramId, "uShadowMap")
+        uGridShadowMapRaw = GLES30.glGetUniformLocation(gridProgramId, "uShadowMapRaw")
+        uGridShadowKernel = GLES30.glGetUniformLocation(gridProgramId, "uShadowKernel")
         initGridGeometry()
 
         // Shadow planes
         shadowPlaneProgramId = createProgram(SP_VERTEX_SHADER, SP_FRAGMENT_SHADER)
         if (shadowPlaneProgramId == 0) { Log.e(TAG, "Failed to create shadow plane shader"); return false }
         uSpShadowMap = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMap")
+        uSpShadowMapRaw = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMapRaw")
+        uSpShadowKernel = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowKernel")
         uSpShadowMVP = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowMVP")
         uSpShadowDarkness = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowDarkness")
         uSpShadowSoftness = GLES30.glGetUniformLocation(shadowPlaneProgramId, "uShadowSoftness")
@@ -639,41 +674,50 @@ class GlesModelRenderer {
     }
 
     private fun initShadowMap() {
-        // Color texture to store depth (avoids depth texture compat issues on mobile)
+        // R4: real depth texture (drops the old R32F color target — and with it
+        // the silent EXT_color_buffer_float dependency). Compare params live on
+        // the TEXTURE so plain binds give sampler2DShadow hardware 2x2 PCF.
         val texBuf = intArrayOf(0)
         GLES30.glGenTextures(1, texBuf, 0)
         shadowMapTexId = texBuf[0]
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
-        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_R32F,
-            shadowMapSize, shadowMapSize, 0, GLES30.GL_RED, GLES30.GL_FLOAT, null)
+        GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_DEPTH_COMPONENT24,
+            shadowMapSize, shadowMapSize, 0, GLES30.GL_DEPTH_COMPONENT, GLES30.GL_UNSIGNED_INT, null)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
         GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_COMPARE_MODE, GLES30.GL_COMPARE_REF_TO_TEXTURE)
+        GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_COMPARE_FUNC, GLES30.GL_LEQUAL)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
 
-        // Depth renderbuffer for actual depth testing during shadow render
-        val depthRbBuf = intArrayOf(0)
-        GLES30.glGenRenderbuffers(1, depthRbBuf, 0)
-        shadowColorRb = depthRbBuf[0]  // reusing field name
-        GLES30.glBindRenderbuffer(GLES30.GL_RENDERBUFFER, shadowColorRb)
-        GLES30.glRenderbufferStorage(GLES30.GL_RENDERBUFFER, GLES30.GL_DEPTH_COMPONENT24, shadowMapSize, shadowMapSize)
+        // Raw-read sampler for the PCSS blocker search: overrides the texture's
+        // compare state on whichever unit it is bound to. NEAREST is mandatory —
+        // LINEAR on a compare-off depth texture is undefined in core ES 3.0.
+        GLES30.glGenSamplers(1, texBuf, 0)
+        shadowRawSampler = texBuf[0]
+        GLES30.glSamplerParameteri(shadowRawSampler, GLES30.GL_TEXTURE_COMPARE_MODE, GLES30.GL_NONE)
+        GLES30.glSamplerParameteri(shadowRawSampler, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_NEAREST)
+        GLES30.glSamplerParameteri(shadowRawSampler, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_NEAREST)
+        GLES30.glSamplerParameteri(shadowRawSampler, GLES30.GL_TEXTURE_WRAP_S, GLES30.GL_CLAMP_TO_EDGE)
+        GLES30.glSamplerParameteri(shadowRawSampler, GLES30.GL_TEXTURE_WRAP_T, GLES30.GL_CLAMP_TO_EDGE)
 
-        // Shadow FBO: color=R32F texture (stores depth), depth=renderbuffer (for z-test)
+        // Depth-only FBO: no color attachment, draw/read buffers NONE (per-FBO
+        // state in ES 3.0, so setting it once here sticks).
         val fboBuf = intArrayOf(0)
         GLES30.glGenFramebuffers(1, fboBuf, 0)
         shadowMapFbo = fboBuf[0]
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shadowMapFbo)
-        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0,
+        GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT,
             GLES30.GL_TEXTURE_2D, shadowMapTexId, 0)
-        GLES30.glFramebufferRenderbuffer(GLES30.GL_FRAMEBUFFER, GLES30.GL_DEPTH_ATTACHMENT,
-            GLES30.GL_RENDERBUFFER, shadowColorRb)
+        GLES30.glDrawBuffers(1, intArrayOf(GLES30.GL_NONE), 0)
+        GLES30.glReadBuffer(GLES30.GL_NONE)
         val status = GLES30.glCheckFramebufferStatus(GLES30.GL_FRAMEBUFFER)
         if (status != GLES30.GL_FRAMEBUFFER_COMPLETE) {
             Log.e(TAG, "Shadow FBO incomplete: 0x${Integer.toHexString(status)}, shadows disabled")
             shadowEnabled = false
         } else {
-            Log.i(TAG, "Shadow FBO complete (R32F + depth RB), ${shadowMapSize}x${shadowMapSize}")
+            Log.i(TAG, "Shadow FBO complete (depth-only D24, hw-PCF), ${shadowMapSize}x${shadowMapSize}")
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
@@ -1645,16 +1689,86 @@ class GlesModelRenderer {
 
     // ── Shadow Map ──
 
+    // Copy skel.palette (caller must have run skel.update()) into the model's
+    // joint UBO and bind it. Zero-alloc: shared scratch + preallocated buffer.
+    private fun uploadJointPalette(m: GpuModel, skel: com.ashairfoil.prism.scene.SkeletonRuntime) {
+        val uploadJoints = kotlin.math.min(skel.jointCount, MAX_JOINTS_SHADER)
+        System.arraycopy(skel.palette, 0, jointPaletteScratch, 0, uploadJoints * 16)
+        if (uploadJoints < MAX_JOINTS_SHADER) {
+            // Zero-pad to avoid leaking a prior model's palette into unused slots.
+            java.util.Arrays.fill(jointPaletteScratch, uploadJoints * 16, MAX_JOINTS_SHADER * 16, 0f)
+        }
+        jointPaletteBuf.position(0)
+        jointPaletteBuf.put(jointPaletteScratch)
+        jointPaletteBuf.position(0)
+        GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, m.uboJoints)
+        GLES30.glBufferSubData(GLES30.GL_UNIFORM_BUFFER, 0, MAX_JOINTS_SHADER * 64, jointPaletteBuf)
+        GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, 0)
+        GLES30.glBindBufferBase(GLES30.GL_UNIFORM_BUFFER, JOINT_UBO_BINDING, m.uboJoints)
+    }
+
+    private fun fitExpandPoint(px: Float, py: Float, pz: Float) {
+        val b = shadowFitBox
+        if (px < b[0]) b[0] = px; if (py < b[1]) b[1] = py; if (pz < b[2]) b[2] = pz
+        if (px > b[3]) b[3] = px; if (py > b[4]) b[4] = py; if (pz > b[5]) b[5] = pz
+    }
+
+    // R4: tighten the ortho frustum to the union AABB of the models. shadowSpread
+    // (user slider, scene-persisted) stays the CAP — auto-fit only ever shrinks,
+    // so existing scenes/presets keep their meaning and the persistence schema is
+    // untouched. Skinned bounds come from posed joint positions (globalPose,
+    // zero-alloc) plus a flesh pad; unskinned from the load-time bounds sphere.
+    private fun computeShadowFit() {
+        val b = shadowFitBox
+        b[0] = Float.MAX_VALUE; b[1] = Float.MAX_VALUE; b[2] = Float.MAX_VALUE
+        b[3] = -Float.MAX_VALUE; b[4] = -Float.MAX_VALUE; b[5] = -Float.MAX_VALUE
+        var pad = 0.5f  // frustum margin — shadows must not pop at the AABB edge
+        for (m in models) {
+            if (m.indexCount == 0) continue
+            val mm = m.modelMatrix
+            val sc = maxOf(
+                kotlin.math.sqrt(mm[0]*mm[0] + mm[1]*mm[1] + mm[2]*mm[2]),
+                kotlin.math.sqrt(mm[4]*mm[4] + mm[5]*mm[5] + mm[6]*mm[6]),
+                kotlin.math.sqrt(mm[8]*mm[8] + mm[9]*mm[9] + mm[10]*mm[10]))
+            val skel = m.skeleton
+            if (m.isSkinned && skel != null && skel.jointCount > 0) {
+                skel.update()  // refreshes palette too — renderShadowMap uploads it
+                for (j in 0 until skel.jointCount) {
+                    val p = skel.jointWorldPos(j, shadowFitPos)  // model-local, posed
+                    fitExpandPoint(
+                        mm[0]*p[0] + mm[4]*p[1] + mm[8]*p[2] + mm[12],
+                        mm[1]*p[0] + mm[5]*p[1] + mm[9]*p[2] + mm[13],
+                        mm[2]*p[0] + mm[6]*p[1] + mm[10]*p[2] + mm[14])
+                }
+                pad = maxOf(pad, 0.5f + 0.25f * sc)  // joints sit inside the flesh
+            } else {
+                val r = m.boundsRadius * sc
+                val cx = mm[0]*m.boundsCenterX + mm[4]*m.boundsCenterY + mm[8]*m.boundsCenterZ + mm[12]
+                val cy = mm[1]*m.boundsCenterX + mm[5]*m.boundsCenterY + mm[9]*m.boundsCenterZ + mm[13]
+                val cz = mm[2]*m.boundsCenterX + mm[6]*m.boundsCenterY + mm[10]*m.boundsCenterZ + mm[14]
+                fitExpandPoint(cx - r, cy - r, cz - r)
+                fitExpandPoint(cx + r, cy + r, cz + r)
+            }
+        }
+        if (b[0] > b[3]) {  // nothing usable — legacy full-spread frustum at origin
+            shadowTexelWorld = 2f * shadowSpread / shadowMapSize
+            shadowLightMatrix = computeLightSpaceMatrix(0f, 0f, 0f, shadowSpread)
+            return
+        }
+        val hx = (b[3] - b[0]) * 0.5f; val hy = (b[4] - b[1]) * 0.5f; val hz = (b[5] - b[2]) * 0.5f
+        // Half-diagonal covers any light orientation; quantize UP to 0.25m steps
+        // so the per-frame fit doesn't make texel density flicker during dance.
+        var ext = kotlin.math.sqrt(hx*hx + hy*hy + hz*hz) + pad
+        ext = kotlin.math.ceil(ext * 4f) / 4f
+        ext = minOf(shadowSpread, maxOf(ext, 1f))
+        shadowTexelWorld = 2f * ext / shadowMapSize
+        shadowLightMatrix = computeLightSpaceMatrix(
+            (b[0] + b[3]) * 0.5f, (b[1] + b[4]) * 0.5f, (b[2] + b[5]) * 0.5f, ext)
+    }
+
     fun renderShadowMap() {
         if (!initialized || !shadowEnabled || models.isEmpty()) return
-        // Compute average model XZ so shadow frustum travels with the scene.
-        var cx = 0f; var cz = 0f; var n = 0
-        for (m in models) {
-            val mm = m.modelMatrix
-            if (mm.size >= 16) { cx += mm[12]; cz += mm[14]; n++ }
-        }
-        if (n > 0) { cx /= n; cz /= n }
-        shadowLightMatrix = computeLightSpaceMatrix(cx, cz)
+        computeShadowFit()
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, shadowMapFbo)
 
@@ -1667,9 +1781,8 @@ class GlesModelRenderer {
         }
 
         GLES30.glViewport(0, 0, shadowMapSize, shadowMapSize)
-        GLES30.glClearColor(1f, 1f, 1f, 1f)  // depth=1.0 = far = no shadow
-        GLES30.glClearDepthf(1.0f)
-        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+        GLES30.glClearDepthf(1.0f)  // depth=1.0 = far = no shadow (depth-only FBO)
+        GLES30.glClear(GLES30.GL_DEPTH_BUFFER_BIT)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthFunc(GLES30.GL_LESS)
         GLES30.glDepthMask(true)
@@ -1684,13 +1797,15 @@ class GlesModelRenderer {
             if (m.indexCount == 0) continue
             multiplyMat4(shadowLightMatrix, m.modelMatrix, scratchMat4A)
             GLES30.glUniformMatrix4fv(uShadowDepthMVP, 1, false, scratchMat4A, 0)
-            // Tier 4 — shadow pass needs the same skinning as the color pass
-            // or the silhouette detaches from the posed body. Bind the already-
-            // uploaded UBO (color pass did the glBufferSubData) to the shared
-            // binding point and toggle the skin gate.
+            // R4: upload THIS frame's palette (skel.update() already ran in
+            // computeShadowFit). The old bind-only path rendered the depth map
+            // with LAST frame's pose — invisible when only the floor received
+            // shadows, but the new current-pose self-shadow receivers would
+            // expose it as swimming/false shadows at dance speeds (~2-5cm of
+            // limb travel per frame vs a ~3mm bias budget).
             val skel = m.skeleton
             if (m.isSkinned && skel != null && m.uboJoints != 0) {
-                GLES30.glBindBufferBase(GLES30.GL_UNIFORM_BUFFER, JOINT_UBO_BINDING, m.uboJoints)
+                uploadJointPalette(m, skel)
                 GLES30.glUniform1f(uShadowDepthSkinned, 1f)
             } else {
                 GLES30.glUniform1f(uShadowDepthSkinned, 0f)
@@ -1806,6 +1921,21 @@ class GlesModelRenderer {
         if (useSH) {
             GLES30.glUniform3fv(uSH, 9, shCoefficients, 0)
         }
+        // R4 — key-light shadow map on unit 4 (compare state lives on the
+        // texture, so the plain bind gives sampler2DShadow hardware PCF).
+        // Strength 0 makes the shader skip the lookup entirely. The unit
+        // assignment is UNCONDITIONAL: a sampler2DShadow left at its default
+        // unit 0 would type-clash with uBaseColor there → INVALID_OPERATION
+        // at draw → black models whenever shadows are off/fallen back.
+        GLES30.glUniformMatrix4fv(uLightVP, 1, false, shadowLightMatrix, 0)
+        GLES30.glUniform1f(uShadowStrength, if (shadowEnabled) shadowDarkness else 0f)
+        GLES30.glUniform1f(uShadowNormOff, shadowTexelWorld * 1.5f)
+        GLES30.glUniform1i(uModelShadowMap, 4)
+        if (shadowMapTexId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        }
 
         for (m in models) {
             if (m.indexCount == 0) continue
@@ -1868,19 +1998,7 @@ class GlesModelRenderer {
                 // Safe to call every frame — at bind pose this produces identity
                 // jointMatrices (and the shader's LBS degenerates to pass-through).
                 skel.update()
-                val uploadJoints = kotlin.math.min(skel.jointCount, MAX_JOINTS_SHADER)
-                System.arraycopy(skel.palette, 0, jointPaletteScratch, 0, uploadJoints * 16)
-                if (uploadJoints < MAX_JOINTS_SHADER) {
-                    // Zero-pad to avoid leaking a prior model's palette into unused slots.
-                    java.util.Arrays.fill(jointPaletteScratch, uploadJoints * 16, MAX_JOINTS_SHADER * 16, 0f)
-                }
-                val fb = java.nio.ByteBuffer.allocateDirect(MAX_JOINTS_SHADER * 64)
-                    .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                fb.put(jointPaletteScratch); fb.position(0)
-                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, m.uboJoints)
-                GLES30.glBufferSubData(GLES30.GL_UNIFORM_BUFFER, 0, MAX_JOINTS_SHADER * 64, fb)
-                GLES30.glBindBuffer(GLES30.GL_UNIFORM_BUFFER, 0)
-                GLES30.glBindBufferBase(GLES30.GL_UNIFORM_BUFFER, JOINT_UBO_BINDING, m.uboJoints)
+                uploadJointPalette(m, skel)
                 GLES30.glUniform1f(uSkinned, 1f)
             } else {
                 GLES30.glUniform1f(uSkinned, 0f)
@@ -1924,15 +2042,28 @@ class GlesModelRenderer {
         GLES30.glUniform1f(uGridShadowDarkness, if (shadowEnabled) shadowDarkness else 0f)
         GLES30.glUniform1f(uGridShadowSoftness, shadowSoftness)
         GLES30.glUniform1f(uGridLightSize, lightSize)
+        // PCSS kernels are texel-relative in the shader; scale them by
+        // (user-spread texel / fitted texel) so the auto-fit doesn't silently
+        // harden every persisted scene's softness (and pop at extent steps).
+        GLES30.glUniform1f(uGridShadowKernel, 2f * shadowSpread / shadowMapSize / shadowTexelWorld)
 
-        // Bind shadow map to texture unit 0
+        // Shadow map twice: unit 0 = hardware-compare PCF (texture state),
+        // unit 1 = raw depth via shadowRawSampler for the PCSS blocker search.
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
         GLES30.glUniform1i(uGridShadowMap, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
+        GLES30.glBindSampler(1, shadowRawSampler)
+        GLES30.glUniform1i(uGridShadowMapRaw, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
 
         GLES30.glBindVertexArray(gridVao)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_FAN, 0, 4)
         GLES30.glBindVertexArray(0)
+        // MUST unbind — a stale sampler object on unit 1 would force NEAREST/
+        // compare-off onto the next pass's normal-map sampling (renderEye R).
+        GLES30.glBindSampler(1, 0)
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
     }
@@ -1986,14 +2117,20 @@ class GlesModelRenderer {
         GLES30.glDepthMask(false)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
 
-        // Shadow map on texture unit 0
+        // Shadow map twice: unit 0 = hw-compare PCF, unit 1 = raw blocker reads.
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
         GLES30.glUniform1i(uSpShadowMap, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shadowMapTexId)
+        GLES30.glBindSampler(1, shadowRawSampler)
+        GLES30.glUniform1i(uSpShadowMapRaw, 1)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glUniformMatrix4fv(uSpShadowMVP, 1, false, shadowLightMatrix, 0)
         GLES30.glUniform1f(uSpShadowDarkness, shadowDarkness)
         GLES30.glUniform1f(uSpShadowSoftness, shadowSoftness)
         GLES30.glUniform1f(uSpLightSize, lightSize)
+        GLES30.glUniform1f(uSpShadowKernel, 2f * shadowSpread / shadowMapSize / shadowTexelWorld)
 
         for (plane in shadowPlanes) {
             if (plane.label == 3) continue  // skip ceilings (C++: 3=ceiling)
@@ -2010,6 +2147,7 @@ class GlesModelRenderer {
         }
 
         GLES30.glBindVertexArray(0)
+        GLES30.glBindSampler(1, 0)  // see renderGrid — stale sampler poisons unit 1
         GLES30.glDepthMask(true)
         GLES30.glDisable(GLES30.GL_BLEND)
     }
@@ -2401,7 +2539,7 @@ class GlesModelRenderer {
         if (depthRb != 0) GLES30.glDeleteRenderbuffers(1, glIdBuf.also { it[0] = depthRb }, 0)
         if (shadowMapFbo != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = shadowMapFbo }, 0)
         if (shadowMapTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = shadowMapTexId }, 0)
-        if (shadowColorRb != 0) GLES30.glDeleteRenderbuffers(1, glIdBuf.also { it[0] = shadowColorRb }, 0)
+        if (shadowRawSampler != 0) GLES30.glDeleteSamplers(1, glIdBuf.also { it[0] = shadowRawSampler }, 0)
         if (laserVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = laserVao }, 0)
         if (laserVbo != 0) GLES30.glDeleteBuffers(1, glIdBuf.also { it[0] = laserVbo }, 0)
         if (dotVao != 0) GLES30.glDeleteVertexArrays(1, glIdBuf.also { it[0] = dotVao }, 0)
@@ -2805,19 +2943,28 @@ class GlesModelRenderer {
 
     private fun dot3(a: FloatArray, b: FloatArray) = a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 
-    private fun computeLightSpaceMatrix(centerX: Float = 0f, centerZ: Float = 0f): FloatArray {
+    private fun computeLightSpaceMatrix(centerX: Float, centerY: Float, centerZ: Float,
+                                        extent: Float): FloatArray {
         // lightDir points FROM surface TOWARD the light, so camera goes along +lightDir.
-        // Shadow frustum CENTERS on the models (centerX, centerZ from renderShadowMap).
-        // Before this, the light camera was hardcoded at world origin with ±shadowSpread
-        // ortho → models placed in rooms far from origin fell outside the frustum and
-        // cast no shadow. Now the frustum travels with the scene.
+        // R4: frustum centers on the fitted model AABB (XYZ — the old Y=0 target
+        // pushed a tight frustum's vertical extent below a standing dancer's head)
+        // with `extent` from computeShadowFit (≤ shadowSpread).
         val ld = lightDir
         val len = kotlin.math.sqrt(ld[0]*ld[0]+ld[1]*ld[1]+ld[2]*ld[2])
         val nx = ld[0]/len; val ny = ld[1]/len; val nz = ld[2]/len
-        lookAt(centerX + nx*10f, ny*10f, centerZ + nz*10f, centerX, 0f, centerZ, shadowLookAt)
-        val s = shadowSpread
-        ortho(-s, s, -s, s, 0.1f, 30f, shadowOrtho)
-        return multiplyMat4(shadowOrtho, shadowLookAt, shadowResult)
+        lookAt(centerX + nx*10f, centerY + ny*10f, centerZ + nz*10f,
+            centerX, centerY, centerZ, shadowLookAt)
+        ortho(-extent, extent, -extent, extent, 0.1f, 30f, shadowOrtho)
+        val r = multiplyMat4(shadowOrtho, shadowLookAt, shadowResult)
+        // Texel-snap: the fitted center follows posed joints, which move every
+        // frame (breath/idle), so without snapping the whole sample grid drifts
+        // sub-texel per frame and every shadow edge shimmers. Quantize the
+        // clip-space position of the world origin to whole texels (ortho: the
+        // grid is anchored entirely by the matrix translation).
+        val half = shadowMapSize * 0.5f
+        r[12] -= (r[12] * half - kotlin.math.round(r[12] * half)) / half
+        r[13] -= (r[13] * half - kotlin.math.round(r[13] * half)) / half
+        return r
     }
 
     private fun lookAt(eyeX: Float, eyeY: Float, eyeZ: Float,
@@ -2863,6 +3010,10 @@ uniform mat4 uMVP, uModelView, uModel;
 uniform mat3 uNormalMatrix;
 uniform float uHasNormalMap;
 uniform float uSkinned;
+// R4 — key-light shadow: world → light-clip matrix and the normal-offset
+// bias distance (1.5 shadow texels, in meters).
+uniform mat4 uLightVP;
+uniform float uShadowNormOff;
 // Tier 3 Feature 4 — glute deformation. Two influence spheres in model-local
 // space; vertices inside a radius displace outward along their own normal,
 // smoothstep-falloff from inner 30% to edge. Radius = 0 disables the pair
@@ -2879,6 +3030,7 @@ uniform float uGluteBPush;
 out vec3 vNormal, vPosition;
 out vec2 vTexCoord;
 out float vWorldY;
+out vec4 vShadowCoord;
 out mat3 vTBN;
 void main() {
     vec3 pos = aPosition;
@@ -2930,7 +3082,14 @@ void main() {
     vNormal = N;
     vTexCoord = aTexCoord;
     vPosition = (uModelView * vec4(pos, 1.0)).xyz;
-    vWorldY = (uModel * vec4(pos, 1.0)).y;
+    vec4 wp = uModel * vec4(pos, 1.0);
+    vWorldY = wp.y;
+    // R4: shadow lookup coord, offset along the WORLD normal by 1.5 shadow
+    // texels — geometric acne bias, so the fragment side only needs a small
+    // slope term. mat3(uModel) is valid for rotation + uniform scale (the
+    // only model matrices the app constructs).
+    vec3 wN = normalize(mat3(uModel) * nrm);
+    vShadowCoord = uLightVP * vec4(wp.xyz + wN * uShadowNormOff, 1.0);
     if (uHasNormalMap > 0.5) {
         vec3 T = normalize(uNormalMatrix * tan);
         T = normalize(T - dot(T, N) * N);
@@ -2945,11 +3104,15 @@ precision highp float;
 in vec3 vNormal, vPosition;
 in vec2 vTexCoord;
 in float vWorldY;
+in vec4 vShadowCoord;
 in mat3 vTBN;
 uniform sampler2D uBaseColor;
 uniform sampler2D uNormalMap;
 uniform sampler2D uMetRoughMap;
 uniform sampler2D uEmissiveMap;
+// R4 — key-light shadow. sampler2DShadow has no default precision in ES 3.00.
+uniform highp sampler2DShadow uShadowMap;
+uniform float uShadowStrength;
 uniform float uMetallic, uRoughness, uExposure, uLightIntensity, uFillLightIntensity, uAmbientIntensity;
 uniform float uSelected, uClipY, uUseSH, uContrast, uSaturation;
 uniform float uHasNormalMap, uHasMetRoughMap, uHasEmissiveMap;
@@ -2966,6 +3129,30 @@ vec3 evalSH(vec3 n) {
         2.0 * c1 * (uSH[4] * n.x * n.y + uSH[5] * n.y * n.z + uSH[7] * n.x * n.z) +
         c5 * uSH[6] * (3.0 * n.z * n.z - 1.0) +
         c1 * uSH[8] * (n.x * n.x - n.y * n.y));
+}
+
+// R4 — key-light visibility. 4 taps, each hardware-2x2-PCF (LEQUAL compare on
+// the depth texture) = effective 4x4 kernel. The receiver position was already
+// pushed off the surface along the world normal in the vertex shader; the
+// remaining slope bias handles grazing key-light angles. Out-of-frustum = lit
+// (the auto-fit frustum encloses every caster, so nothing outside can occlude).
+float keyShadow(float NdotL) {
+    if (uShadowStrength < 0.005) return 1.0;
+    vec3 pc = vShadowCoord.xyz / vShadowCoord.w * 0.5 + 0.5;
+    if (pc.x < 0.0 || pc.x > 1.0 || pc.y < 0.0 || pc.y > 1.0 || pc.z > 1.0) return 1.0;
+    // Slope bias in WORLD meters (1.5mm·tanθ, capped 6mm), converted to NDC
+    // depth via the fixed 29.9m ortho window (near 0.1 / far 30). Raw NDC
+    // constants here would be 15-60mm of world bias — enough to erase the
+    // finger/chin contact shadows this pass exists to create.
+    float biasW = clamp(0.0015 * sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.05), 0.0, 0.006);
+    float ref = pc.z - biasW * (1.0 / 29.9);
+    vec2 ts = 1.0 / vec2(textureSize(uShadowMap, 0));
+    float lit = texture(uShadowMap, vec3(pc.xy + vec2(-0.75, -0.75) * ts, ref))
+              + texture(uShadowMap, vec3(pc.xy + vec2( 0.75, -0.75) * ts, ref))
+              + texture(uShadowMap, vec3(pc.xy + vec2(-0.75,  0.75) * ts, ref))
+              + texture(uShadowMap, vec3(pc.xy + vec2( 0.75,  0.75) * ts, ref));
+    lit *= 0.25;
+    return 1.0 - (1.0 - lit) * uShadowStrength;
 }
 
 void main() {
@@ -3019,7 +3206,9 @@ void main() {
     float G = (NdotV / (NdotV * (1.0 - k) + k)) * (NdotL / (NdotL * (1.0 - k) + k));
     vec3 spec = D * F * G / (4.0 * NdotV * NdotL + 0.0001);
     vec3 diffuse = albedo * (1.0 - metallic) * (vec3(1.0) - F) / 3.14159265;
-    vec3 color = (diffuse + spec) * NdotL * uLightColor * uLightIntensity;
+    // R4: shadow attenuates ONLY the key light — fill/SH/ambient stay open so
+    // shadowed skin keeps bounce light instead of going to black.
+    vec3 color = (diffuse + spec) * NdotL * keyShadow(NdotL) * uLightColor * uLightIntensity;
 
     // Fill light
     vec3 fillL = normalize(uFillLightDir);
@@ -3109,10 +3298,11 @@ void main() {
 }
 """
 
+// R4: depth-only pass — the FBO has no color attachment (glDrawBuffers NONE),
+// so there is nothing to write; rasterized depth lands in the depth texture.
 private const val SHADOW_FRAGMENT_SHADER = """#version 300 es
 precision highp float;
-out vec4 fragColor;
-void main() { fragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0); }
+void main() { }
 """
 
 private const val LASER_VERTEX_SHADER = """#version 300 es
@@ -3151,23 +3341,30 @@ private const val GRID_FRAGMENT_SHADER = """#version 300 es
 precision highp float;
 in vec3 vWorldPos;
 uniform float uGridScale, uAlpha, uShadowDarkness, uShadowSoftness, uLightSize;
+// R4: (user-spread texel / auto-fitted texel) — keeps the PCSS search and
+// penumbra radii WORLD-sized while the frustum (and thus texel size) auto-fits.
+uniform float uShadowKernel;
 uniform mat4 uShadowMVP;
-uniform sampler2D uShadowMap;
+// R4: same depth texture on two units — uShadowMap compares (hardware 2x2 PCF
+// per tap), uShadowMapRaw reads raw depth (compare-off NEAREST sampler object)
+// for the PCSS blocker search, which a compare-mode sampler cannot provide.
+uniform highp sampler2DShadow uShadowMap;
+uniform highp sampler2D uShadowMapRaw;
 out vec4 fragColor;
 
 float getShadow() {
     vec4 lp = uShadowMVP * vec4(vWorldPos, 1.0);
     vec3 pc = lp.xyz / lp.w * 0.5 + 0.5;
     if (pc.x < 0.0 || pc.x > 1.0 || pc.y < 0.0 || pc.y > 1.0 || pc.z > 1.0) return 0.0;
-    vec2 ts = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 ts = 1.0 / vec2(textureSize(uShadowMapRaw, 0));
     float bias = 0.001;
 
-    // PCSS: blocker search in small neighborhood
-    float searchR = uShadowSoftness * 2.0;
+    // PCSS: blocker search in small neighborhood (raw depth reads)
+    float searchR = uShadowSoftness * 2.0 * uShadowKernel;
     float blockerSum = 0.0, blockerCount = 0.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-            float d = texture(uShadowMap, pc.xy + vec2(float(x), float(y)) * ts * searchR).r;
+            float d = texture(uShadowMapRaw, pc.xy + vec2(float(x), float(y)) * ts * searchR).r;
             if (d < pc.z - bias) { blockerSum += d; blockerCount += 1.0; }
         }
     }
@@ -3175,14 +3372,15 @@ float getShadow() {
 
     // Penumbra: wider PCF when far from blocker, tighter when close
     float avgBlocker = blockerSum / blockerCount;
-    float penumbraScale = clamp((pc.z - avgBlocker) * uLightSize * 10.0, 1.0, uShadowSoftness * 3.0);
+    float penumbraScale = clamp((pc.z - avgBlocker) * uLightSize * 10.0, 1.0, uShadowSoftness * 3.0) * uShadowKernel;
 
-    // Variable-radius PCF (5x5)
+    // Variable-radius PCF (5x5), each tap hardware-2x2-filtered: LEQUAL compare
+    // returns the LIT fraction, so shadow accumulates 1 - lit.
+    float ref = pc.z - bias;
     float shadow = 0.0;
     for (int x = -2; x <= 2; x++) {
         for (int y = -2; y <= 2; y++) {
-            float d = texture(uShadowMap, pc.xy + vec2(float(x), float(y)) * ts * penumbraScale).r;
-            shadow += pc.z - bias > d ? 1.0 : 0.0;
+            shadow += 1.0 - texture(uShadowMap, vec3(pc.xy + vec2(float(x), float(y)) * ts * penumbraScale, ref));
         }
     }
     return shadow / 25.0;
@@ -3269,8 +3467,10 @@ precision highp float;
 in vec3 vWorldPos;
 in vec2 vUV;
 uniform mat4 uShadowMVP;
-uniform sampler2D uShadowMap;
-uniform float uShadowDarkness, uShadowSoftness, uLightSize;
+// R4: split samplers + world-invariant kernel scale — see GRID_FRAGMENT_SHADER.
+uniform highp sampler2DShadow uShadowMap;
+uniform highp sampler2D uShadowMapRaw;
+uniform float uShadowDarkness, uShadowSoftness, uLightSize, uShadowKernel;
 out vec4 fragColor;
 
 void main() {
@@ -3278,28 +3478,28 @@ void main() {
     vec3 pc = lp.xyz / lp.w * 0.5 + 0.5;
     if (pc.x < 0.0 || pc.x > 1.0 || pc.y < 0.0 || pc.y > 1.0 || pc.z > 1.0) discard;
 
-    vec2 ts = 1.0 / vec2(textureSize(uShadowMap, 0));
+    vec2 ts = 1.0 / vec2(textureSize(uShadowMapRaw, 0));
     float bias = 0.001;
 
-    // PCSS blocker search
-    float searchR = uShadowSoftness * 2.0;
+    // PCSS blocker search (raw depth reads)
+    float searchR = uShadowSoftness * 2.0 * uShadowKernel;
     float blockerSum = 0.0, blockerCount = 0.0;
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-            float d = texture(uShadowMap, pc.xy + vec2(float(x), float(y)) * ts * searchR).r;
+            float d = texture(uShadowMapRaw, pc.xy + vec2(float(x), float(y)) * ts * searchR).r;
             if (d < pc.z - bias) { blockerSum += d; blockerCount += 1.0; }
         }
     }
     if (blockerCount < 0.5) discard;
 
     float avgBlocker = blockerSum / blockerCount;
-    float penumbraScale = clamp((pc.z - avgBlocker) * uLightSize * 10.0, 1.0, uShadowSoftness * 3.0);
+    float penumbraScale = clamp((pc.z - avgBlocker) * uLightSize * 10.0, 1.0, uShadowSoftness * 3.0) * uShadowKernel;
 
+    float ref = pc.z - bias;
     float shadow = 0.0;
     for (int x = -2; x <= 2; x++) {
         for (int y = -2; y <= 2; y++) {
-            float d = texture(uShadowMap, pc.xy + vec2(float(x), float(y)) * ts * penumbraScale).r;
-            shadow += pc.z - bias > d ? 1.0 : 0.0;
+            shadow += 1.0 - texture(uShadowMap, vec3(pc.xy + vec2(float(x), float(y)) * ts * penumbraScale, ref));
         }
     }
     shadow /= 25.0;

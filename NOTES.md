@@ -874,3 +874,95 @@ AA, specular crawl, D1 timing feel, D3 idle life) + Quest 3 pass still open.
 Mid-session the documented MainActivity panel-race SIGABRT fired once
 (launcher-icon path, framework bug, NOT today's code) — direct viewer
 launch worked around it as documented.
+
+## [Claude] 2026-06-10 — R4 implemented (dancer self-shadow + depth-texture hw-PCF + auto-fit frustum)
+
+R4 items 1-4 from RENDERING_REALISM_PLAN.md, end-to-end in GlesModelRenderer.kt
+ONLY (the AABB fit lives in the renderer; FilamentModelActivity unchanged).
+`assembleDebug` BUILD SUCCESSFUL both flavors; installed on Galaxy XR (@.179).
+NOT yet verified on-head. Quest 3 not connected — its pass is pending. Item 5
+(per-bone capsule AO grounding bonus) deferred as a follow-on.
+
+### What landed
+- **Depth-texture shadow map**: R32F color target + depth RB replaced by ONE
+  GL_DEPTH_COMPONENT24 texture, no color attachment, glDrawBuffers(GL_NONE).
+  Removes the silent EXT_color_buffer_float dependency. COMPARE_REF_TO_TEXTURE
+  + LEQUAL + LINEAR live on the TEXTURE state → plain binds give sampler2DShadow
+  hardware 2x2 PCF. SHADOW_FRAGMENT_SHADER is now an empty main() (depth-only;
+  also fine for renderOcclusionPlanes which reuses the program with ColorMask
+  off). FBO-incomplete → shadowEnabled=false fallback retained.
+- **PCSS raw reads via sampler object**: one compare-off NEAREST sampler
+  (shadowRawSampler) bound on unit 1 over the same depth texture for the
+  grid/SP blocker search (LINEAR on a compare-off depth texture is undefined
+  in ES 3.0). UNBOUND (glBindSampler(1,0)) at the end of renderGrid AND
+  renderShadowPlanes — a stale sampler object would force NEAREST/compare-off
+  onto the next pass's normal-map unit (renderShadowPlanes(L) runs immediately
+  before renderEye(R)). Grid/SP 5x5 PCF loops now use hw-compare taps.
+- **Model receives + self-casts**: VERTEX_SHADER adds vShadowCoord =
+  uLightVP * (worldPos + worldNormal * uShadowNormOff) — normal-offset bias of
+  1.5 fitted texels (~2.6mm); FRAGMENT_SHADER keyShadow(): 4 hw-PCF taps
+  (effective 4x4), slope bias 1.5mm·tanθ capped 6mm IN WORLD UNITS, multiplies
+  ONLY the key-light term — fill/SH/ambient stay open so shadowed skin keeps
+  bounce light. Shadow strength = shadowDarkness (one knob, scenes compatible).
+  FOOTGUN fixed pre-build: the model program's sampler2DShadow unit is set
+  UNCONDITIONALLY to 4 — left at default 0 it type-clashes with uBaseColor
+  (two sampler types on one unit = INVALID_OPERATION at draw = black models
+  whenever shadows are off).
+- **Auto-fit frustum**: union AABB per frame — posed joints (skel.globalPose,
+  zero-alloc scratch) + 0.25·scale flesh pad for skinned, load-time bounds
+  sphere for unskinned; +0.5m margin, extent quantized UP to 0.25m, capped at
+  shadowSpread (slider semantics + persistence preserved: auto-fit only ever
+  SHRINKS). lookAt target moved y=0 → AABB center (tight frustum at floor
+  height would clip the head). 1.7m dancer → ext ≈ 1.75m → 1.7mm texels (was
+  7.8mm at spread 8) — the texel density that makes chin/finger self-shadow
+  resolvable per the audit.
+
+### Adversarial review: 4 lenses × 3 refuters (46 agents) → 14 raw, 8 confirmed, 4 distinct majors — ALL FIXED
+1. **Stale-pose shadow map (the big one, 3 lenses found it independently):**
+   renderShadowMap bound the joint UBO but its contents were LAST frame's
+   color-pass upload — depth map at pose N-1 vs self-shadow receivers at pose
+   N = swimming/false shadows at dance speeds (2-5cm/frame >> 3mm bias).
+   Fix: uploadJointPalette() helper; the shadow pass uploads THIS frame's
+   palette (computeShadowFit already ran skel.update()). Bonus: the helper
+   uses a PREALLOCATED direct buffer, killing renderEye's per-model-per-eye
+   ByteBuffer.allocateDirect — a pre-existing Invariant-6 violation the audit
+   had flagged separately.
+2. **Slope bias was 15-60mm world**: the audit spec's clamp(0.0005·tanθ, 0,
+   0.002) is NDC over the FIXED 0.1..30 ortho depth window (29.9m/unit) —
+   would have erased exactly the finger/chin contact shadows R4 targets.
+   Re-expressed in world meters ÷ 29.9.
+3. **PCSS kernels texel-relative**: 4.6× tighter texels silently hardened
+   every persisted scene's floor softness + popped at extent quantization
+   steps. New uShadowKernel = (spread texel / fitted texel) scales blocker
+   search + penumbra → world-invariant, legacy look preserved.
+4. **No texel snapping**: fitted center follows joints, which BREATHE every
+   frame (D3 idle layer) → sub-texel grid drift → all edges shimmer. Light
+   matrix translation now snapped to whole texels (world-origin anchor).
+   Extent-step pops absorbed by the same quantization.
+
+### ON-HEAD VERIFICATION CHECKLIST (R4)
+1. Logcat tag ChloeVR-GLRenderer: expect `Shadow FBO complete (depth-only D24,
+   hw-PCF), 2048x2048`. If `Shadow FBO incomplete` → capture hex, app falls
+   back to no shadows (not a regression, but R4 is off).
+2. THE acceptance test (user aesthetic bar, 2026-06-10): re-run the Chelsea
+   8K no-PBR vs full-PBR A/B. Full PBR should now show occlusion under chin/
+   breasts/arms that moves with the pose — the thing baked shading cannot do.
+3. Self-shadow quality: chin/neck, hand-on-hip, arm-across-torso during a
+   dance. Watch for: acne/striping (bias too small now — front-face culling
+   should prevent it), peter-panning at grazing key angles (normal offset too
+   big), swimming shadows during fast moves (would mean the stale-pose fix
+   didn't take).
+4. Floor shadow look should be UNCHANGED from yesterday (uShadowKernel
+   compensation) — if it got hard/small, that fix regressed.
+5. Shadow edges on an IDLE (breathing) model must be still — shimmer means
+   texel snapping isn't holding (check extent pops when she raises arms).
+6. Perf: depth-only pass is cheaper than the old R32F color write, but the
+   model fragment shader gained 4 shadow taps. Watch GPU frame time vs the
+   72Hz budget; if tight, the keyShadow early-out (uShadowStrength<0.005)
+   means turning shadow darkness to 0 fully recovers the cost.
+7. Quest 3: install + repeat 1/3/4 (same Adreno-class hw depth-compare; no
+   Samsung-runtime involvement in this change — pure GLES).
+
+NEXT per the standing directive: R5 (specular IBL split-sum — Tier B baked
+cmgen cubemaps first, rescues Quest; Tier A live cubemap probe is CONFIRMED
+viable on the OTA'd Galaxy XR runtime), interleaved with DANCE plan D4/D5.
