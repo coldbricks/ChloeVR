@@ -4309,6 +4309,13 @@ class FilamentModelActivity : ComponentActivity() {
                                     m.idleWasDanced = danced
                                     com.ashairfoil.prism.scene.IdleLayer.apply(
                                         m, idleSkel, danced, idleTSec, idleNow, idleMl)
+                                    // D10 — flesh spring bones, the LAST pose writer:
+                                    // reacts to dance + idle + whole-model motion. No-op
+                                    // on rigs without the Breast/Glute helper bones.
+                                    val sps = m.springState ?: com.ashairfoil.prism.scene.SpringBoneLayer.State()
+                                        .also { m.springState = it }
+                                    com.ashairfoil.prism.scene.SpringBoneLayer.apply(
+                                        sps, idleSkel, idleGpu.modelMatrix, idleNow)
                                 }
                             }
 

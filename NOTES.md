@@ -1125,3 +1125,76 @@ for his next session, no slider fiddling needed.
    with how good the mocap variety now looks.
 4. R5 specular IBL (eye catchlights; rescues Quest) per the WHOA list.
 5. D9 Phase B (EDGE clips on the 5090) — unblocked, machinery validated.
+
+## [Claude] 2026-06-10 — D10 v1 implemented (spring-bone flesh, same night as D9)
+
+User call: with the shader glute dead, build the real thing NOW. v1 =
+Breast_L/R + Glute_L/R verlet springs. Hair chains, the ±8% volume squash,
+and colliders are explicit follow-ups. Build-verified, installed on Galaxy
+XR; flesh GLB pushed to /sdcard/RIGGED/ChloeVR_Bikini_Flesh.glb. NOT yet
+verified on-head. NOTE: NO adversarial review yet — monthly spend limit;
+run one after reset (retarget-style math + GL state lenses) before trusting
+this deeply.
+
+### Blender pipeline (offline)
+- NEW tools/flesh_rig/add_flesh_bones.py — headless (Blender 4.5):
+  `blender --background --python add_flesh_bones.py -- in.glb out.glb`
+  Appends Breast_L/R (Spine02) + Glute_L/R (Pelvis); helper local +Y points
+  along the flesh protrusion; spherical-falloff weights ×0.5 ×PARENT-REGION
+  MASK (vertex must already be skinned to Spine01/02 / Pelvis-Waist-thighs)
+  so hair/straps can't ride the flesh bones; exporter renormalizes to 4
+  influences. Placement auto-derived: lateral axis from the upper-arm pair,
+  forward from chest-bulge sign, per-side apex = centroid of the top-1.5cm
+  slab inside an ANATOMICAL lateral window (0.03-0.105h breasts,
+  0.022-0.095h glutes — without the window floor, the push-up CLEAVAGE
+  wins and both bones land on the sternum), then L/R symmetrized.
+  Hard-won traps baked into the script: Blender world is Z-UP after glTF
+  import (first run placed glutes at the FEET); FootPivot GLBs carry an
+  Icosphere marker that must not win the body-mesh pick; single-vertex
+  apexes are pose-asymmetry-fragile (one outlier moved a glute 11cm).
+- NEW tools/flesh_rig/verify_flesh_glb.py — gate before any sideload:
+  topo order (SkeletonRuntime check(p<j) hard-crash), ≤64 joints,
+  single body primitive (loader reads ONLY meshes[0].primitives[0]),
+  JOINTS_0=UNSIGNED_BYTE, weights normalized, helpers share (max ≤0.45),
+  textures survive round-trip. Bikini flesh GLB: PASS (43 joints,
+  breasts ±4.1cm @74%h, glutes ±5.4cm @53%h, max helper weight 0.35).
+
+### Runtime
+- NEW scene/SpringBoneLayer.kt (object + per-model State on PlacedModel):
+  VRM-style single-segment verlet per helper; drag/stiff = breasts
+  0.40/0.65, glutes 0.50/0.80; TAIL_LEN 0.05·modelScale; KS=16 stiffness
+  dimensioning (~15%/frame return at 72Hz). World-space tails:
+  parentWorld = modelMatrix × PREV-frame globalPose (audit-blessed lag) so
+  dance + idle breath + user grabs all excite flesh. Tail dir → Rodrigues
+  align of bind +Y → localPose write (rotation-only, bind translation
+  kept). Helpers are leaves; skel.update() later composes the palette.
+  Zero-alloc: singleton scratch (render thread only) + once-per-model State.
+- Wired as the LAST pose writer, right after IdleLayer.apply in the idle
+  block (runs for every skinned non-preview model, dancing or not).
+  No-ops on rigs without helper bones (old GLBs unaffected).
+- Self-review catch (no agent fleet available): the globalPose
+  "uninitialized" guard originally tested diagonal entries — Tripo bone
+  frames sit near ±90° where all three diagonals can be ~0 legitimately,
+  which would have frozen those springs FOREVER. Now a column-norm test.
+
+### ON-HEAD CHECKLIST (D10 v1) — load ChloeVR_Bikini_Flesh.glb
+1. Logcat: model loads with 43 joints, no SkeletonRuntime topo crash, no
+   shader issues (palette is min(43,64) — well under).
+2. Statue + grab: pick her up and shake — breasts/glutes should lag and
+   settle (~100-200ms), no jitter at rest, no permanent offset.
+3. Dance (mocap presets): flesh should counter the beat subtly. Watch for:
+   too-springy (lower KS or raise drag), too-stiff/dead (raise KS or lower
+   drag), visible skin seam at the weight-sphere edge (radius/falloff), any
+   spike/flip when she spins fast (anti-parallel guard).
+4. Old non-flesh GLBs: zero behavior change.
+5. Perf: 4 springs ≈ nothing, but confirm no new frame drops.
+TUNING knobs all in SpringBoneLayer companion consts (CHAIN_DRAG/STIFF,
+TAIL_LEN, KS) — single-file retune.
+
+### Follow-ups (in order)
+- POST-RESET adversarial review of SpringBoneLayer math + the Blender
+  weight pass.
+- On-head tune pass; consider exposing drag/stiff on the CHARACTER panel.
+- Hair chains (2-4 bones under Head) + Spine02 sphere collider; leaf squash
+  ±8%; run add_flesh_bones.py on the other production GLBs (Ash, lisaQuad)
+  once the bikini verdict is in.

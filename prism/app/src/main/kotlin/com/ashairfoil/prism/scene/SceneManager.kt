@@ -185,6 +185,9 @@ class SceneManager(
         // once (the dance pass freezes knees/thighs/neck in their last pose
         // while IdleLayer re-binds Root — feet would float; review finding).
         var idleWasDanced: Boolean = false,
+        // D10 — verlet spring state for flesh helper bones (Breast/Glute_L/R).
+        // Lazily allocated once per model; null until first skinned frame.
+        var springState: SpringBoneLayer.State? = null,
         // ── BREATH (Tier1-G): gaze-saccade FSM (Tier1-F) state ──
         // Camera-aware yaw bias. Behaves like a dancer glancing at the viewer:
         // hold a heading 2–6s, then SACCADE (fast snap with BACK overshoot) to
