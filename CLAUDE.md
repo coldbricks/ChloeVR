@@ -173,15 +173,20 @@ CRITICAL: When this conversation is compacted, the following MUST survive in the
 ## Active Work Context
 
 **Current task:** Check `NOTES.md` and `git log --oneline -10` for latest state.
-**Latest verified commit:** 19648f8 on master (R2 Follow Room Light, Galaxy XR verified)
+**Latest verified commit:** 4f9db95 on master (D9 Phase A Mixamo mocap VERIFIED
+on Galaxy XR + glute-push defaults OFF; R4 self-shadows implemented, on-head
+pass pending)
 **Standing directive (2026-06-10):** implement ALL of `RENDERING_REALISM_PLAN.md`
-(R1–R16) and ALL of `DANCE_REALISM_PLAN.md` (D1–D12). R1 (4x MSAA + specular
-AA) and D1+D3 (beat-grid epoch + anticipation; skeletal breath + idle layer)
-implemented + installed on Galaxy XR — on-head verification pending for all
-three (checklists in NOTES.md). Next: continue down both plans (rendering:
-R3 normal maps → R4 shadows → R5 IBL; dance: D2 glute fix → D4 onset
-plumbing → D5 loop-tell). Re-verify plan line cites before editing —
-R1/R2/R6/D1/D3 landed after the audit and shifted files.
+(R1–R16) and ALL of `DANCE_REALISM_PLAN.md` (D1–D12). Landed so far: R1, R2,
+R3, R4, R6, D1, D3, D9 Phase A (R2/R6/D9 device-verified; R1 logcat-verified).
+D2 deprioritized by user; glute shader push now defaults OFF everywhere —
+D10 spring bones are the flesh path. Next queue (NOTES.md session close):
+D10 spring bones → D4 onset plumbing + Media3 PCM tap → D5 loop-tell →
+R5 specular IBL → D9 Phase B. Re-verify plan line cites before editing —
+plans' cites predate most of the landed work. Quest 3 owes a full pass
+(R1/R4/D9). Direct viewer launch (`am start -n
+com.ashairfoil.prism/.FilamentModelActivity`) is the reliable entry — the
+MainActivity panel-race SIGABRT is a live framework bug.
 
 **FIXED in this session (BUILD SUCCESSFUL):**
 - Panel Y coordinate mapping: changed `by = v * 1024f` to `by = v * 1280f`, all hit regions now match UiRenderer's 1280-tall bitmap

@@ -1074,3 +1074,54 @@ C:\tmp GLB path → warned-fallback accepted, noted above.
   verifies on-head.
 - Review fleet died on the MONTHLY SPEND LIMIT mid-verification — future
   sessions: verifier-vote thinning, prefer 1 refuter/finding until reset.
+
+## [Claude] 2026-06-10 — ✅ D9 Phase A ON-HEAD VERIFIED (same night) + glute verdict
+
+User on-head with the Mixamo articulation live. Verdict: "soooo amazing /
+i am impressed af." The mocap layer is the real thing — presets finally read
+as distinct dancers. Artifacts pulled to the PC Desktop:
+ChloeVR_D9_mocap_first_run.mp4 (75MB screen recording) + 3 screenshots.
+
+### Verdicts captured live
+1. **Mocap articulation: VERIFIED.** No spinning, no gull-wing, no fold-
+   throughs reported across the presets he walked. The conjugation holds on
+   hardware.
+2. **Glute shader-push: KILLED as a default** (commit 4f9db95). Screenshot
+   evidence: CLUB HEAT's authored 5cm push @ 19cm radius reads as a balloon
+   next to real mocap motion. gluteBasePush now defaults 0 on EVERY preset
+   (authored values deleted from TWERK/CLUB HEAT/SQUAT SHAKE); CHARACTER
+   panel GLUTE PUSH slider remains the opt-in; D10 spring bones are the
+   real flesh-motion replacement and just became the user's clear direction.
+3. **Arch: CLEARED.** First suspected alongside the glute, then user
+   corrected — "actually its good, its just that glute setting." stanceArch
+   keeps all authored values + the 0.35 default (mocap presets included).
+   The brief layer-preset arch/glute-zero override was reverted in favor of
+   the global glute-only default change.
+4. Launch trouble at session start was the KNOWN MainActivity panel-race
+   SIGABRT (fired twice consecutively, 20:39+20:40 — bad coin flips, NOT
+   tonight's code; headset itself was booted fine). Direct viewer launch
+   worked as documented. Recommend making the direct launch the habitual
+   entry until the framework bug dies.
+
+### Installed at session close
+Glute-off-default build (4f9db95) installed on Galaxy XR (@.179) — ready
+for his next session, no slider fiddling needed.
+
+### Still open from the D9 checklist (verify opportunistically next session)
+- Scene save → reload with a Mixamo preset active (review fix 1 — code says
+  rehydrated, not yet exercised on-device).
+- 5+ minute single-preset run watching for any arm drift (nothing observed
+  in tonight's shorter runs).
+- Multi-dancer (2+ models, same Mixamo preset) perf sanity.
+- Quest 3: install + the whole D9 pass (also still owes R4 + R1 passes).
+
+### Go-forward queue (user: "I will do some stuff later")
+1. **D10 spring-bone flesh chains** — promoted: with the shader glute dead
+   as a default, this is now THE flesh-motion path (Blender helper-bone
+   pipeline + VRM verlet runtime). Week-plus item.
+2. D4 (hear THIS song: onset plumbing + PLL + downbeat vote) + Media3 PCM
+   tap — biggest remaining musicality lever.
+3. D5 loop-tell kill (shuffle bag, bar-boundary transitions) — cheap, pairs
+   with how good the mocap variety now looks.
+4. R5 specular IBL (eye catchlights; rescues Quest) per the WHOA list.
+5. D9 Phase B (EDGE clips on the 5090) — unblocked, machinery validated.
