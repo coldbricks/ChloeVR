@@ -18,19 +18,47 @@ object FilePicker {
     fun isAudioFile(file: File): Boolean = file.extension.lowercase() in AUDIO_EXTENSIONS
 
     /**
-     * Rigged-GLB heuristic (cheap, no file I/O). Matches if the file lives
-     * under a `RIGGED` folder anywhere in the path, or if its name has a
-     * `RIGGED_` prefix / `_rigged` suffix (DeoVR-style convention, same
-     * pattern as our `_180_sbs` / `_360_tb` projection markers in
-     * FileNameParser). Use this for UI filtering; the GLB loader still
-     * handles both rigged and unrigged files correctly at runtime.
+     * Rigged-GLB detection. Fast paths first: a `RIGGED` folder anywhere in
+     * the path or a `RIGGED_` / `_rigged` name marker (DeoVR-style). Falls
+     * back to CONTENT: a real `"skins"` + `"joints"` definition in the GLB's
+     * JSON chunk — required since the rename feature gave the dancers clean
+     * names ("Chelsea.glb") and the whole rigged library vanished from the
+     * filter. Content verdicts are cached per (path, lastModified); the
+     * background GLB scan pre-warms the cache so the picker never pays the
+     * read on the render thread.
      */
+    private val riggedSniffCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, Boolean>>()
+
     fun isRiggedGlb(file: File): Boolean {
         if (!isModelFile(file)) return false
         val path = file.absolutePath.replace('\\', '/').lowercase()
         if ("/rigged/" in path) return true
         val name = file.nameWithoutExtension.lowercase()
-        return name.startsWith("rigged_") || name.endsWith("_rigged") || name.contains("+rigged") || name.contains(" rigged")
+        if (name.startsWith("rigged_") || name.endsWith("_rigged") ||
+            name.contains("+rigged") || name.contains(" rigged")) return true
+
+        val mod = file.lastModified()
+        riggedSniffCache[file.absolutePath]?.let { (m, r) -> if (m == mod) return r }
+        val rigged = try {
+            file.inputStream().use { ins ->
+                // GLB layout: 12-byte header, then the JSON chunk. 256KB covers
+                // the structural keys of every Tripo/Mixamo rig we ship; the
+                // folder/name conventions above remain the override for outliers.
+                val buf = ByteArray(262144)
+                var off = 0
+                while (off < buf.size) {
+                    val n = ins.read(buf, off, buf.size - off)
+                    if (n <= 0) break
+                    off += n
+                }
+                val text = String(buf, 0, off, Charsets.ISO_8859_1)
+                text.contains("\"skins\"") && text.contains("\"joints\"")
+            }
+        } catch (e: Exception) {
+            false
+        }
+        riggedSniffCache[file.absolutePath] = mod to rigged
+        return rigged
     }
 
     fun listVideoFiles(context: Context): List<File> {

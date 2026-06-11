@@ -508,7 +508,12 @@ class FilamentModelActivity : ComponentActivity() {
             val glbFiles = FilePicker.listVideoFiles(this).filter { FilePicker.isModelFile(it) }
             availableGlbFiles = glbFiles
             try { cacheFile.writeText(glbFiles.joinToString("\n") { it.absolutePath }) } catch (e: Exception) { Log.w(TAG, "GLB cache write failed: ${e.message}") }
-            Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated)")
+            // Pre-warm the rigged content-sniff cache HERE (background thread)
+            // so the picker's filter never does file I/O on the render thread.
+            var riggedCount = 0
+            for (f in glbFiles) if (FilePicker.isRiggedGlb(f)) riggedCount++
+            Log.i(TAG, "Scanned ${glbFiles.size} GLB files (cache updated, $riggedCount rigged)")
+            if (glbPickerMode) uiNeedsRefresh = true
         }.start()
 
         Thread {
