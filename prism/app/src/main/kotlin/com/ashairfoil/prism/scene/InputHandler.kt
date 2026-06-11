@@ -2388,17 +2388,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     })
                     activity.finish()
                 } else {
-                    // moveTaskToBack is a no-op for immersive apps on Horizon
-                    // OS (verified via logcat: action fired, nothing happened).
-                    // Launching the HOME intent brings vrshell forward instead;
-                    // the scene stays alive in the background.
-                    Log.i(TAG, "Action: HOME — launching system home")
-                    activity.runOnUiThread {
-                        activity.startActivity(android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
-                            addCategory(android.content.Intent.CATEGORY_HOME)
-                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        })
-                    }
+                    // Horizon gotchas, both live-verified: moveTaskToBack is a
+                    // no-op for immersive apps, and launching the HOME intent
+                    // DEMOTES the app to an invisible empty 2D panel (user saw
+                    // only passthrough + a floating panel handle). finish() is
+                    // the clean exit: onDestroy autosaves the scene (LAST
+                    // restores it) and Horizon home takes over.
+                    Log.i(TAG, "Action: HOME — finishing to system home (scene autosaves)")
+                    activity.runOnUiThread { activity.finish() }
                 }
                 return
             } else if (activity.menuVisible && hoveredActionButton == 102) {

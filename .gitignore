@@ -27,3 +27,10 @@ build-tools/
 platforms/
 platform-tools/
 __pycache__/
+
+# Local headset/app-data backups (never commit)
+*_backup_*/
+*_backup_*.tar
+tmp_*.mp4
+tmp_*.jpg
+tmp_bugframes/
