@@ -201,6 +201,7 @@ class FilamentModelActivity : ComponentActivity() {
     // Draggable panel state
     private var panelPosX = 0f; private var panelPosY = 1.6f; private var panelPosZ = -1.2f
     internal var panelRotX = 0f; internal var panelRotY = 0f; internal var panelRotZ = 0f; internal var panelRotW = 1f
+    private var lastPanelBillboardYaw = -10f  // deadband memory; out-of-range so the first frame always recomputes
     internal val PANEL_WIDTH = 1.1f   // meters in world space (base size)
     internal val PANEL_HEIGHT = 1.25f
     internal var panelScale = 1.0f    // zoom factor (0.5..2.0)
@@ -282,6 +283,14 @@ class FilamentModelActivity : ComponentActivity() {
     internal var audioReactor: AudioReactor? = null
     @Volatile internal var beatReactorEnabled = false
     @Volatile internal var beatIntensity = 1.0f
+    // STROBE master switch: gates the beat lighting flash (key/fill/ambient
+    // hue pulse, exposure/emissive, bloom) AND the room color wash while the
+    // reactor keeps running for dance/haptics/BPM. The scope buttons and MIX
+    // slider each kill only part of it (light COLOR terms don't scale with
+    // MIX), so without this there was no way to fully stop the dancer being
+    // tinted hot-pink/green on every beat. Persisted.
+    @Volatile internal var beatFlashEnabled = true
+    private var beatFlashRestorePending = false
 
     // ── Climax Engine state ──
     private var hapticLeadBuffer = 0f  // buffered pct sent 1 frame early
@@ -442,6 +451,7 @@ class FilamentModelActivity : ComponentActivity() {
         for (s in menuSectionCollapsed.indices) {
             menuSectionCollapsed[s] = (collapsedBits shr s) and 1 == 1
         }
+        beatFlashEnabled = SettingsManager.beatFlashEnabled
         spatialAnchors = SpatialAnchorManager(this)
 
         showMessage("Initializing 3D renderer...")
@@ -2492,8 +2502,35 @@ class FilamentModelActivity : ComponentActivity() {
                                 // Straight box output: pct * bi. No accumulation, no drift.
                                 val intensity = pct * bi
 
-                                val affectsModels = reactor.washScope != AudioReactor.WashScope.ROOM
-                                val affectsRoom = reactor.washScope != AudioReactor.WashScope.MODELS
+                                val affectsModels = beatFlashEnabled && reactor.washScope != AudioReactor.WashScope.ROOM
+                                val affectsRoom = beatFlashEnabled && reactor.washScope != AudioReactor.WashScope.MODELS
+
+                                // One-shot restore when the STROBE switch flips
+                                // off mid-reactor: without it the lights freeze
+                                // at the last flash frame (tinted pink/green).
+                                if (!beatFlashEnabled && beatFlashRestorePending) {
+                                    gr.ambientIntensity = beatBaseAmbient
+                                    gr.lightIntensity = beatBaseLight
+                                    gr.fillLightIntensity = beatBaseFill
+                                    gr.shadowDarkness = beatBaseShadow
+                                    gr.bloomThreshold = 0.8f
+                                    gr.bloomIntensity = 0.3f
+                                    // Colors back to their between-beats (pct=0) values
+                                    setRgb(gr.lightColor, 1f, 0.95f, 0.9f)
+                                    setRgb(gr.fillLightColor, 0.85f, 0.9f, 1f)
+                                    setRgb(gr.ambientColor, 0.3f, 0.3f, 0.3f)
+                                    for (placed in models) {
+                                        val gpuModel = gr.getModel(placed.gpuModelId)
+                                        if (gpuModel != null) {
+                                            gpuModel.exposure = placed.exposure
+                                            setRgb(gpuModel.emissiveFactor, 1f, 1f, 1f)
+                                            gpuModel.saturation = placed.saturation
+                                        }
+                                    }
+                                    beatFlashRestorePending = false
+                                } else if (beatFlashEnabled) {
+                                    beatFlashRestorePending = true
+                                }
 
                                 if (affectsModels) {
                                     // Ambient: direct beat-driven glow
@@ -2548,7 +2585,7 @@ class FilamentModelActivity : ComponentActivity() {
                                 // passages don't bloom at full magnitude. Uses the slow lightPct
                                 // envelope (lightAttackMs / lightReleaseMs) so kicks ramp in like
                                 // a stage blinder warming up, not a snappy digital flash.
-                                if (gr.bloomEnabled) {
+                                if (gr.bloomEnabled && beatFlashEnabled) {
                                     gr.bloomThreshold = (0.8f - lightPct * bi * 0.3f * ml).coerceAtLeast(0.2f)
                                     gr.bloomIntensity = 0.3f + lightPct * bi * 0.5f * ml
                                 }
@@ -2676,26 +2713,31 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (uiRenderer.pendingUiBitmap != null) {
                                     uiRenderer.pendingUiBitmap = null
                                 }
-                                // Upload flip buffer every frame — tryLock so we never stall the render thread
-                                val quadTex = nativeAcquireUiImage()
-                                if (quadTex > 0) {
-                                    if (uiRenderer.bitmapLock.tryLock()) {
-                                        try {
-                                            val fb = uiRenderer.uiFlipBitmap
-                                            if (fb != null) {
+                                // tryLock BEFORE acquiring a swapchain image. Acquiring
+                                // first and releasing without an upload composited that
+                                // image's ~3-frame-old content (rotating swapchain) —
+                                // the cursor visibly snapped BACKWARD whenever the UI
+                                // thread held the lock mid flip-copy. Skipping the
+                                // acquire entirely keeps the compositor on the last
+                                // released image instead: no stall, no time travel.
+                                if (uiRenderer.bitmapLock.tryLock()) {
+                                    try {
+                                        val fb = uiRenderer.uiFlipBitmap
+                                        if (fb != null) {
+                                            val quadTex = nativeAcquireUiImage()
+                                            if (quadTex > 0) {
                                                 android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, quadTex)
                                                 android.opengl.GLUtils.texSubImage2D(
                                                     android.opengl.GLES30.GL_TEXTURE_2D,
                                                     0, 0, 0, fb
                                                 )
                                                 android.opengl.GLES30.glBindTexture(android.opengl.GLES30.GL_TEXTURE_2D, 0)
+                                                nativeReleaseUiImage()
                                             }
-                                        } finally {
-                                            uiRenderer.bitmapLock.unlock()
                                         }
+                                    } finally {
+                                        uiRenderer.bitmapLock.unlock()
                                     }
-                                    // Always release swapchain image even if we skipped the upload
-                                    nativeReleaseUiImage()
                                 }
                             }
 
@@ -4285,7 +4327,14 @@ class FilamentModelActivity : ComponentActivity() {
                                             m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
                                         }
                                         sceneManager.updateModelTransform(m)
-                                    } else if (m.animHasA && m.animHasB) {
+                                    } else if (m.animHasA && m.animHasB &&
+                                        !(inputHandler.grabbing && i == sceneManager.selectedModelIndex)) {
+                                        // While the user carries a SHAKE-armed model, this
+                                        // branch must not write pos/rot: it rebuilds them
+                                        // from the OLD A/B anchors every frame, so the
+                                        // grab's pose (written after frame submit) would
+                                        // never render. The grip-release rebase translates
+                                        // A/B to the drop point; she resumes shaking there.
                                         val t = (rawFill * m.animResponse).coerceIn(0f, 1f)
                                         val s = t * t * (3f - 2f * t)  // smoothstep
                                         val a = m.animPoseA; val b = m.animPoseB
@@ -4652,14 +4701,20 @@ class FilamentModelActivity : ComponentActivity() {
                 if (menuVisible) {
                     val gr = glesRenderer
                     if (gr != null) {
-                        // Recompute rotation every frame so panel always faces user
+                        // Re-billboard toward the user, but only past a ~0.6°
+                        // deadband: camPos comes from the LEFT-EYE view matrix,
+                        // so per-frame head roll/micro-motion wobbled the panel
+                        // normal and made edge hover hits flicker.
                         val dx = camPosX - gr.panelX
                         val dz = camPosZ - gr.panelZ
                         val yaw = kotlin.math.atan2(dx, dz)
-                        panelRotX = 0f
-                        panelRotY = kotlin.math.sin(yaw * 0.5f)
-                        panelRotZ = 0f
-                        panelRotW = kotlin.math.cos(yaw * 0.5f)
+                        if (kotlin.math.abs(yaw - lastPanelBillboardYaw) > 0.01f) {
+                            lastPanelBillboardYaw = yaw
+                            panelRotX = 0f
+                            panelRotY = kotlin.math.sin(yaw * 0.5f)
+                            panelRotZ = 0f
+                            panelRotW = kotlin.math.cos(yaw * 0.5f)
+                        }
 
                         nativeSetUiPose(gr.panelX, gr.panelY, gr.panelZ,
                             panelRotX, panelRotY, panelRotZ, panelRotW)
@@ -4705,16 +4760,33 @@ class FilamentModelActivity : ComponentActivity() {
     }
 
     /** Render HUD text panel to bitmap — delegates to UiRenderer */
-    internal fun renderUiToBitmap() = uiRenderer.renderUiToBitmap()
+    internal fun renderUiToBitmap() {
+        // Guard: the bitmap render reads sceneManager/audioReactor lateinits;
+        // a request posted before init (startup toast) must be a no-op.
+        if (!running) return
+        uiRenderer.renderUiToBitmap()
+    }
 
     internal fun requestUiRender() {
+        // Coalesce, don't drop: requests arriving while a render is in flight
+        // used to be discarded (the caller had already cleared uiNeedsRefresh),
+        // which halved the cursor update rate whenever a Canvas pass outlasted
+        // one display frame. Dirty flag re-queues exactly one follow-up render.
+        uiRenderDirty = true
         if (uiRenderQueued) return
         uiRenderQueued = true
-        uiRenderHandler.post {
+        uiRenderHandler.post(uiRenderRunnable)
+    }
+
+    @Volatile private var uiRenderDirty = false
+    private val uiRenderRunnable = object : Runnable {
+        override fun run() {
+            uiRenderDirty = false
             try {
                 renderUiToBitmap()
             } finally {
                 uiRenderQueued = false
+                if (uiRenderDirty) requestUiRender()
             }
         }
     }

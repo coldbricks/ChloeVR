@@ -1299,3 +1299,77 @@ SELinux). User data lesson: scenes live in filesDir/scenes and DIE on
 uninstall — back up first (binary-safe: cmd /c redirect, NOT PS `>`;
 restore: `adb shell -T "run-as ... tar xf -" < tar`).
 Scenes + prefs restored; user confirmed GLBs + scenes visible.
+
+## [Claude] 2026-06-11 (evening) — Live Quest co-debug: input overhaul + PCM beat tap
+
+Marathon live session, user in-headset reporting over chat while I drove
+adb/logcat/video-frame forensics. Wireless adb at 192.168.1.156:5555.
+
+### THE latch bug (root of half the evening)
+With the menu open, handle() returned at the end of the menu branch on
+non-grip frames — the grab-release edge was UNREACHABLE, so `grabbing`
+latched true forever after any menu-open grab. Killed ALL trigger clicks
+(edge detect gated on !grabbing), made SHAKE look dead, and the next grip
+(incl. menu title bar) teleported the dancer to the hand ("Chelsea slammed
+into the menu"). Fix: `if (!gripForGrab && !grabbing) return` — an active
+grab falls through so release processes. Verified live.
+
+### Grab/dance/menu fixes (device-verified)
+- Grab onset baked that frame's dance offset into the carried anchor
+  (jump + per-grab drift): grabBaseOffset/grabStartBaseRot captured at
+  onset, live mirror subtracts; yaw delta applied to ONSET base rot.
+- Panel-drag grip hysteresis (0.7 engage / 0.4 hold) + blockGrip on end —
+  grip jitter could hand the squeeze to a model grab mid-drag.
+- suppressWorldByPanel halo 1.5x→1.1x (1.5x blocked clicking/grabbing the
+  dancer standing NEXT to the panel — "I cant unselect").
+- carryAnimAnchors moves A/B only as a PAIR (lone captured A stays put).
+- Menu-close mid-grip runs reanchorAnimOnGrabEnd (extracted helper);
+  Y-cycle + A-button no-op mid-grab; SHAKE/DANCE toast when no selection.
+- Dance stop + beat OFF reset scaleMul (was frozen mid-squash-STRETCH).
+- HOME (quest row-3 mid): moveTaskToBack is a Horizon no-op → HOME intent.
+- ♪ BEAT also on row-4 middle (was SENSOR HUD — still on hardware MENU).
+
+### Quest Visualizer is DEAD — PCM tap shipped
+Instrumented the FFT callbacks: energy=0 on EVERY frame even attached to
+the in-app ExoPlayer session. Horizon zero-fills the effects tap. Explains
+the forever-dead spectrum bars + auto-BPM never locking; "she dances
+anyway" = tap-tempo free-running oscillator (bpmLockedStable floors
+musicalLevel at 0.5). FIX: TeeAudioProcessor sink in AudioPlayer's
+DefaultAudioSink chain → AudioReactor.feedPcm (mono mix, Hann window,
+in-house radix-2 1024-pt FFT, mags scaled to Visualizer range) → shared
+processMagnitudes (@Synchronized, split out of processFft). Visualizer
+suppressed while PCM fresh (<500ms); kept as galaxyxr/system fallback.
+Panel "reactor idle" status now respects fresh PCM.
+
+### FLASH (strobe) master toggle — default OFF per user
+"shes going NUTS" videos = beat lighting tinting dancers hot-pink/green.
+Two paths (GLES light/emissive/bloom flash + room wash); scope buttons and
+MIX cannot fully kill either (light COLOR terms ignore MIX). New
+beatFlashEnabled gates affectsModels/affectsRoom + bloom with one-shot
+restore incl. light colors. Button id 149 "FLASH" right of the blend row.
+Persisted; default FALSE ("I like em but like dont default to them").
+
+### showMessage was INVISIBLE in-XR (huge, longstanding)
+UiRenderer.showMessage = setContentView TextView → never visible once the
+OpenXR session owns the display. EVERY toast (BLE errors, mark prompts)
+silently lost on Quest. Now an in-bitmap toast strip at the bottom of the
+menu panel (3.5s, drawn in the cursor-overlay lambda). 2D path kept only
+pre-XR. REGRESSION+FIX same night: the onCreate "Initializing..." toast
+posted a UI render before sceneManager existed → boot-loop crash on the
+ChloeVR-UiRender thread. showMessage gates on activity.running and the
+renderUiToBitmap() wrapper early-returns when !running.
+
+### VIBES: a first-time toy could NEVER pair
+Auto-connect required address ∈ knownDeviceAddresses but VR has no manual
+connect UI → new Lovense discovered, logged, timed out, feedback invisible.
+Now auto-connects to the FIRST Lovense found. Not yet tested vs hardware.
+
+### Verify next session
+1. Spectrum bars + LOCK BPM self-lock on in-app audio (PCM tap).
+2. FLASH toggle mid-song; default-off on fresh data.
+3. VIBES with toy powered (auto-pair + visible toasts).
+4. HOME → Horizon home. 5. Galaxy XR regression pass (Visualizer fallback;
+   pollInput predictedDisplayTime timebase on Samsung runtime).
+Leftovers: recenter event unhandled; gizmo-drag dance amplitude visually
+collapses during drag (cosmetic); session-0 Visualizer not resumed after
+pause (moot on Quest with PCM tap).

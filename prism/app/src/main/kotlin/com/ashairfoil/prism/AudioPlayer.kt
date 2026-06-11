@@ -23,6 +23,39 @@ class AudioPlayer(private val context: Context) {
     private var playerListener: Player.Listener? = null
     private var equalizer: Equalizer? = null
 
+    // ── PCM tap ──
+    // Quest zero-fills the Visualizer effects tap (energy=0 on every callback,
+    // even on our own session), so the beat reactor takes raw PCM straight out
+    // of the ExoPlayer pipeline — upstream of Horizon's spatializer.
+    // Called on ExoPlayer's audio thread: (buffer, sampleRateHz, channelCount).
+    var onPcmChunk: ((java.nio.ByteBuffer, Int, Int) -> Unit)? = null
+    @Volatile private var teeSampleRate = 48000
+    @Volatile private var teeChannels = 2
+    private val teeSink = object : androidx.media3.exoplayer.audio.TeeAudioProcessor.AudioBufferSink {
+        override fun flush(sampleRateHz: Int, channelCount: Int, encoding: Int) {
+            teeSampleRate = sampleRateHz
+            teeChannels = channelCount
+        }
+        override fun handleBuffer(buffer: java.nio.ByteBuffer) {
+            onPcmChunk?.invoke(buffer, teeSampleRate, teeChannels)
+        }
+    }
+    private val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+        override fun buildAudioSink(
+            context: Context,
+            enableFloatOutput: Boolean,
+            enableAudioTrackPlaybackParams: Boolean
+        ): androidx.media3.exoplayer.audio.AudioSink {
+            return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                .setAudioProcessorChain(
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(
+                        androidx.media3.exoplayer.audio.TeeAudioProcessor(teeSink)
+                    )
+                )
+                .build()
+        }
+    }
+
     // ExoPlayer enforces application-thread access (main thread here), but the
     // menu bitmap now renders on a background thread. Cache position/duration
     // on a 30 Hz main-thread ticker so UI reads can't cross the thread boundary.
@@ -163,7 +196,7 @@ class AudioPlayer(private val context: Context) {
             }
         }
         playerListener = listener
-        player = ExoPlayer.Builder(context).build().apply {
+        player = ExoPlayer.Builder(context, renderersFactory).build().apply {
             setMediaItem(MediaItem.fromUri(android.net.Uri.fromFile(file)))
             playWhenReady = true
             this.repeatMode = when (this@AudioPlayer.repeatMode) {

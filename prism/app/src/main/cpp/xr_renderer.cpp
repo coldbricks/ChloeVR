@@ -1115,9 +1115,14 @@ bool XrRenderer::pollInput(ControllerState& state) {
     if (XR_SUCCEEDED(xrGetActionStateBoolean(session_, &getInfo, &ab)) && ab.isActive)
         state.menuClick = ab.currentState ? 1.0f : 0.0f;
 
-    // Hand poses
-    XrTime now = 0;
-    {
+    // Hand poses. Locate at the frame's predictedDisplayTime — the same
+    // timebase the views and the compositor quad use. The old CLOCK_MONOTONIC
+    // "now" sampled unpredicted, unfiltered poses against a prediction-
+    // stabilized panel (jittery laser at panel edges), and on runtimes where
+    // xrConvertTimespecTimeToTimeKHR was unavailable the raw-nanosecond
+    // fallback produced a bogus XrTime → locate failures → laser dropouts.
+    XrTime now = lastPredictedTime_;
+    if (now == 0) {
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         if (convertTimeToXr_) {

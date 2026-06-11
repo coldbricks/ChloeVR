@@ -343,6 +343,32 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val saveNameCursor = activity.saveNameCursor
         val glbPickerScrollOffset = activity.glbPickerScrollOffset
         val drawLaserCursorOverlay = {
+            // In-world toast strip — drawn into the panel bitmap because the
+            // setContentView TextView path is INVISIBLE once the OpenXR session
+            // owns the display (every "BLE permissions needed" / "No Lovense
+            // found" / "Aim at hip" message was silently lost on Quest).
+            val tt = toastText
+            if (tt != null) {
+                if (System.currentTimeMillis() < toastUntilMs) {
+                    tmpPaint2.style = Paint.Style.FILL; tmpPaint2.shader = null
+                    tmpPaint2.maskFilter = null
+                    tmpPaint2.color = 0xE6151020.toInt()
+                    canvas.drawRoundRect(60f, uiH - 70f, uiW - 60f, uiH - 22f, 14f, 14f, tmpPaint2)
+                    tmpPaint2.style = Paint.Style.STROKE; tmpPaint2.strokeWidth = 1.5f
+                    tmpPaint2.color = ThemeManager.PINK_SOFT
+                    canvas.drawRoundRect(60f, uiH - 70f, uiW - 60f, uiH - 22f, 14f, 14f, tmpPaint2)
+                    tmpPaint2.style = Paint.Style.FILL
+                    tmpPaint.textSize = 22f; tmpPaint.textAlign = Paint.Align.CENTER
+                    tmpPaint.color = ThemeManager.TEXT_BRIGHT; tmpPaint.isFakeBoldText = false
+                    tmpPaint.maskFilter = null
+                    canvas.drawText(tt, uiW / 2f, uiH - 39f, tmpPaint)
+                    tmpPaint.textAlign = Paint.Align.LEFT
+                    // Keep refreshing so the toast disappears on time
+                    activity.uiNeedsRefresh = true
+                } else {
+                    toastText = null
+                }
+            }
             if (beatCursorX > 0f && beatCursorY > 0f) {
                 // Soft glow ring
                 cursorGlowPaint.strokeWidth = 3f
@@ -551,6 +577,23 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 cx += bw + 4f
             }
 
+            // FLASH (strobe) master toggle — the beat lighting flash + room
+            // wash are optional ("I like em but don't default to them"); the
+            // scope buttons above only re-aim it, they can't kill it.
+            run {
+                val isOn = activity.beatFlashEnabled
+                val isHov = hoveredActionButton == 149
+                p.color = if (isOn) ThemeManager.RED
+                    else if (isHov) (ThemeManager.RED and 0x00FFFFFF) or 0x60000000
+                    else (ThemeManager.RED and 0x00FFFFFF) or 0x20000000
+                canvas.drawRoundRect(930f, 130f, 994f, 148f, 4f, 4f, p)
+                p.color = if (isOn || isHov) ThemeManager.TEXT_BRIGHT else ThemeManager.TEXT_DIM
+                p.isFakeBoldText = isOn; p.textSize = 14f
+                p.textAlign = Paint.Align.CENTER
+                canvas.drawText("FLASH", 962f, 145f, p)
+                p.textAlign = Paint.Align.LEFT; p.isFakeBoldText = false
+            }
+
             // ── SPECTRUM ANALYZER ──
             val specLeft = 40f; val specRight = uiW - 80f; val specTop = 155f; val specH = 280f
             val specBot = specTop + specH
@@ -646,7 +689,10 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 statusMsg = reactorErr
                 statusUrgent = true
                 statusHint = "Settings > Apps > ChloeVR > Permissions > Microphone: Allow"
-            } else if (reactor == null || !reactor.isActive) {
+            } else if (reactor == null ||
+                (!reactor.isActive && System.currentTimeMillis() - reactor.lastCaptureMs > 2000L)) {
+                // isActive tracks the Visualizer; the PCM tap feeds without it,
+                // so only call the reactor idle when there's no fresh data.
                 statusMsg = "reactor idle — toggle BeatReactor ON"
             } else if (reactor.lastCaptureMs == 0L) {
                 statusMsg = "waiting for audio data…"
@@ -2276,13 +2322,20 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         drawButton(r2b2, r2b2 + btn3W, row2Y, "DELETE", hoveredActionButton == 107, ThemeManager.RED)
         drawButton(r2b3, r2b3 + btn3W, row2Y, "RESET", hoveredActionButton == 108, ThemeManager.ORANGE)
 
-        // Row 3: AUDIO / FILE MENU / EXIT
+        // Row 3: AUDIO / FILE MENU-or-HOME / EXIT
+        // FILE MENU returns to MainActivity, which is galaxyxr-only. On Quest
+        // the slot was a dead button ("can't exit the scenario") — there it
+        // minimizes to Horizon home instead, leaving the scene running.
         val row3Y = row2Y + btnH + btnGap
+        val midRow3Label = if (com.ashairfoil.prism.BuildConfig.FLAVOR == "galaxyxr") "FILE MENU" else "HOME"
         drawButton(r2b1, r2b1 + btn3W, row3Y, "AUDIO", hoveredActionButton == 109, ThemeManager.PURPLE_DEEP)
-        drawButton(r2b2, r2b2 + btn3W, row3Y, "FILE MENU", hoveredActionButton == 100, ThemeManager.PINK_HOT)
+        drawButton(r2b2, r2b2 + btn3W, row3Y, midRow3Label, hoveredActionButton == 100, ThemeManager.PINK_HOT)
         drawButton(r2b3, r2b3 + btn3W, row3Y, "EXIT", hoveredActionButton == 102, ThemeManager.RED)
 
-        // Row 4: LIGHTS / SENSOR HUD / BLOOM (or anchor-clear when 3rd slot is re-purposed).
+        // Row 4: LIGHTS / ♪ BEAT / BLOOM (or anchor-clear when 3rd slot is re-purposed).
+        // Middle slot was SENSOR HUD — that lives on the controller MENU button;
+        // ♪ BEAT here sits at the user's natural gaze height ("I have to keep
+        // looking up high" about the top banner). Banner stays as a 2nd entry.
         // When spatial anchors are supported, replace BLOOM's slot with a combined
         // "CLEAR ANCH" label so the user has a visible control without overflowing the panel.
         // Bloom remains accessible via param adjustments (BeatReactor setting).
@@ -2290,7 +2343,9 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val anchorMgr = try { activity.spatialAnchors } catch (_: UninitializedPropertyAccessException) { null }
         val anchorsUiVisible = anchorMgr != null && anchorMgr.isSupported()
         drawButton(r2b1, r2b1 + btn3W, row4Y, "LIGHTS", hoveredActionButton == 130, ThemeManager.GOLD_WARM)
-        drawButton(r2b2, r2b2 + btn3W, row4Y, "SENSOR HUD", hoveredActionButton == 134, ThemeManager.GREEN)
+        drawButton(r2b2, r2b2 + btn3W, row4Y,
+            if (beatReactorEnabled) "♪ BEAT ●" else "♪ BEAT",
+            hoveredActionButton == 134, ThemeManager.PINK_HOT)
         if (anchorsUiVisible) {
             val n = anchorMgr.allRecords().size
             val lbl = if (n > 0) "CLR ANCH ($n)" else "CLR ANCH"
@@ -2520,15 +2575,32 @@ class UiRenderer(private val activity: FilamentModelActivity) {
 
     // ── UI Helpers ──
 
+    // In-world toast state (drawn by drawLaserCursorOverlay into the panel bitmap)
+    @Volatile private var toastText: String? = null
+    @Volatile private var toastUntilMs = 0L
+
     fun showMessage(text: String) {
-        // Callers on the render loop thread must not touch Views directly.
-        activity.runOnUiThread {
-            activity.setContentView(TextView(activity).apply {
-                this.text = text
-                textSize = 20f
-                setTextColor(ThemeManager.TEXT_BRIGHT)
-                gravity = Gravity.CENTER
-            })
+        // In-world toast on the menu panel — the only surface the user can
+        // actually see inside the OpenXR session. Only render once the XR
+        // loop is alive: onCreate's "Initializing..." message fires before
+        // sceneManager exists, and renderUiToBitmap reads it (boot crash).
+        toastText = text
+        toastUntilMs = System.currentTimeMillis() + 3500L
+        if (activity.running) {
+            activity.uiNeedsRefresh = true
+            activity.requestUiRender()
+        }
+        // Legacy 2D view path retained for pre-XR startup messages only
+        // ("Initializing 3D renderer..." before the session exists).
+        if (!activity.running) {
+            activity.runOnUiThread {
+                activity.setContentView(TextView(activity).apply {
+                    this.text = text
+                    textSize = 20f
+                    setTextColor(ThemeManager.TEXT_BRIGHT)
+                    gravity = Gravity.CENTER
+                })
+            }
         }
     }
 

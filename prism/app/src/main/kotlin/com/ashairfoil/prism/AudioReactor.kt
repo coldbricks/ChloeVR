@@ -378,7 +378,13 @@ class AudioReactor {
                         lastCaptureMs = System.currentTimeMillis()
                         callCount++
                         if (callCount <= 3 || callCount % 200 == 0) {
-                            Log.i(TAG, "FFT #$callCount: ${fft.size} bytes, rate=$samplingRate")
+                            // Log payload energy too — Quest can deliver healthy-
+                            // looking callbacks whose content is all zeros (the
+                            // spatializer bypasses the effects tap). Size alone
+                            // proves nothing.
+                            var energy = 0L
+                            for (b in fft) energy += kotlin.math.abs(b.toInt()).toLong()
+                            Log.i(TAG, "FFT #$callCount: ${fft.size} bytes, rate=$samplingRate, energy=$energy")
                         }
                         processFft(fft, samplingRate)
                     }
@@ -458,22 +464,13 @@ class AudioReactor {
      */
     private fun processFft(fft: ByteArray, samplingRate: Int) {
         if (!enabled) return
+        // PCM tap owns the pipeline while it's feeding (Quest zero-fills the
+        // Visualizer; its empty frames would interleave with real PCM data).
+        if (System.currentTimeMillis() - lastPcmMs < 500L) return
 
         val binCount = fft.size / 2
         // samplingRate from Visualizer is in milliHz, convert to Hz
         val nyquist = (samplingRate / 1000f) / 2f
-        val freqPerBin = nyquist / binCount
-
-        // Max theoretical magnitude: sqrt(127^2 + 127^2) ~ 180
-        // Use a moderate normalization so sensitivity can boost it
-        val normValue = 128f
-
-        // Clear temp bins
-        for (j in 0 until DISPLAY_BINS) { tempBins[j] = 0f; tempBinMax[j] = 0f }
-
-        var bassE = 0f; var bassCnt = 0
-        var midE = 0f; var midCnt = 0
-        var highE = 0f; var highCnt = 0
 
         // Pre-compute FFT magnitudes into vibesMagBuf so we can reuse them
         // for both the display bin mapping and the Chloe-Vibes engine (avoids
@@ -489,6 +486,28 @@ class AudioReactor {
             val imag = fft[2 * i + 1].toFloat()
             mags[i] = kotlin.math.sqrt(real * real + imag * imag)
         }
+
+        processMagnitudes(mags, binCount, nyquist)
+    }
+
+    // Shared tail of the analysis pipeline: magnitudes (Visualizer-byte scale,
+    // ~0..180 for full signal) -> display bins + band meters + vibes engine.
+    // Entered from the Visualizer callback thread OR the ExoPlayer PCM-tap
+    // thread — synchronized so the two can't interleave during handover.
+    @Synchronized
+    private fun processMagnitudes(mags: FloatArray, binCount: Int, nyquist: Float) {
+        val freqPerBin = nyquist / binCount
+
+        // Max theoretical magnitude: sqrt(127^2 + 127^2) ~ 180
+        // Use a moderate normalization so sensitivity can boost it
+        val normValue = 128f
+
+        // Clear temp bins
+        for (j in 0 until DISPLAY_BINS) { tempBins[j] = 0f; tempBinMax[j] = 0f }
+
+        var bassE = 0f; var bassCnt = 0
+        var midE = 0f; var midCnt = 0
+        var highE = 0f; var highCnt = 0
 
         for (i in 1 until binCount) {
             // Normalize and apply sensitivity as display gain
@@ -538,6 +557,103 @@ class AudioReactor {
                 mags[i] = mags[i] / 128f * sensitivity
             }
             vibesEngine.processVisualizerFFT(mags)
+        }
+    }
+
+    // ── PCM tap (Quest path) ────────────────────────────────────────────
+    // Horizon OS zero-fills the Visualizer effects tap (verified: energy=0 on
+    // every FFT callback, even on the app's own ExoPlayer session), so the
+    // in-app player hands us raw PCM from upstream of the spatializer and we
+    // FFT it ourselves. The Visualizer stays as fallback for platforms where
+    // it works (Galaxy XR / system audio).
+    @Volatile private var lastPcmMs = 0L
+    private val PCM_N = 1024                       // FFT size (power of two)
+    private val pcmWindow = FloatArray(PCM_N)      // mono accumulation window
+    private var pcmFill = 0
+    private val fftRe = FloatArray(PCM_N)
+    private val fftIm = FloatArray(PCM_N)
+    private val hann = FloatArray(PCM_N) { 0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * it / (PCM_N - 1)).toFloat()) }
+    private val pcmMags = FloatArray(PCM_N / 2)
+
+    /**
+     * Feed raw 16-bit PCM from the player pipeline (ExoPlayer audio thread).
+     * Mixes to mono, windows, FFTs, and pushes magnitudes through the same
+     * pipeline as the Visualizer path (scaled to the same ~0..180 range so
+     * GAIN/box tunings carry over).
+     */
+    fun feedPcm(buffer: java.nio.ByteBuffer, sampleRateHz: Int, channelCount: Int) {
+        if (!enabled || channelCount <= 0) return
+        val bytesPerFrame = 2 * channelCount
+        while (buffer.remaining() >= bytesPerFrame) {
+            var acc = 0
+            for (c in 0 until channelCount) {
+                val lo = buffer.get().toInt() and 0xFF
+                val hi = buffer.get().toInt()
+                acc += (hi shl 8) or lo
+            }
+            pcmWindow[pcmFill++] = acc / (channelCount * 32768f)
+            if (pcmFill >= PCM_N) {
+                pcmFill = 0
+                processPcmWindow(sampleRateHz)
+            }
+        }
+    }
+
+    private fun processPcmWindow(sampleRateHz: Int) {
+        // Window + load
+        for (i in 0 until PCM_N) {
+            fftRe[i] = pcmWindow[i] * hann[i]
+            fftIm[i] = 0f
+        }
+        fft(fftRe, fftIm)
+        // One-sided magnitudes scaled to Visualizer-byte range: full-scale
+        // sine (Hann coherent gain 0.5) -> 2*|X|/(N*0.5) = 1.0 -> *127.
+        val scale = 127f * 2f / (PCM_N * 0.5f)
+        pcmMags[0] = 0f
+        for (i in 1 until PCM_N / 2) {
+            pcmMags[i] = kotlin.math.sqrt(fftRe[i] * fftRe[i] + fftIm[i] * fftIm[i]) * scale
+        }
+        lastPcmMs = System.currentTimeMillis()
+        lastCaptureMs = lastPcmMs
+        processMagnitudes(pcmMags, PCM_N / 2, sampleRateHz / 2f)
+    }
+
+    // Iterative in-place radix-2 FFT (zero allocation; N = PCM_N).
+    private fun fft(re: FloatArray, im: FloatArray) {
+        val n = re.size
+        // Bit-reversal permutation
+        var j = 0
+        for (i in 0 until n - 1) {
+            if (i < j) {
+                var t = re[i]; re[i] = re[j]; re[j] = t
+                t = im[i]; im[i] = im[j]; im[j] = t
+            }
+            var m = n shr 1
+            while (m in 1..j) { j -= m; m = m shr 1 }
+            j += m
+        }
+        // Butterflies
+        var len = 2
+        while (len <= n) {
+            val ang = (-2.0 * Math.PI / len)
+            val wR = kotlin.math.cos(ang).toFloat()
+            val wI = kotlin.math.sin(ang).toFloat()
+            var i = 0
+            while (i < n) {
+                var curR = 1f; var curI = 0f
+                for (k in 0 until len / 2) {
+                    val aR = re[i + k]; val aI = im[i + k]
+                    val bR = re[i + k + len / 2] * curR - im[i + k + len / 2] * curI
+                    val bI = re[i + k + len / 2] * curI + im[i + k + len / 2] * curR
+                    re[i + k] = aR + bR; im[i + k] = aI + bI
+                    re[i + k + len / 2] = aR - bR; im[i + k + len / 2] = aI - bI
+                    val nR = curR * wR - curI * wI
+                    curI = curR * wI + curI * wR
+                    curR = nR
+                }
+                i += len
+            }
+            len = len shl 1
         }
     }
 

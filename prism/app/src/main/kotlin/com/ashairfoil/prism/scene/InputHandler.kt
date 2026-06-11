@@ -61,6 +61,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private var grabOffset = floatArrayOf(0f, 0f, 0f)
     private var grabStartAimRot = floatArrayOf(0f, 0f, 0f, 1f)
     private var grabStartModelRot = floatArrayOf(0f, 0f, 0f, 1f)
+    // Dance offset between the danced pose and animBasePose at grab onset.
+    // The live base mirror subtracts it — mirroring the danced pose directly
+    // baked that instant's dance offset (several cm mid-preset) into the
+    // anchor: a visible JUMP at grab start plus drift on every grab cycle.
+    private val grabBaseOffset = floatArrayOf(0f, 0f, 0f)
+    private val grabStartBaseRot = floatArrayOf(0f, 0f, 0f, 1f)
 
     // Laser / selection (preallocated, written in-place)
     val laserHandPos = floatArrayOf(0f, 0f, 0f)
@@ -118,6 +124,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
     private var lastHoveredMenuParam = -1
     var hoveredActionButton = -1
     private var lastHoveredActionButton = -1
+
+    // Panel-edge stickiness + world-interaction guard. wasLaserOnPanel widens
+    // the accept rect 6% while hovering (kills border flicker); the guard
+    // counter keeps world clicks/grabs blocked for a few frames after the
+    // panel plane test is lost to a grazing angle or a tracking blip.
+    private var wasLaserOnPanel = false
+    private var panelGuardFrames = 0
+    private val PANEL_GUARD_FRAMES = 8  // ~110ms at 72Hz
 
     // GLB picker hover
     var hoveredGlbIndex = -1
@@ -571,11 +585,79 @@ class InputHandler(private val activity: FilamentModelActivity) {
         set(value) { activity.sceneManager.selectedModelIndex = value }
     private inline val yeetingModels get() = activity.sceneManager.yeetingModels
 
+    // Carry the anim anchors along with any externally-imposed translation.
+    // The dance loop rebuilds pose from animBasePose every frame (and legacy
+    // SHAKE from animPoseA/B), so a mover that shifts only model.pos gets
+    // rubber-banded back to the old anchor — the "she hovers around a fixed
+    // point" bug. Translation only: rotation movers handle the base quat
+    // themselves, and shake A/B rotation is owned by the grip-release rebase.
+    private fun carryAnimAnchors(m: SceneManager.PlacedModel, dx: Float, dy: Float, dz: Float) {
+        if (dx == 0f && dy == 0f && dz == 0f) return
+        if (m.animHasBase) {
+            m.animBasePose[0] += dx; m.animBasePose[1] += dy; m.animBasePose[2] += dz
+        }
+        // A/B move only as a PAIR. A half-captured shake (A set, B pending)
+        // must leave A planted — "capture A, move her, capture B" is the whole
+        // workflow; carrying a lone A along would collapse the arc to zero.
+        if (m.animHasA && m.animHasB) {
+            m.animPoseA[0] += dx; m.animPoseA[1] += dy; m.animPoseA[2] += dz
+            m.animPoseB[0] += dx; m.animPoseB[1] += dy; m.animPoseB[2] += dz
+        }
+    }
+
+    // Re-anchor the anim poses to wherever the model is NOW. Shared between
+    // the grip-release path and the B-button menu close (which force-ends an
+    // active grab) — without it the menu-close path snapped a carried SHAKE
+    // model back to its pre-grab anchors.
+    private fun reanchorAnimOnGrabEnd(model: SceneManager.PlacedModel) {
+        // animBasePose is kept in sync live by the active-grab path, so skip
+        // the re-anchor for dancing models — a copy of model.posX/Y/Z here
+        // ALREADY INCLUDES one frame of dance offset (bob / breath / jitter),
+        // and every grab cycle baked a few cm of permanent drift into the
+        // base; across a few grabs she floated 30+ cm off the floor. For
+        // non-dancing (shake) animations the re-anchor is still needed
+        // because animPoseA/B aren't updated during grab.
+        val wasDancing = model.animHasBase && (
+            model.danceYawDeg != 0f || model.dancePitchDeg != 0f ||
+            model.danceYMeters != 0f)
+        if (model.animHasBase && !wasDancing) {
+            model.animBasePose[0] = model.posX; model.animBasePose[1] = model.posY; model.animBasePose[2] = model.posZ
+            model.animBasePose[3] = model.rotX; model.animBasePose[4] = model.rotY
+            model.animBasePose[5] = model.rotZ; model.animBasePose[6] = model.rotW
+        }
+        if (model.animHasA && model.animHasB) {
+            // Shift both A and B by the delta between old A-anchor and new pose so
+            // the shake arc moves with the model.
+            val dx = model.posX - model.animPoseA[0]
+            val dy = model.posY - model.animPoseA[1]
+            val dz = model.posZ - model.animPoseA[2]
+            model.animPoseA[0] += dx; model.animPoseA[1] += dy; model.animPoseA[2] += dz
+            model.animPoseB[0] += dx; model.animPoseB[1] += dy; model.animPoseB[2] += dz
+            // Rotation: snap A to current rot; keep B's relative rotation against A.
+            val oldAX = model.animPoseA[3]; val oldAY = model.animPoseA[4]
+            val oldAZ = model.animPoseA[5]; val oldAW = model.animPoseA[6]
+            // Compute relative: bRel = B * conj(A)
+            val bRelX = model.animPoseB[3] * oldAW - model.animPoseB[6] * oldAX - model.animPoseB[4] * oldAZ + model.animPoseB[5] * oldAY
+            val bRelY = model.animPoseB[4] * oldAW - model.animPoseB[6] * oldAY - model.animPoseB[5] * oldAX + model.animPoseB[3] * oldAZ
+            val bRelZ = model.animPoseB[5] * oldAW - model.animPoseB[6] * oldAZ - model.animPoseB[3] * oldAY + model.animPoseB[4] * oldAX
+            val bRelW = model.animPoseB[6] * oldAW + model.animPoseB[3] * oldAX + model.animPoseB[4] * oldAY + model.animPoseB[5] * oldAZ
+            model.animPoseA[3] = model.rotX; model.animPoseA[4] = model.rotY
+            model.animPoseA[5] = model.rotZ; model.animPoseA[6] = model.rotW
+            // B = bRel * newA
+            model.animPoseB[3] = bRelW * model.rotX + bRelX * model.rotW + bRelY * model.rotZ - bRelZ * model.rotY
+            model.animPoseB[4] = bRelW * model.rotY - bRelX * model.rotZ + bRelY * model.rotW + bRelZ * model.rotX
+            model.animPoseB[5] = bRelW * model.rotZ + bRelX * model.rotY - bRelY * model.rotX + bRelZ * model.rotW
+            model.animPoseB[6] = bRelW * model.rotW - bRelX * model.rotX - bRelY * model.rotY - bRelZ * model.rotZ
+        }
+    }
+
     // A button's world-side action: double-tap = deselect, single tap = snap
     // to floor. Shared between the no-menu path and the BEAT panel (shake and
     // dance pose setup happens there and needs both without closing the menu).
-    // Caller updates lastAState afterwards.
+    // Caller updates lastAState afterwards. No-op mid-grab: retargeting or
+    // snapping a carried model would bypass the release re-anchor.
     private fun handleModelAButton() {
+        if (grabbing) return
         val nowA = android.os.SystemClock.uptimeMillis()
         if (nowA - lastATapMs < DOUBLE_TAP_WINDOW_MS && selectedModelIndex >= 0) {
             selectedModelIndex = -1
@@ -754,8 +836,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
             var laserOnPanel = false
             var panelRayT = -1f
             var panelRayNearUi = false
-            activity.beatCursorX = -1f
-            activity.beatCursorY = -1f
+            var panelRayNearRouting = false
+            var panelPlaneTested = false
+            var suppressWorldByPanel = false
             if (activity.menuVisible) {
                 val pcx = renderer.panelX
                 val pcy = renderer.panelY
@@ -773,9 +856,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 val nx = scratchNormal[0]; val ny = scratchNormal[1]; val nz = scratchNormal[2]
 
                 val denom = rayDir[0]*nx + rayDir[1]*ny + rayDir[2]*nz
-                if (kotlin.math.abs(denom) > 0.01f) {
+                // Epsilon was 0.01 (~0.57°): at near-grazing incidence the whole
+                // panel test silently skipped and the laser punched through the
+                // menu. 0.001 still rejects true parallels (t would blow past
+                // the 8m range cap anyway).
+                if (kotlin.math.abs(denom) > 0.001f) {
                     val t = ((pcx - laserHandPos[0])*nx + (pcy - laserHandPos[1])*ny + (pcz - laserHandPos[2])*nz) / denom
                     if (t > 0f && t < 8f) {
+                        panelPlaneTested = true
                         panelRayT = t
                         val wx = laserHandPos[0] + rayDir[0] * t
                         val wy = laserHandPos[1] + rayDir[1] * t
@@ -787,12 +875,26 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         val hy = dx*ux + dy*uy + dz*uz
                         panelRayNearUi = hx in (-panelHW * 1.5f)..(panelHW * 1.5f) &&
                             hy in (-panelHH * 1.5f)..(panelHH * 1.5f)
+                        // Separate, much tighter band for ROUTING suppression.
+                        // Using the 1.5x visual margin here blocked a huge halo
+                        // around the panel — the user couldn't re-click/grab a
+                        // dancer standing beside the menu during shake setup
+                        // ("I can't unselect"). 1.1x still swallows slight
+                        // overshoot past an edge button; flicker protection
+                        // comes from the sticky rect + guard frames instead.
+                        panelRayNearRouting = hx in (-panelHW * 1.1f)..(panelHW * 1.1f) &&
+                            hy in (-panelHH * 1.1f)..(panelHH * 1.1f)
 
-                        if (hx in -panelHW..panelHW && hy in -panelHH..panelHH) {
+                        // Sticky edge: once on the panel, accept a 6% halo so hand
+                        // tremor at a border can't flicker hover on/off frame-to-
+                        // frame (u/v clamp keeps the cursor pinned to the edge).
+                        val stickyHW = if (wasLaserOnPanel) panelHW * 1.06f else panelHW
+                        val stickyHH = if (wasLaserOnPanel) panelHH * 1.06f else panelHH
+                        if (hx in -stickyHW..stickyHW && hy in -stickyHH..stickyHH) {
                             laserOnPanel = true
                             hitDistance = t
-                            val u = (hx + panelHW) / (panelHW * 2f)
-                            val v = 1f - (hy + panelHH) / (panelHH * 2f)
+                            val u = ((hx + panelHW) / (panelHW * 2f)).coerceIn(0f, 1f)
+                            val v = (1f - (hy + panelHH) / (panelHH * 2f)).coerceIn(0f, 1f)
                             val bx = u * 1024f
                             val by = v * 1280f
                             activity.beatCursorX = bx
@@ -947,6 +1049,8 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     else if (bx in 712f..780f) hoveredActionButton = 124
                                     else if (bx in 784f..852f) hoveredActionButton = 125
                                     else if (bx in 856f..924f) hoveredActionButton = 126
+                                    // FLASH (strobe) toggle
+                                    else if (bx in 928f..994f) hoveredActionButton = 149
                                 } else if (by in specTopHit..specBotHit && bx in specLeftHit..specRightHit) {
                                     // Laser is on the spectrum area -- corner/box dragging
                                     val reactor = activity.audioReactor
@@ -1192,10 +1296,44 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     hitDistance = panelRayT
                 }
 
+                // ── World-interaction guard around the panel ──
+                // The 1.5x near-UI margin previously only shortened the laser
+                // beam — clicks and grabs in that halo still routed to models
+                // BEHIND the menu. And when the plane test itself was rejected
+                // (grazing angle, range, tracking blip) nothing blocked at all.
+                // Now: on/near the panel suppresses world hover outright, and a
+                // rejected plane test keeps suppressing for a few frames if the
+                // laser was just on the panel (covers single-frame flickers).
+                if (activity.menuVisible) {
+                    if (panelPlaneTested) {
+                        suppressWorldByPanel = laserOnPanel || panelRayNearRouting
+                        panelGuardFrames = if (suppressWorldByPanel) PANEL_GUARD_FRAMES else 0
+                    } else {
+                        suppressWorldByPanel = panelGuardFrames > 0
+                        if (panelGuardFrames > 0) panelGuardFrames--
+                    }
+                } else {
+                    suppressWorldByPanel = false
+                    panelGuardFrames = 0
+                }
+                if (!laserOnPanel) {
+                    // Single-write cursor: the old reset-then-set-each-frame left
+                    // a window where the async UI render read -1 mid-frame and
+                    // dropped the crosshair for a whole bitmap.
+                    activity.beatCursorX = -1f
+                    activity.beatCursorY = -1f
+                }
+                wasLaserOnPanel = laserOnPanel
+
                 // Drag update -- full 3D: place panel along laser ray at grab distance
                 if (draggingPanel) {
                     val rg = inputBuffer[7]
-                    if (rg > 0.5f) {
+                    // Hysteresis: engage at >0.7 (title bar), hold until <0.4.
+                    // With the old single 0.5 cutoff, one frame of grip jitter
+                    // ended the drag and the SAME squeeze stole the dancer into
+                    // a model grab a frame later — panel and girl then both
+                    // chased the hand ("the menu and the girl are combining").
+                    if (rg > 0.4f) {
                         val stickY = inputBuffer[3]
                         if (kotlin.math.abs(stickY) > STICK_DEADZONE) {
                             panelGrabDist += stickY * 0.03f
@@ -1213,6 +1351,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         renderer.panelZ = laserHandPos[2] + rayDir[2] * panelGrabDist
                     } else {
                         draggingPanel = false
+                        // The squeeze that was dragging the panel must fully
+                        // release (both grips <0.3) before it can grab a model.
+                        blockGripInteractionsUntilRelease = true
                     }
                 }
 
@@ -1297,12 +1438,13 @@ class InputHandler(private val activity: FilamentModelActivity) {
             }
 
             // Test model intersection — allowed while menu is open as long as
-            // the laser isn't targeting the panel itself. Lets the user pick a
+            // the laser isn't on the panel, inside its 1.1x routing halo, or in
+            // the few-frame guard after a lost plane test. Lets the user pick a
             // model to adjust via the dance controls without closing the menu.
             // Body hit-test runs even when a gizmo axis is also under the laser, so grabbing
             // HER wins over the gizmo when they overlap (gizmo still usable on the axis tips
             // that stick out past her body — see the hoveredModelIndex<0 guard on gizmo drag).
-            if ((!activity.menuVisible || !laserOnPanel) && !emitterHovered && !emitterGrabbed) {
+            if ((!activity.menuVisible || !suppressWorldByPanel) && !emitterHovered && !emitterGrabbed) {
                 var nearestDist = Float.MAX_VALUE
                 var nearestIdx = -1
                 for ((i, placed) in models.withIndex()) {
@@ -1349,8 +1491,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hitDistance = if (nearestIdx >= 0) nearestDist else -1f
             } else {
                 hoveredModelIndex = -1
-                // Don't reset hitDistance if laser hit the menu panel
-                if (!laserOnPanel) hitDistance = -1f
+                // Keep hitDistance when the laser is on the panel OR stopped at
+                // the near-UI plane — clearing it there drew the beam at full
+                // length through the menu with interaction silently suppressed.
+                if (!laserOnPanel && !(panelRayNearUi && panelRayT > 0f)) hitDistance = -1f
             }
 
             // Highlight
@@ -1369,9 +1513,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     val dz = rightHandPosZ - gizmoDragStartHandPos[2]
                     val proj = dx*worldAxis[0] + dy*worldAxis[1] + dz*worldAxis[2]
                     val scaled = proj * 3f
+                    val prevX = selModel.posX; val prevY = selModel.posY; val prevZ = selModel.posZ
                     selModel.posX = gizmoDragStartModelPos[0] + worldAxis[0] * scaled
                     selModel.posY = gizmoDragStartModelPos[1] + worldAxis[1] * scaled
                     selModel.posZ = gizmoDragStartModelPos[2] + worldAxis[2] * scaled
+                    // Dance/shake anchors must ride along or the anim loop
+                    // rubber-bands her back to the drag start every frame.
+                    carryAnimAnchors(selModel,
+                        selModel.posX - prevX, selModel.posY - prevY, selModel.posZ - prevZ)
                     activity.updateModelTransform(selModel)
                 } else {
                     gizmoDragging = false
@@ -1391,6 +1540,21 @@ class InputHandler(private val activity: FilamentModelActivity) {
             gizmoDragging = false
             activity.beatCursorX = -1f
             activity.beatCursorY = -1f
+            // Tracking blip: clear the latched menu hover state too, or a
+            // trigger pull on a dropout frame ghost-clicks whatever button was
+            // hovered before the blip (trigger actions stay live even when the
+            // aim pose goes invalid).
+            hoveredMenuParam = -1
+            hoveredActionButton = -1
+            hoveredAudioButton = -1
+            hoveredAudioFileIndex = -1
+            hoveredGlbIndex = -1
+            hoveredSceneIndex = -1
+            hoveredSaveButton = -1
+            hoveredKeyboardKey = -1
+            hoveredLightingPresetIndex = -1
+            wasLaserOnPanel = false
+            if (panelGuardFrames > 0) panelGuardFrames--
         }
 
         // Trigger press (edge-detected) = select/deselect or menu select
@@ -1491,6 +1655,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         activity.runOnUiThread {
                             if (activity.audioPlayer == null) {
                                 activity.audioPlayer = com.ashairfoil.prism.AudioPlayer(activity)
+                                // PCM tap → reactor. On Quest the Visualizer
+                                // captures only zeros, so this is THE data feed
+                                // for the spectrum bars + auto-BPM.
+                                activity.audioPlayer?.onPcmChunk = { buf, sr, ch ->
+                                    activity.audioReactor?.feedPcm(buf, sr, ch)
+                                }
                                 // Wire auto-restart AudioReactor on track change (playlist advance)
                                 activity.audioPlayer?.onTrackChanged = { _ ->
                                     val reactor = activity.audioReactor
@@ -1604,6 +1774,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton in 123..126) {
                 activity.audioReactor?.blendMode = AudioReactor.BlendMode.entries[hoveredActionButton - 123]
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 149) {
+                // FLASH (strobe) master toggle — persisted, default OFF.
+                activity.beatFlashEnabled = !activity.beatFlashEnabled
+                com.ashairfoil.prism.settings.SettingsManager.beatFlashEnabled = activity.beatFlashEnabled
+                activity.uiRenderer.showMessage(
+                    if (activity.beatFlashEnabled) "Beat FLASH on" else "Beat FLASH off")
+                Log.i(TAG, "Beat FLASH: ${activity.beatFlashEnabled}")
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 111) {
                 activity.beatSettingsMode = false
                 activity.uiNeedsRefresh = true
@@ -1664,8 +1842,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         m.animHasBase = false
                         m.danceYawDeg = 0f; m.dancePitchDeg = 0f; m.danceYMeters = 0f
                         activity.clearGazeCapture(m)
+                        // The physics path bakes squash-stretch into scaleMul
+                        // each frame; once dancing stops nothing rebuilds it —
+                        // without this reset she stays frozen mid-STRETCH.
+                        m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
+                        activity.updateModelTransform(m)
                         Log.i(TAG, "Dance cleared on ${m.file.name}")
                     }
+                    activity.uiNeedsRefresh = true
+                } else {
+                    activity.uiRenderer.showMessage("No model selected — point at her and trigger-click first")
                     activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 134) {
@@ -1775,12 +1961,25 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         }
                     }
                     activity.uiNeedsRefresh = true
+                } else {
+                    // Silent no-op read as a dead button ("I cannot click
+                    // Shake A") — especially since re-click now DEselects.
+                    activity.uiRenderer.showMessage("No model selected — point at her and trigger-click first")
+                    activity.uiNeedsRefresh = true
                 }
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 112) {
                 activity.beatReactorEnabled = false
                 activity.audioReactor?.enabled = false
                 activity.beatSettingsMode = false
                 activity.beatBaseStored = false
+                // Reactor off = anim pass stops running; clear any baked
+                // squash-stretch so nobody is left frozen mid-deformation.
+                for (m in activity.sceneManager.models) {
+                    if (m.scaleMulX != 1f || m.scaleMulY != 1f || m.scaleMulZ != 1f) {
+                        m.scaleMulX = 1f; m.scaleMulY = 1f; m.scaleMulZ = 1f
+                        activity.updateModelTransform(m)
+                    }
+                }
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && activity.beatSettingsMode && hoveredActionButton == 128) {
                 // VIBES: toggle haptic device
@@ -2040,8 +2239,23 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hoveredLightingPresetIndex = -1
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 134) {
-                activity.sensorHudVisible = !activity.sensorHudVisible
-                Log.i(TAG, "Sensor HUD: ${activity.sensorHudVisible}")
+                // Row-4 middle is now ♪ BEAT ("I have to keep looking up high" —
+                // the top banner sits above the eye line; this puts the beat
+                // window in the bottom row where his gaze already lives).
+                // Sensor HUD stays on the controller MENU button.
+                if (!activity.beatReactorEnabled) {
+                    activity.beatReactorEnabled = true
+                    val reactor = activity.audioReactor
+                    if (reactor != null) {
+                        reactor.enabled = true
+                        val sid = activity.audioPlayer?.audioSessionId ?: 0
+                        if (!reactor.isActive) reactor.start(sid)
+                        else if (sid != 0) reactor.restart(sid)
+                    }
+                    Log.i(TAG, "BeatReactor ON (row4)")
+                }
+                activity.beatSettingsMode = true
+                Log.i(TAG, "BeatReactor settings opened (row4)")
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 135) {
                 val gr = activity.glesRenderer
@@ -2161,17 +2375,30 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hoveredAudioButton = -1
                 activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredActionButton == 100) {
-                Log.i(TAG, "Action: Return to file menu")
                 // MainActivity (the SceneCore video/file menu) exists only in the galaxyxr
-                // flavor. Launch by name so the Quest build — which has no MainActivity —
-                // still compiles; on Quest this button is a no-op (the dancer viewer is home).
+                // flavor — launch by name so the Quest build still compiles. On Quest the
+                // same slot is labeled HOME: minimize to Horizon home with the scene kept
+                // alive (the old silent no-op read as "can't exit the scenario").
                 if (com.ashairfoil.prism.BuildConfig.FLAVOR == "galaxyxr") {
+                    Log.i(TAG, "Action: Return to file menu")
                     activity.startActivity(android.content.Intent().setClassName(
                         activity, "com.ashairfoil.prism.MainActivity"
                     ).apply {
                         addFlags(android.content.Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
                     })
                     activity.finish()
+                } else {
+                    // moveTaskToBack is a no-op for immersive apps on Horizon
+                    // OS (verified via logcat: action fired, nothing happened).
+                    // Launching the HOME intent brings vrshell forward instead;
+                    // the scene stays alive in the background.
+                    Log.i(TAG, "Action: HOME — launching system home")
+                    activity.runOnUiThread {
+                        activity.startActivity(android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+                            addCategory(android.content.Intent.CATEGORY_HOME)
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    }
                 }
                 return
             } else if (activity.menuVisible && hoveredActionButton == 102) {
@@ -2575,11 +2802,20 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.panelRotW = kotlin.math.cos(yaw * 0.5f)
             } else if (!activity.menuVisible) {
                 blockGripInteractionsUntilRelease = true
+                // Force-ending an active grab skips the release path — re-anchor
+                // here too or a carried SHAKE model snaps back to its pre-grab
+                // anchors the moment the menu closes.
+                if (grabbing) {
+                    models.getOrNull(selectedModelIndex)?.let { reanchorAnimOnGrabEnd(it) }
+                }
                 grabbing = false
                 gizmoDragging = false
                 emitterGrabbed = false
                 activity.beatCursorX = -1f
                 activity.beatCursorY = -1f
+                // Menu is gone — stale panel guard must not eat world clicks.
+                panelGuardFrames = 0
+                wasLaserOnPanel = false
             }
             activity.uiNeedsRefresh = true
         }
@@ -2894,7 +3130,15 @@ class InputHandler(private val activity: FilamentModelActivity) {
             // lets the grab code below run concurrently with menu interaction.
             val gripForGrab = (leftSqueeze > 0.5f && leftHandValid) ||
                               (rightSqueeze > 0.5f && rightHandValid)
-            if (!gripForGrab) return
+            // CRITICAL: an ACTIVE grab must fall through even after the grip
+            // opens — the grab section's release edge (whip check, anchor
+            // re-base, grabbing=false) is down there. Returning unconditionally
+            // latched grabbing=true forever while the menu was open, which
+            // killed every trigger click (edge detect is gated on !grabbing)
+            // and teleported the model into the hand on the NEXT grip —
+            // including grabbing the menu title bar ("Chelsea slammed into
+            // the menu").
+            if (!gripForGrab && !grabbing) return
         } else {
             lastRightStickClick = rightStickClick
         }
@@ -2979,6 +3223,17 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 grabOffset = activity.glesRenderer?.rotateVecByQuat(scratchWorldOff, scratchInvAim) ?: scratchWorldOff.copyOf()
                 System.arraycopy(grabAimRot, 0, grabStartAimRot, 0, 4)
                 grabStartModelRot[0] = selected.rotX; grabStartModelRot[1] = selected.rotY; grabStartModelRot[2] = selected.rotZ; grabStartModelRot[3] = selected.rotW
+                if (selected.animHasBase) {
+                    grabBaseOffset[0] = selected.posX - selected.animBasePose[0]
+                    grabBaseOffset[1] = selected.posY - selected.animBasePose[1]
+                    grabBaseOffset[2] = selected.posZ - selected.animBasePose[2]
+                    grabStartBaseRot[0] = selected.animBasePose[3]
+                    grabStartBaseRot[1] = selected.animBasePose[4]
+                    grabStartBaseRot[2] = selected.animBasePose[5]
+                    grabStartBaseRot[3] = selected.animBasePose[6]
+                } else {
+                    grabBaseOffset[0] = 0f; grabBaseOffset[1] = 0f; grabBaseOffset[2] = 0f
+                }
             }
 
             val fwdResult = activity.glesRenderer?.quatForward(grabAimRot)
@@ -3007,9 +3262,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
             // to avoid fighting the grab write — and the cost was her
             // freezing mid-preset whenever the user tried to relocate her.
             if (selected.animHasBase) {
-                selected.animBasePose[0] = selected.posX
-                selected.animBasePose[1] = selected.posY
-                selected.animBasePose[2] = selected.posZ
+                // Subtract the onset dance offset so the carried anchor tracks
+                // the TRUE base — see grabBaseOffset declaration.
+                selected.animBasePose[0] = selected.posX - grabBaseOffset[0]
+                selected.animBasePose[1] = selected.posY - grabBaseOffset[1]
+                selected.animBasePose[2] = selected.posZ - grabBaseOffset[2]
             }
 
             // Grip rotation policy:
@@ -3082,11 +3339,16 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     selected.rotX *= inv; selected.rotY *= inv; selected.rotZ *= inv; selected.rotW *= inv
                 }
                 // Mirror into animBasePose so next-frame dance composes on top
-                // of the new heading without snapping back to the pre-grab facing.
-                selected.animBasePose[3] = selected.rotX
-                selected.animBasePose[4] = selected.rotY
-                selected.animBasePose[5] = selected.rotZ
-                selected.animBasePose[6] = selected.rotW
+                // of the new heading without snapping back to the pre-grab
+                // facing. Apply the yaw delta to the ONSET BASE rotation, not
+                // the danced composite — copying the composite baked that
+                // frame's pitch/roll dance offsets into the anchor (rotation
+                // twin of the grabBaseOffset position jump).
+                val bsr = grabStartBaseRot
+                selected.animBasePose[3] = cY * bsr[0] + sY * bsr[2]
+                selected.animBasePose[4] = cY * bsr[1] + sY * bsr[3]
+                selected.animBasePose[5] = cY * bsr[2] - sY * bsr[0]
+                selected.animBasePose[6] = cY * bsr[3] - sY * bsr[1]
             }
 
             activity.updateModelTransform(selected)
@@ -3116,7 +3378,14 @@ class InputHandler(private val activity: FilamentModelActivity) {
                         whipSpeed = kotlin.math.sqrt(whipVelX*whipVelX + whipVelY*whipVelY + whipVelZ*whipVelZ)
                     }
                 }
-                if (whipSpeed >= WHIP_SPEED_THRESHOLD) {
+                // A "release" can also mean handValid dropped for a frame while
+                // the user is still squeezing — a tracking blip. The pose jump
+                // that comes with a blip easily fakes >4 m/s, which used to
+                // whip-DELETE the model out of the user's hand. Only yeet when
+                // the squeeze was genuinely let go.
+                val releasedByTrackingBlip = (leftSqueeze > 0.5f && !leftHandValid) ||
+                    (rightSqueeze > 0.5f && !rightHandValid)
+                if (whipSpeed >= WHIP_SPEED_THRESHOLD && !releasedByTrackingBlip) {
                     Log.i(TAG, "Whip delete: ${model.file.name} at ${"%.1f".format(whipSpeed)} m/s")
                     synchronized(activity.sceneManager.yeetingModelsLock) {
                         activity.sceneManager.yeetingModels.add(SceneManager.YeetingModel(
@@ -3132,47 +3401,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 } else {
                     // Normal release — commit spatial anchor so placement survives app close.
                     activity.commitAnchorForGrip(model)
-                    // animBasePose is kept in sync live by the active-grab path, so
-                    // skip the post-release re-anchor for dancing models — that old
-                    // copy copied `model.posX/Y/Z` which ALREADY INCLUDES one frame
-                    // of dance offset (bob / breath / jitter), and every grab cycle
-                    // therefore baked a few cm of permanent drift into animBasePose.
-                    // Across a few grabs the accumulated lift sent her floating 30+
-                    // cm above the floor. For non-dancing (shake) animations the
-                    // re-anchor is still needed because animHasA/B isn't updated
-                    // during grab.
-                    val wasDancing = model.animHasBase && (
-                        model.danceYawDeg != 0f || model.dancePitchDeg != 0f ||
-                        model.danceYMeters != 0f)
-                    if (model.animHasBase && !wasDancing) {
-                        model.animBasePose[0] = model.posX; model.animBasePose[1] = model.posY; model.animBasePose[2] = model.posZ
-                        model.animBasePose[3] = model.rotX; model.animBasePose[4] = model.rotY
-                        model.animBasePose[5] = model.rotZ; model.animBasePose[6] = model.rotW
-                    }
-                    if (model.animHasA && model.animHasB) {
-                        // Shift both A and B by the delta between old A-anchor and new pose so
-                        // the shake arc moves with the model.
-                        val dx = model.posX - model.animPoseA[0]
-                        val dy = model.posY - model.animPoseA[1]
-                        val dz = model.posZ - model.animPoseA[2]
-                        model.animPoseA[0] += dx; model.animPoseA[1] += dy; model.animPoseA[2] += dz
-                        model.animPoseB[0] += dx; model.animPoseB[1] += dy; model.animPoseB[2] += dz
-                        // Rotation: snap A to current rot; keep B's relative rotation against A.
-                        val oldAX = model.animPoseA[3]; val oldAY = model.animPoseA[4]
-                        val oldAZ = model.animPoseA[5]; val oldAW = model.animPoseA[6]
-                        // Compute relative: bRel = B * conj(A)
-                        val bRelX = model.animPoseB[3] * oldAW - model.animPoseB[6] * oldAX - model.animPoseB[4] * oldAZ + model.animPoseB[5] * oldAY
-                        val bRelY = model.animPoseB[4] * oldAW - model.animPoseB[6] * oldAY - model.animPoseB[5] * oldAX + model.animPoseB[3] * oldAZ
-                        val bRelZ = model.animPoseB[5] * oldAW - model.animPoseB[6] * oldAZ - model.animPoseB[3] * oldAY + model.animPoseB[4] * oldAX
-                        val bRelW = model.animPoseB[6] * oldAW + model.animPoseB[3] * oldAX + model.animPoseB[4] * oldAY + model.animPoseB[5] * oldAZ
-                        model.animPoseA[3] = model.rotX; model.animPoseA[4] = model.rotY
-                        model.animPoseA[5] = model.rotZ; model.animPoseA[6] = model.rotW
-                        // B = bRel * newA
-                        model.animPoseB[3] = bRelW * model.rotX + bRelX * model.rotW + bRelY * model.rotZ - bRelZ * model.rotY
-                        model.animPoseB[4] = bRelW * model.rotY - bRelX * model.rotZ + bRelY * model.rotW + bRelZ * model.rotX
-                        model.animPoseB[5] = bRelW * model.rotZ + bRelX * model.rotY - bRelY * model.rotX + bRelZ * model.rotW
-                        model.animPoseB[6] = bRelW * model.rotW - bRelX * model.rotX - bRelY * model.rotY - bRelZ * model.rotZ
-                    }
+                    reanchorAnimOnGrabEnd(model)
                 }
             }
             grabbing = false
@@ -3201,12 +3430,28 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 selected.rotX = (dw * cr + dx * ck + dy * cj - dz * ci)
                 selected.rotY = (dw * ci - dx * cj + dy * ck + dz * cr)
                 selected.rotZ = (dw * cj + dx * ci - dy * cr + dz * ck)
+                // Dancing models rebuild rot from animBasePose each frame, so
+                // the same yaw DELTA must be applied to the base quat (not a
+                // copy of the danced rot — that would bake the current dance
+                // offsets into the base and drift her pose).
+                if (selected.animHasBase) {
+                    val b = selected.animBasePose
+                    val br = b[3]; val bi = b[4]; val bj = b[5]; val bk = b[6]
+                    b[6] = (dw * bk - dx * br - dy * bi - dz * bj)
+                    b[3] = (dw * br + dx * bk + dy * bj - dz * bi)
+                    b[4] = (dw * bi - dx * bj + dy * bk + dz * br)
+                    b[5] = (dw * bj + dx * bi - dy * br + dz * bk)
+                }
                 activity.updateModelTransform(selected)
             }
 
             val vAxis = leftThumbY
             if (kotlin.math.abs(vAxis) > STICK_DEADZONE) {
-                selected.posY += vAxis * 0.06f
+                val dyMove = vAxis * 0.06f
+                selected.posY += dyMove
+                // Anchors ride along — without this the dance loop pins her
+                // back to the old height every frame ("stuck to the ground").
+                carryAnimAnchors(selected, 0f, dyMove, 0f)
                 activity.updateModelTransform(selected)
             }
         }
@@ -3225,7 +3470,9 @@ class InputHandler(private val activity: FilamentModelActivity) {
         // Y = cycle selected model
         // Y cycles through models — and for the last step includes "no selection"
         // so the user can deselect. Cycle: 0 → 1 → … → size-1 → -1 (cleared) → 0 …
-        if (yButton && !lastYState && models.isNotEmpty()) {
+        if (yButton && !lastYState && models.isNotEmpty() && !grabbing) {
+            // !grabbing: retargeting selection mid-carry would strand the
+            // carried model without its release re-anchor.
             val next = selectedModelIndex + 1
             selectedModelIndex = if (next >= models.size) -1 else next
             activity.autoSelectSuspended = (selectedModelIndex < 0)

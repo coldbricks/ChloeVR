@@ -232,11 +232,13 @@ class BleDeviceManager(private val context: Context) {
             discoveredDevices[device.address] = info
             onDeviceDiscovered?.invoke(info)
 
-            // Auto-connect to first known Lovense device found
-            // Only auto-connect to previously-paired devices (address in knownDeviceAddresses).
-            // First-time pairing requires manual connect() which adds the address.
-            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected
-                && device.address in knownDeviceAddresses) {
+            // Auto-connect to the first Lovense found. Previously gated on
+            // knownDeviceAddresses ("first-time pairing requires manual
+            // connect()") — but the VR beat panel has NO manual-connect UI, so
+            // a brand-new toy could never pair: scan found it, logged it, and
+            // timed out. VIBES is a single-user single-toy button; first
+            // discovery IS the pairing (connect() adds it to known addresses).
+            if (isLovense && autoConnect && connectionState == ConnectionState.Disconnected) {
                 Log.i(TAG, "Auto-connecting to Lovense: $displayName (**:**:**:**:${device.address.takeLast(5)})")
                 autoConnect = false
                 // Cancel scan timeout since we're connecting now

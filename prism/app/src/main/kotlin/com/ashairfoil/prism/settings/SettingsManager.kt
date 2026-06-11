@@ -99,6 +99,7 @@ object SettingsManager {
     private const val KEY_FOLLOW_ROOM_LIGHT = "follow_room_light"
     private const val KEY_ROOM_TRACKING = "room_tracking"
     private const val KEY_MENU_SECTIONS_COLLAPSED = "menu_sections_collapsed"
+    private const val KEY_BEAT_FLASH_ENABLED = "beat_flash_enabled"
 
     // Persistent spatial anchors (XR_EXT_spatial_entity). Default on — placed models stay in the
     // real room across sessions. Users who don't want the runtime to persist spatial data can
@@ -289,6 +290,12 @@ object SettingsManager {
     var menuSectionsCollapsed: Int
         get() { ensureInit(); return prefs.getInt(KEY_MENU_SECTIONS_COLLAPSED, 0) }
         set(value) { ensureInit(); prefs.edit().putInt(KEY_MENU_SECTIONS_COLLAPSED, value).apply() }
+
+    // Beat FLASH (strobe lighting + room wash). Opt-in: "I like em but like
+    // don't default to them" (2026-06-11).
+    var beatFlashEnabled: Boolean
+        get() { ensureInit(); return prefs.getBoolean(KEY_BEAT_FLASH_ENABLED, false) }
+        set(value) { ensureInit(); prefs.edit().putBoolean(KEY_BEAT_FLASH_ENABLED, value).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 
