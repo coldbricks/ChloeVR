@@ -1198,3 +1198,15 @@ TAIL_LEN, KS) — single-file retune.
 - Hair chains (2-4 bones under Head) + Spine02 sphere collider; leaf squash
   ±8%; run add_flesh_bones.py on the other production GLBs (Ash, lisaQuad)
   once the bikini verdict is in.
+
+## [Claude] 2026-06-10 — ✅ D10 v1 ON-HEAD VERIFIED (same night)
+
+User loaded ChloeVR_Bikini_Flesh.glb live: "its cool!! wow." Flesh springs
+read correctly in passthrough; no distortion, no freeze, no perf complaints.
+Material check confirmed the Blender round-trip left factors byte-identical
+(metallic/roughness unset → loader skin-safe defaults; gloss in the
+screenshot = legit PBR under the room key light). Default drag/stiffness
+accepted as-is for now — tune pass when the user asks.
+Launcher panel-race bit FIVE times tonight — the MainActivity
+delay-until-focus fix (or a direct-viewer launcher alias) is top of the
+post-reset queue, with the D10 adversarial review.
