@@ -1373,3 +1373,18 @@ Now auto-connects to the FIRST Lovense found. Not yet tested vs hardware.
 Leftovers: recenter event unhandled; gizmo-drag dance amplitude visually
 collapses during drag (cosmetic); session-0 Visualizer not resumed after
 pause (moot on Quest with PCM tap).
+
+### Addendum 2 — the "void launch" is a LAUNCH RACE, not process reuse
+Fresh processes can ALSO come up broken: endless `ChloeVR-GLRenderer: FBO
+incomplete: 0x0` + `Shadow FBO broke: 0x0` on the render thread from the
+first frames — world may render via passthrough but menu quad/input appear
+dead, user sees "the void". Happens on SOME launches (race between GL/EGL
+init and Horizon window/session placement — first occurrence tonight at
+15:51, BEFORE any of this session''s changes; a launch blocked by a
+"Reprojected OS dialog" reliably triggers it). Recovery: force-stop +
+relaunch (usually first try). Runtime.exit(0) on destroy (committed
+23f1b10) at least guarantees relaunches start clean-slate.
+NEXT SESSION #1: self-heal — render loop detects N consecutive FBO-incomplete
+frames in the first seconds and tears down/recreates the GL targets (or
+defers GlesModelRenderer FBO creation until session FOCUSED + first valid
+frame). Check WHERE the FBOs are created relative to xrBeginSession.
