@@ -26,3 +26,4 @@ Thumbs.db
 build-tools/
 platforms/
 platform-tools/
+__pycache__/
