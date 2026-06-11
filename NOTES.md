@@ -1210,3 +1210,92 @@ accepted as-is for now — tune pass when the user asks.
 Launcher panel-race bit FIVE times tonight — the MainActivity
 delay-until-focus fix (or a direct-viewer launcher alias) is top of the
 post-reset queue, with the D10 adversarial review.
+
+## [Claude] 2026-06-11 — Quest UX bug batch (permissions gate + menu hit drift + shake A/B)
+
+User's Quest 3 field report, three issues, all root-caused and fixed.
+BUILD SUCCESSFUL both flavors; unit tests pass. NOT yet device-verified.
+
+### 1. Quest build never asked for permissions
+He had to sideload the galaxyxr APK first just to get the permission
+prompts (MainActivity is galaxyxr-only; FilamentModelActivity deliberately
+never calls requestPermissions — the dialog backgrounds the immersive
+activity and kills the OpenXR session). Fix: new 2D trampoline
+`PermissionGateActivity` (main source set, declared in main manifest).
+FilamentModelActivity.onCreate bounces to it ONCE when runtime perms are
+missing and the gate hasn't run; the gate mirrors MainActivity's set
+(READ_MEDIA_VIDEO/IMAGES, RECORD_AUDIO, BLUETOOTH_CONNECT/SCAN + the
+all-files-access settings screen), records "asked_once" in its own
+SharedPreferences, and relaunches the viewer. Denials are respected —
+no re-ask loop. Also fixes adb direct launches on Galaxy XR with a
+fresh install.
+
+### 2. "Hit Foveation every single time I aim at BeatReactor" — REAL BUG
+InputHandler's param-row hover map re-derived row Y bands from its own
+constants (start 164, 10px section pads) while UiRenderer painted rows
+from y=194 with 14px headers. Accumulated drift ≈38px by the SYSTEM
+section — the painted BeatReactor row sat almost entirely inside
+Foveation's hit band. Fix: UiRenderer now PUBLISHES the painted bands
+(paramRowTopY/BotY + sectionHeaderTopY/BotY, NaN = not painted) and
+InputHandler hit-tests against those. This kills the whole
+"two files re-derive the same geometry" bug class for param rows —
+same disease the bottom buttons had pre-2026-06.
+
+### 3. Menu declutter + beat access
+- Top banner split: "+ GLB LIBRARY" (left, hover 152) | "♪ BEAT" (right,
+  NEW hover 153, PINK_HOT, shows ● when reactor on). 153 enables the
+  reactor if off and opens the beat window in one tap.
+- Section headers (MODEL/LIGHTING/SYSTEM) are now tappable (hover
+  160..162): collapse/expand their rows, chevron ▾/▸ + "tap to expand"
+  hint. Persisted in SettingsManager.menuSectionsCollapsed bitmask, loaded
+  in FilamentModelActivity.onCreate. Collapsed rows publish NaN bands so
+  they can't be hovered. User can now hide Foveation & friends entirely;
+  beat window stays reachable via the banner.
+
+### 4. Shake A/B "can't unselect anything until I exit the menu" — wonky by design, fixed
+Three interacting guards, all intentional once, all fighting the shake
+workflow (capture pose A → reposition her → capture pose B):
+- Re-click-the-model deselect was gated !menuVisible → now allowed with
+  menu open (hoveredModelIndex>=0 already implies laser off panel).
+- With ANY menu open, A button = "reset selected param" — even in the
+  beat panel where the param list isn't visible — and it consumed the A
+  edge. Now gated to the main param list (paramListActive); stick
+  param-cycle/adjust got the same guard.
+- A's model actions were unreachable with menu open (handle() returns at
+  the end of the menu branch on non-grip frames). Extracted
+  handleModelAButton() + snapSelectedModelToFloor() (verbatim move) and
+  call them INSIDE the menu branch when beatSettingsMode. So in the beat
+  panel: A = snap to floor, double-tap A = deselect, grip-grab already
+  fell through. SHAKE ▸A/▸B/● cycle itself unchanged.
+
+### Verify on Quest 3 (fresh install, no galaxyxr pre-install!)
+1. Sideload ONLY app-quest-debug.apk → launch → expect permission dialogs
+   + all-files settings screen ONCE → viewer starts. Relaunch: no gate.
+2. Main menu: aim dead-center at each SYSTEM row — hover highlight must
+   match the row under the laser (esp. BeatReactor vs Foveation).
+3. Tap ♪ BEAT banner → beat window opens (reactor auto-on).
+4. Tap SYSTEM header → rows hide, persists across restart.
+5. Beat panel: select her, SHAKE (▸A), point away + re-click her →
+   deselects; reselect, grip-move, SHAKE again (▸B armed), A button
+   snaps her to floor, double-tap A deselects — all without closing menu.
+
+### Files
+InputHandler.kt, UiRenderer.kt, FilamentModelActivity.kt,
+SettingsManager.kt, PermissionGateActivity.kt (new), main AndroidManifest.
+Uncommitted — commit after on-head verification.
+
+### Addendum (same night, on-head): gate bounce crash found + fixed
+First live bounce crashed: onDestroy ran after the early finish() and hit
+uninitialized lateinits (sceneManager at minimum; native shutdown would be
+next). Process death took the gate panel down with it. Fix: 
+`bouncedToPermissionGate` flag — onDestroy skips the whole teardown on the
+bounce path. Re-verified live: bounce → gate dialogs shown → user granted →
+grants persisted (Horizon even restored them across a reinstall).
+Note for next fresh-install test: Horizon RESTORES runtime grants for a
+reinstalled same-signature package, so "uninstall→install" is NOT enough to
+re-test the gate dialogs — revoke perms with pm revoke first.
+All-files leg granted via appops this time (run-as can't read /sdcard:
+SELinux). User data lesson: scenes live in filesDir/scenes and DIE on
+uninstall — back up first (binary-safe: cmd /c redirect, NOT PS `>`;
+restore: `adb shell -T "run-as ... tar xf -" < tar`).
+Scenes + prefs restored; user confirmed GLBs + scenes visible.

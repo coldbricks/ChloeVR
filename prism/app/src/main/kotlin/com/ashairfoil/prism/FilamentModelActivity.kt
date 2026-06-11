@@ -155,6 +155,13 @@ class FilamentModelActivity : ComponentActivity() {
     internal var handsLocked = false
     // uiTextureId, pendingUiBitmap, uiFlipBitmap/Canvas/Matrix moved to UiRenderer
     internal var selectedParam = 0
+    // Main-menu section collapse (0=MODEL, 1=LIGHTING, 2=SYSTEM). Tap the
+    // section header to hide rows you never touch; persisted as a bitmask.
+    internal val menuSectionCollapsed = BooleanArray(3)
+
+    // Set when onCreate finishes early to bounce through the permission gate —
+    // onDestroy must skip teardown (lateinits/native renderer never existed).
+    private var bouncedToPermissionGate = false
     internal val PARAM_NAMES = arrayOf("Metallic", "Roughness", "Exposure",
         "Contrast", "Saturation",
         "Light Intensity", "Fill Intensity", "Ambient", "Light Azimuth",
@@ -410,6 +417,20 @@ class FilamentModelActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Quest (and adb direct launches) never pass through MainActivity, so
+        // runtime permissions were never requested — and requesting them from
+        // THIS activity restarts it and kills the OpenXR session (see below).
+        // Bounce through the 2D gate once: it asks, records done, relaunches.
+        if (!PermissionGateActivity.gateCompleted(this) &&
+            PermissionGateActivity.hasMissingRuntimePermissions(this)) {
+            Log.i(TAG, "Runtime permissions missing — bouncing to PermissionGateActivity")
+            bouncedToPermissionGate = true
+            startActivity(android.content.Intent(this, PermissionGateActivity::class.java))
+            finish()
+            return
+        }
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Log.i(TAG, "onCreate: initializing Filament model viewer")
 
@@ -417,6 +438,10 @@ class FilamentModelActivity : ComponentActivity() {
         // was launched directly (e.g. from a model-file share) without going through MainActivity.
         SettingsManager.init(this)
         followRoomLight = SettingsManager.followRoomLight
+        val collapsedBits = SettingsManager.menuSectionsCollapsed
+        for (s in menuSectionCollapsed.indices) {
+            menuSectionCollapsed[s] = (collapsedBits shr s) and 1 == 1
+        }
         spatialAnchors = SpatialAnchorManager(this)
 
         showMessage("Initializing 3D renderer...")
@@ -4825,6 +4850,12 @@ class FilamentModelActivity : ComponentActivity() {
 
     override fun onDestroy() {
         Log.i(TAG, "onDestroy")
+        if (bouncedToPermissionGate) {
+            // onCreate finished early — none of the lateinits (sceneManager,
+            // render thread, native renderer) exist, so skip the teardown.
+            super.onDestroy()
+            return
+        }
         running = false
 
         // Stop A/B loop handler to prevent Runnable leak

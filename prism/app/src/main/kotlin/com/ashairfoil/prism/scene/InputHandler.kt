@@ -571,6 +571,121 @@ class InputHandler(private val activity: FilamentModelActivity) {
         set(value) { activity.sceneManager.selectedModelIndex = value }
     private inline val yeetingModels get() = activity.sceneManager.yeetingModels
 
+    // A button's world-side action: double-tap = deselect, single tap = snap
+    // to floor. Shared between the no-menu path and the BEAT panel (shake and
+    // dance pose setup happens there and needs both without closing the menu).
+    // Caller updates lastAState afterwards.
+    private fun handleModelAButton() {
+        val nowA = android.os.SystemClock.uptimeMillis()
+        if (nowA - lastATapMs < DOUBLE_TAP_WINDOW_MS && selectedModelIndex >= 0) {
+            selectedModelIndex = -1
+            activity.autoSelectSuspended = true
+            lastATapMs = 0L
+            Log.i(TAG, "Model deselected via A double-tap")
+            activity.uiNeedsRefresh = true
+            return
+        }
+        lastATapMs = nowA
+        snapSelectedModelToFloor()
+        activity.uiNeedsRefresh = true
+    }
+
+    // ── Single A tap = snap selected model to surface ──
+    private fun snapSelectedModelToFloor() {
+        val model = models.getOrNull(selectedModelIndex) ?: return
+        val gr = activity.glesRenderer ?: return
+        val gpuModel = gr.getModel(model.gpuModelId) ?: return
+        // Floor priority:
+        //   (1) closest labeled horizontal plane near the model's XZ
+        //   (2) gr.gridHeight — the Y the floor shadow renders at
+        //       (trustworthy: if shadow draws at real floor, this is
+        //       it, even when the planes list has since emptied)
+        //   (3) camPosY − 1.6 live fallback when gridHeight is the
+        //       untouched default of 0
+        //
+        // Previous attempt used camY-1.6 whenever the live planes
+        // list was empty, but plane trackers sometimes drop planes
+        // after initial detection — gridHeight sticks around, the
+        // shadow still renders correctly, but my snap was falling
+        // back to a camY-1.6 guess that over-estimated floor height.
+        val planes = gr.shadowPlanes
+        var snapY: Float
+        var floorSource: String
+        var bestDist = Float.MAX_VALUE
+        var planeY = Float.NaN
+        var lowestNonCeilingY = Float.NaN
+        if (planes.isNotEmpty()) {
+            for (p in planes) {
+                if (p.label == 3) continue  // skip ceilings only (matches renderShadowPlanes)
+                // Track the globally-lowest non-ceiling plane as a
+                // catch-all — XR runtimes sometimes label the floor
+                // as 0 (unknown) when boundary is off, so filtering
+                // on label==2 alone misses real floors.
+                if (lowestNonCeilingY.isNaN() || p.posY < lowestNonCeilingY) {
+                    lowestNonCeilingY = p.posY
+                }
+                val dx = model.posX - p.posX
+                val dz = model.posZ - p.posZ
+                val hDist = kotlin.math.sqrt(dx*dx + dz*dz)
+                if (hDist < maxOf(p.extentX, p.extentY) * 1.5f && hDist < bestDist) {
+                    bestDist = hDist
+                    planeY = p.posY
+                }
+            }
+        }
+        when {
+            !planeY.isNaN() -> {
+                snapY = planeY; floorSource = "plane-near(${planes.size})"
+            }
+            !lowestNonCeilingY.isNaN() -> {
+                // No plane under the model, but some plane exists —
+                // take the lowest one. Matches what the shadow is
+                // actually rendering on.
+                snapY = lowestNonCeilingY; floorSource = "plane-lowest"
+            }
+            gr.gridHeight != 0f -> {
+                snapY = gr.gridHeight; floorSource = "gridHeight"
+            }
+            else -> {
+                snapY = activity.camPosY - 1.6f; floorSource = "camY-1.6"
+            }
+        }
+        val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
+        model.posY += (snapY - worldMinY)
+        // Zero out roll + pitch on snap — keep only yaw. User
+        // feedback: "she locks to the floor with her bank/roll
+        // still." A quick snap should level her upright.
+        // Extract world-Y yaw from current quaternion, rebuild
+        // as a pure Y-axis rotation. Numerically stable even at
+        // extreme pitches.
+        val qx0 = model.rotX; val qy0 = model.rotY
+        val qz0 = model.rotZ; val qw0 = model.rotW
+        val yawRad = kotlin.math.atan2(
+            2f * (qw0 * qy0 + qx0 * qz0),
+            1f - 2f * (qy0 * qy0 + qz0 * qz0)
+        )
+        val halfYaw = yawRad * 0.5f
+        model.rotX = 0f
+        model.rotY = kotlin.math.sin(halfYaw)
+        model.rotZ = 0f
+        model.rotW = kotlin.math.cos(halfYaw)
+        // Re-anchor the dance base pose so a currently-dancing model
+        // doesn't drift back to its pre-snap Y on the next frame (the
+        // dance loop reads animBasePose each frame, so without this
+        // it would fight the snap and she'd pop back into the air).
+        if (model.animHasBase) {
+            model.animBasePose[0] = model.posX
+            model.animBasePose[1] = model.posY
+            model.animBasePose[2] = model.posZ
+            model.animBasePose[3] = model.rotX
+            model.animBasePose[4] = model.rotY
+            model.animBasePose[5] = model.rotZ
+            model.animBasePose[6] = model.rotW
+        }
+        activity.updateModelTransform(model)
+        Log.i(TAG, "SNAP: posY=${"%.3f".format(model.posY)} (floor=$floorSource Y=${"%.3f".format(snapY)}, camY=${"%.3f".format(activity.camPosY)}, boundsMinY=${"%.3f".format(gpuModel.boundsMinY)}, scale=${"%.3f".format(model.scale)}, yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°)")
+    }
+
     // ══════════════════════════════════════════════════════════
     //  handle()  —  the main input processing loop
     // ══════════════════════════════════════════════════════════
@@ -1003,10 +1118,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     }
                                 }
                             } else {
-                                // + RIGGED GLB LIBRARY banner at y 86..128, full width x 30..994.
-                                // Jumps straight into the GLB picker with the RIGGED filter pre-engaged.
+                                // Split banner at y 86..128: GLB LIBRARY (left half,
+                                // rigged filter pre-engaged) | ♪ BEAT (right half).
                                 if (by in 86f..128f && bx in 30f..994f) {
-                                    hoveredActionButton = 152
+                                    hoveredActionButton = if (bx < 512f) 152 else 153
                                 }
                                 // Action buttons: 4 rows at bottom (UiRenderer: row1Y=1054, btnH=48, btnGap=8)
                                 // btn2W=478, btn3W=316; gap midpoints: row1=512, rows2-4=350/674
@@ -1037,22 +1152,34 @@ class InputHandler(private val activity: FilamentModelActivity) {
                                     }
                                 }
 
-                                // Param rows with section headers (rowH=46px, 10px section pad)
-                                val paramRowHit = 34f  // must match UiRenderer rowH
-                                val sectionPadHit = 10f
-                                if (by in 164f..1100f) {
+                                // Param rows + section headers: hit-test against the
+                                // bands UiRenderer recorded while painting. The old
+                                // re-derived-constants version drifted ~38px by the
+                                // SYSTEM section, so BeatReactor clicks landed on
+                                // Foveation. NaN band = row hidden (collapsed section).
+                                if (sliderDragging >= 0 && rightTrigger > 0.5f) {
                                     // Lock hover to dragged slider while trigger is held
-                                    if (sliderDragging >= 0 && rightTrigger > 0.5f) {
-                                        hoveredMenuParam = sliderDragging
-                                    } else {
-                                        val adjustedBy = by - 164f
-                                        var acc = 0f; var idx = -1
-                                        for (p in 0 until activity.PARAM_NAMES.size) {
-                                            if (p == 0 || p == 5 || p == 13) acc += sectionPadHit
-                                            if (adjustedBy >= acc && adjustedBy < acc + paramRowHit) { idx = p; break }
-                                            acc += paramRowHit
+                                    hoveredMenuParam = sliderDragging
+                                    lastLaserBx = bx
+                                } else {
+                                    val ui = activity.uiRenderer
+                                    var onHeader = false
+                                    for (s in ui.sectionHeaderTopY.indices) {
+                                        val t = ui.sectionHeaderTopY[s]
+                                        if (!t.isNaN() && by >= t && by < ui.sectionHeaderBotY[s]) {
+                                            hoveredActionButton = 160 + s
+                                            onHeader = true
+                                            break
                                         }
-                                        if (idx >= 0) hoveredMenuParam = idx
+                                    }
+                                    if (!onHeader) {
+                                        for (p in ui.paramRowTopY.indices) {
+                                            val t = ui.paramRowTopY[p]
+                                            if (!t.isNaN() && by >= t && by < ui.paramRowBotY[p]) {
+                                                hoveredMenuParam = p
+                                                break
+                                            }
+                                        }
                                     }
                                     lastLaserBx = bx
                                 }
@@ -2138,6 +2265,35 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 hoveredGlbIndex = -1
                 activity.glbPickerScrollOffset = 0
                 activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton == 153) {
+                // ♪ BEAT banner: enable the reactor if needed and open the beat
+                // window in one tap (the old entry was the 34px BeatReactor row).
+                if (!activity.beatReactorEnabled) {
+                    activity.beatReactorEnabled = true
+                    val reactor = activity.audioReactor
+                    if (reactor != null) {
+                        reactor.enabled = true
+                        val sid = activity.audioPlayer?.audioSessionId ?: 0
+                        if (!reactor.isActive) reactor.start(sid)
+                        else if (sid != 0) reactor.restart(sid)
+                    }
+                    Log.i(TAG, "BeatReactor ON (banner)")
+                }
+                activity.beatSettingsMode = true
+                Log.i(TAG, "BeatReactor settings opened (banner)")
+                activity.uiNeedsRefresh = true
+            } else if (activity.menuVisible && hoveredActionButton in 160..162) {
+                // Section header tap: collapse/expand the MODEL / LIGHTING /
+                // SYSTEM rows ("I don't need Foveation on there"). Persisted.
+                val s = hoveredActionButton - 160
+                activity.menuSectionCollapsed[s] = !activity.menuSectionCollapsed[s]
+                var bits = 0
+                for (k in activity.menuSectionCollapsed.indices) {
+                    if (activity.menuSectionCollapsed[k]) bits = bits or (1 shl k)
+                }
+                com.ashairfoil.prism.settings.SettingsManager.menuSectionsCollapsed = bits
+                Log.i(TAG, "Menu section $s ${if (activity.menuSectionCollapsed[s]) "collapsed" else "expanded"}")
+                activity.uiNeedsRefresh = true
             } else if (activity.menuVisible && hoveredMenuParam in 0..12) {
                 activity.selectedParam = hoveredMenuParam
                 val sliderLeft = 240f; val sliderRight = 904f
@@ -2276,7 +2432,11 @@ class InputHandler(private val activity: FilamentModelActivity) {
             } else if (hoveredModelIndex >= 0 && hoveredModelIndex != selectedModelIndex) {
                 selectedModelIndex = hoveredModelIndex
                 activity.uiNeedsRefresh = true
-            } else if (hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0 && !activity.menuVisible) {
+            } else if (hoveredModelIndex == selectedModelIndex && selectedModelIndex >= 0) {
+                // Re-click the selected model = deselect. Works with the menu
+                // open too (hoveredModelIndex >= 0 already means the laser is
+                // off the panel) — during shake/dance setup the user couldn't
+                // unselect anything without closing the whole menu first.
                 selectedModelIndex = -1
                 if (renderer != null) {
                     for (placed in models) {
@@ -2510,14 +2670,21 @@ class InputHandler(private val activity: FilamentModelActivity) {
 
             val model = models.getOrNull(selectedModelIndex)
 
+            // The param list is the MAIN menu surface only. With the beat
+            // panel open these stick/A bindings still fired against the
+            // invisible param list (A silently reset Metallic etc.) AND
+            // consumed the A edge, so A's model actions (snap to floor,
+            // double-tap deselect) were dead until the menu closed.
+            val paramListActive = !activity.beatSettingsMode
+
             // Right stick click = cycle parameter
-            if (rightStickClick && !lastRightStickClick) {
+            if (rightStickClick && !lastRightStickClick && paramListActive) {
                 activity.selectedParam = (activity.selectedParam + 1) % activity.PARAM_NAMES.size
                 activity.uiNeedsRefresh = true
             }
 
             // Right thumbstick left/right = adjust selected parameter (horizontal sliders)
-            if (kotlin.math.abs(rightThumbX) > STICK_DEADZONE && renderer != null) {
+            if (kotlin.math.abs(rightThumbX) > STICK_DEADZONE && renderer != null && paramListActive) {
                 val delta = rightThumbX * 0.015f
                 val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
                 when (activity.selectedParam) {
@@ -2659,8 +2826,10 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 activity.uiNeedsRefresh = true
             }
 
-            // A button = reset selected parameter
-            if (aButton && !lastAState && renderer != null) {
+            // A button = reset selected parameter (main menu only — in the
+            // beat panel the edge must survive untouched so the global A
+            // handler below can run snap-to-floor / double-tap deselect).
+            if (aButton && !lastAState && renderer != null && paramListActive) {
                 val gpuModel = if (model != null) renderer.getModel(model.gpuModelId) else null
                 when (activity.selectedParam) {
                     0 -> if (model != null) { model.metallic = 0f; gpuModel?.metallic = 0f }
@@ -2706,6 +2875,12 @@ class InputHandler(private val activity: FilamentModelActivity) {
                 }
                 activity.uiNeedsRefresh = true
             }
+            // BEAT panel: A keeps its world-side meaning (snap to floor,
+            // double-tap deselect) so shake/dance pose setup works without
+            // closing the menu. Handled HERE because handle() returns at the
+            // end of the menu branch on non-grip frames — the global A
+            // handler below never runs while the menu is up.
+            if (!paramListActive && aButton && !lastAState) handleModelAButton()
             lastAState = aButton
 
             if (activity.uiNeedsRefresh) {
@@ -3059,114 +3234,7 @@ class InputHandler(private val activity: FilamentModelActivity) {
         lastYState = yButton
 
         if (aButton && !lastAState && !activity.menuVisible) {
-            // Double-tap A → deselect current model (right-hand-only shortcut).
-            val nowA = android.os.SystemClock.uptimeMillis()
-            if (nowA - lastATapMs < DOUBLE_TAP_WINDOW_MS && selectedModelIndex >= 0) {
-                selectedModelIndex = -1
-                activity.autoSelectSuspended = true
-                lastATapMs = 0L
-                Log.i(TAG, "Model deselected via A double-tap")
-                lastAState = aButton
-                return
-            }
-            lastATapMs = nowA
-            // ── Single A tap (below) = snap selected model to surface ──
-            val model = models.getOrNull(selectedModelIndex)
-            val gr = activity.glesRenderer
-            if (model != null && gr != null) {
-                val gpuModel = gr.getModel(model.gpuModelId)
-                if (gpuModel != null) {
-                    // Floor priority:
-                    //   (1) closest labeled horizontal plane near the model's XZ
-                    //   (2) gr.gridHeight — the Y the floor shadow renders at
-                    //       (trustworthy: if shadow draws at real floor, this is
-                    //       it, even when the planes list has since emptied)
-                    //   (3) camPosY − 1.6 live fallback when gridHeight is the
-                    //       untouched default of 0
-                    //
-                    // Previous attempt used camY-1.6 whenever the live planes
-                    // list was empty, but plane trackers sometimes drop planes
-                    // after initial detection — gridHeight sticks around, the
-                    // shadow still renders correctly, but my snap was falling
-                    // back to a camY-1.6 guess that over-estimated floor height.
-                    val planes = gr.shadowPlanes
-                    var snapY: Float
-                    var floorSource: String
-                    var bestDist = Float.MAX_VALUE
-                    var planeY = Float.NaN
-                    var lowestNonCeilingY = Float.NaN
-                    if (planes.isNotEmpty()) {
-                        for (p in planes) {
-                            if (p.label == 3) continue  // skip ceilings only (matches renderShadowPlanes)
-                            // Track the globally-lowest non-ceiling plane as a
-                            // catch-all — XR runtimes sometimes label the floor
-                            // as 0 (unknown) when boundary is off, so filtering
-                            // on label==2 alone misses real floors.
-                            if (lowestNonCeilingY.isNaN() || p.posY < lowestNonCeilingY) {
-                                lowestNonCeilingY = p.posY
-                            }
-                            val dx = model.posX - p.posX
-                            val dz = model.posZ - p.posZ
-                            val hDist = kotlin.math.sqrt(dx*dx + dz*dz)
-                            if (hDist < maxOf(p.extentX, p.extentY) * 1.5f && hDist < bestDist) {
-                                bestDist = hDist
-                                planeY = p.posY
-                            }
-                        }
-                    }
-                    when {
-                        !planeY.isNaN() -> {
-                            snapY = planeY; floorSource = "plane-near(${planes.size})"
-                        }
-                        !lowestNonCeilingY.isNaN() -> {
-                            // No plane under the model, but some plane exists —
-                            // take the lowest one. Matches what the shadow is
-                            // actually rendering on.
-                            snapY = lowestNonCeilingY; floorSource = "plane-lowest"
-                        }
-                        gr.gridHeight != 0f -> {
-                            snapY = gr.gridHeight; floorSource = "gridHeight"
-                        }
-                        else -> {
-                            snapY = activity.camPosY - 1.6f; floorSource = "camY-1.6"
-                        }
-                    }
-                    val worldMinY = model.posY + gpuModel.boundsMinY * model.scale
-                    model.posY += (snapY - worldMinY)
-                    // Zero out roll + pitch on snap — keep only yaw. User
-                    // feedback: "she locks to the floor with her bank/roll
-                    // still." A quick snap should level her upright.
-                    // Extract world-Y yaw from current quaternion, rebuild
-                    // as a pure Y-axis rotation. Numerically stable even at
-                    // extreme pitches.
-                    val qx0 = model.rotX; val qy0 = model.rotY
-                    val qz0 = model.rotZ; val qw0 = model.rotW
-                    val yawRad = kotlin.math.atan2(
-                        2f * (qw0 * qy0 + qx0 * qz0),
-                        1f - 2f * (qy0 * qy0 + qz0 * qz0)
-                    )
-                    val halfYaw = yawRad * 0.5f
-                    model.rotX = 0f
-                    model.rotY = kotlin.math.sin(halfYaw)
-                    model.rotZ = 0f
-                    model.rotW = kotlin.math.cos(halfYaw)
-                    // Re-anchor the dance base pose so a currently-dancing model
-                    // doesn't drift back to its pre-snap Y on the next frame (the
-                    // dance loop reads animBasePose each frame, so without this
-                    // it would fight the snap and she'd pop back into the air).
-                    if (model.animHasBase) {
-                        model.animBasePose[0] = model.posX
-                        model.animBasePose[1] = model.posY
-                        model.animBasePose[2] = model.posZ
-                        model.animBasePose[3] = model.rotX
-                        model.animBasePose[4] = model.rotY
-                        model.animBasePose[5] = model.rotZ
-                        model.animBasePose[6] = model.rotW
-                    }
-                    activity.updateModelTransform(model)
-                    Log.i(TAG, "SNAP: posY=${"%.3f".format(model.posY)} (floor=$floorSource Y=${"%.3f".format(snapY)}, camY=${"%.3f".format(activity.camPosY)}, boundsMinY=${"%.3f".format(gpuModel.boundsMinY)}, scale=${"%.3f".format(model.scale)}, yaw=${Math.toDegrees(yawRad.toDouble()).toInt()}°)")
-                }
-            }
+            handleModelAButton()
         }
         lastAState = aButton
 

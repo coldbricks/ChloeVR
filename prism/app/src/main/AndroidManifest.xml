@@ -84,5 +84,14 @@
                 android:name="android.window.PROPERTY_XR_ACTIVITY_START_MODE"
                 android:value="XR_ACTIVITY_START_MODE_FULL_SPACE_UNMANAGED" />
         </activity>
+
+        <!-- 2D trampoline that collects runtime permissions BEFORE the OpenXR
+             viewer starts. The viewer must never call requestPermissions —
+             the dialog backgrounds the immersive activity and kills the XR
+             session — so launch paths that skip MainActivity (Quest launcher,
+             adb direct launch) bounce through this gate once. -->
+        <activity
+            android:name=".PermissionGateActivity"
+            android:exported="false" />
     </application>
 </manifest>

@@ -43,6 +43,19 @@ class UiRenderer(private val activity: FilamentModelActivity) {
     // On-screen keyboard for save name editor
     internal val keyboard = VirtualKeyboard()
 
+    // ── Main-menu hit bands, published at draw time ──
+    // InputHandler's hover map used to re-derive these Y bands from its own
+    // constants and drifted ~38px by the SYSTEM section — aiming dead-on at
+    // BeatReactor registered as Foveation. The renderer now records the exact
+    // painted bands; NaN = row/header not painted this frame (collapsed
+    // section or beyond the drawn list). Written on the UI render thread,
+    // read on the input thread — same benign torn-float contract as the rest
+    // of the shared panel state.
+    internal val paramRowTopY = FloatArray(32) { Float.NaN }
+    internal val paramRowBotY = FloatArray(32) { Float.NaN }
+    internal val sectionHeaderTopY = FloatArray(3) { Float.NaN }
+    internal val sectionHeaderBotY = FloatArray(3) { Float.NaN }
+
     // Reusable Paint objects for hot-path rendering (avoid per-frame allocations)
     private val tmpPaint = Paint().apply { isAntiAlias = true }
     private val tmpPaint2 = Paint().apply { isAntiAlias = true }
@@ -1860,37 +1873,41 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         }
 
         // ── Status chips ──
-        // ── RIGGED quick-shortcut: full-width gold banner at top of main menu.
-        // Previously a 260px top-right pill which the user missed entirely.
-        // Expanded to a 42px-tall full-width button with glow + bold label.
+        // ── Quick-shortcut banner, split in two: GLB library (rigged filter
+        // pre-engaged) | ♪ BEAT. The beat window used to live only on a 34px
+        // param row directly above Foveation and got mis-clicked constantly —
+        // now it's a fat, always-visible button.
         run {
-            val rigHover = hoveredActionButton == 152
-            val rigX0 = 30f; val rigX1 = uiW - 30f
-            val rigY0 = 86f; val rigY1 = 128f
-            // Outer glow
-            tmpPaint2.apply {
-                style = Paint.Style.FILL; shader = null
-                color = (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x30000000
-                maskFilter = blurOuter8
+            fun banner(x0: Float, x1: Float, label: String, accent: Int, hovered: Boolean) {
+                // Outer glow
+                tmpPaint2.apply {
+                    style = Paint.Style.FILL; shader = null
+                    color = (accent and 0x00FFFFFF) or 0x30000000
+                    maskFilter = blurOuter8
+                }
+                canvas.drawRoundRect(x0, 86f, x1, 128f, 12f, 12f, tmpPaint2)
+                tmpPaint2.maskFilter = null
+                // Fill
+                tmpPaint2.color = if (hovered) (accent and 0x00FFFFFF) or 0x90000000.toInt()
+                    else (accent and 0x00FFFFFF) or 0x66000000
+                canvas.drawRoundRect(x0, 86f, x1, 128f, 12f, 12f, tmpPaint2)
+                // Border
+                tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = accent }
+                canvas.drawRoundRect(x0, 86f, x1, 128f, 12f, 12f, tmpPaint2)
+                tmpPaint2.style = Paint.Style.FILL
+                // Label
+                tmpPaint.apply {
+                    textSize = 28f; textAlign = Paint.Align.CENTER
+                    color = if (hovered) ThemeManager.TEXT_BRIGHT else accent
+                    isFakeBoldText = true; letterSpacing = 0.08f
+                }
+                canvas.drawText(label, (x0 + x1) / 2f, 115f, tmpPaint)
+                tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false; tmpPaint.letterSpacing = 0f
             }
-            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
-            tmpPaint2.maskFilter = null
-            // Fill
-            tmpPaint2.color = if (rigHover) (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x90000000.toInt()
-                else (ThemeManager.GOLD_WARM and 0x00FFFFFF) or 0x66000000
-            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
-            // Border
-            tmpPaint2.apply { style = Paint.Style.STROKE; strokeWidth = 2f; color = ThemeManager.GOLD_WARM }
-            canvas.drawRoundRect(rigX0, rigY0, rigX1, rigY1, 12f, 12f, tmpPaint2)
-            tmpPaint2.style = Paint.Style.FILL
-            // Label
-            tmpPaint.apply {
-                textSize = 28f; textAlign = Paint.Align.CENTER
-                color = if (rigHover) ThemeManager.TEXT_BRIGHT else ThemeManager.GOLD_WARM
-                isFakeBoldText = true; letterSpacing = 0.08f
-            }
-            canvas.drawText("+ RIGGED GLB LIBRARY", (rigX0 + rigX1) / 2f, rigY0 + 29f, tmpPaint)
-            tmpPaint.textAlign = Paint.Align.LEFT; tmpPaint.isFakeBoldText = false; tmpPaint.letterSpacing = 0f
+            val mid = uiW / 2f
+            banner(30f, mid - 6f, "+ GLB LIBRARY", ThemeManager.GOLD_WARM, hoveredActionButton == 152)
+            banner(mid + 6f, uiW - 30f, if (beatReactorEnabled) "♪ BEAT ●" else "♪ BEAT",
+                ThemeManager.PINK_HOT, hoveredActionButton == 153)
         }
         var y = 140f
         val dirSuffix = if (followRoomLight && xrLightEstimateAvailable) "+DIR" else ""
@@ -2025,23 +2042,41 @@ class UiRenderer(private val activity: FilamentModelActivity) {
         val sections = mapOf(0 to "MODEL", 5 to "LIGHTING", 13 to "SYSTEM")
         val sectionColors = mapOf(0 to ThemeManager.GREEN, 5 to ThemeManager.GOLD_WARM, 13 to ThemeManager.PURPLE_DEEP)
 
+        // Reset the published hit bands — rows skipped below (collapsed
+        // section) stay NaN so InputHandler can't hover them.
+        java.util.Arrays.fill(paramRowTopY, Float.NaN)
+        java.util.Arrays.fill(paramRowBotY, Float.NaN)
+        java.util.Arrays.fill(sectionHeaderTopY, Float.NaN)
+        java.util.Arrays.fill(sectionHeaderBotY, Float.NaN)
+        var sectionIdx = -1
+        var sectionCollapsed = false
+
         for ((i, param) in params.withIndex()) {
             // Section header with colored dot and gradient line
             val sectionLabel = sections[i]
             if (sectionLabel != null) {
+                sectionIdx++
+                sectionCollapsed = activity.menuSectionCollapsed.getOrElse(sectionIdx) { false }
                 val sColor = sectionColors[i] ?: ThemeManager.TEXT_DIM
                 y += 6f
+
+                // Tappable band: header tap collapses/expands the section
+                sectionHeaderTopY[sectionIdx] = y - 12f
+                sectionHeaderBotY[sectionIdx] = y + 10f
+                val headerHovered = hoveredActionButton == 160 + sectionIdx
 
                 // Colored dot
                 sectionDotPaint.color = sColor
                 canvas.drawCircle(44f, y - 2f, 4f, sectionDotPaint)
 
-                // Section label
-                sectionLabelPaint.color = sColor
-                canvas.drawText(sectionLabel, 56f, y + 2f, sectionLabelPaint)
+                // Section label with collapse chevron
+                sectionLabelPaint.color = if (headerHovered) ThemeManager.TEXT_BRIGHT else sColor
+                val headerText = (if (sectionCollapsed) "▸ " else "▾ ") + sectionLabel +
+                    (if (sectionCollapsed) "  · tap to expand" else "")
+                canvas.drawText(headerText, 56f, y + 2f, sectionLabelPaint)
 
                 // Gradient separator line
-                val lineStart = 56f + sectionLabelPaint.measureText(sectionLabel) + 10f
+                val lineStart = 56f + sectionLabelPaint.measureText(headerText) + 10f
                 sectionLinePaint.shader = LinearGradient(
                     lineStart,
                     0f,
@@ -2054,9 +2089,14 @@ class UiRenderer(private val activity: FilamentModelActivity) {
                 canvas.drawLine(lineStart, y - 2f, uiW - 40f, y - 2f, sectionLinePaint)
                 y += 8f
             }
+            if (sectionCollapsed) continue  // hidden row: no paint, no hit band
 
             val rowTop = y - 4f
             val rowBot = y + rowH - 14f
+            // Publish the painted band. Bottom uses the full row pitch so
+            // there are no dead gaps between rows.
+            paramRowTopY[i] = rowTop
+            paramRowBotY[i] = y + rowH - 4f
 
             val isSelected = i == selectedParam
             val isHovered = i == hoveredMenuParam

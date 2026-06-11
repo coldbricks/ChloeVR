@@ -98,6 +98,7 @@ object SettingsManager {
     private const val KEY_THERMAL_AUTO_DOWNGRADE = "thermal_auto_downgrade"
     private const val KEY_FOLLOW_ROOM_LIGHT = "follow_room_light"
     private const val KEY_ROOM_TRACKING = "room_tracking"
+    private const val KEY_MENU_SECTIONS_COLLAPSED = "menu_sections_collapsed"
 
     // Persistent spatial anchors (XR_EXT_spatial_entity). Default on — placed models stay in the
     // real room across sessions. Users who don't want the runtime to persist spatial data can
@@ -282,6 +283,12 @@ object SettingsManager {
     var roomTracking: Boolean
         get() { ensureInit(); return prefs.getBoolean(KEY_ROOM_TRACKING, false) }
         set(value) { ensureInit(); prefs.edit().putBoolean(KEY_ROOM_TRACKING, value).apply() }
+
+    // Main-menu section collapse bitmask (bit 0=MODEL, 1=LIGHTING, 2=SYSTEM).
+    // Lets the user hide param rows he never touches (2026-06-11 request).
+    var menuSectionsCollapsed: Int
+        get() { ensureInit(); return prefs.getInt(KEY_MENU_SECTIONS_COLLAPSED, 0) }
+        set(value) { ensureInit(); prefs.edit().putInt(KEY_MENU_SECTIONS_COLLAPSED, value).apply() }
 
     // ── Screen adjustments (per projection type) ────────────────────────
 
