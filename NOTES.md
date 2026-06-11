@@ -966,3 +966,111 @@ NOT yet verified on-head. Quest 3 not connected — its pass is pending. Item 5
 NEXT per the standing directive: R5 (specular IBL split-sum — Tier B baked
 cmgen cubemaps first, rescues Quest; Tier A live cubemap probe is CONFIRMED
 viable on the OTA'd Galaxy XR runtime), interleaved with DANCE plan D4/D5.
+
+## [Claude] 2026-06-10 — D9 Phase A implemented (Mixamo mocap articulation LIVE)
+
+The 627-drive JointDriveLayer dataset — dead in the APK since 2026-04-20 — is
+enabled, with the per-bone Mixamo→Tripo axis correction baked into a full
+regeneration. Build-verified both flavors; installed on Galaxy XR (@.179).
+NOT yet verified on-head. THIS is the "all 40 presets share the same generic
+arm motion" fix: 31 presets now carry real per-preset mocap articulation
+(spine/clavicles/arms/head, ~20 drives each).
+
+### Extractor (offline, this PC)
+- NEW tools/mixamo_extract/bind_pose.py: per-bone world bind rotations for
+  BOTH rigs + correction C = W_tripoBind⁻¹·W_mixamoBind; conjugates each
+  bone's SAMPLED rotation track D_tgt(t)=C·D_src(t)·Cᵀ, Euler-decomposes in
+  the runtime's Rz·Ry·Rx convention, re-fits the two-harmonic Fourier per
+  axis. Import-time self-tests on all compose/decompose round-trips.
+- GROUND-TRUTH VALIDATED both inputs (don't re-litigate these):
+  · Tripo side: production GLB node-quat chains vs skin inverseBindMatrices
+    = 0.000° on all 39 joints. Source GLB pulled from the headset:
+    C:\tmp\mixamo_inspect\ChloeVR_Bikini_FootPivot.glb (NOTE: loose file in
+    C:\tmp — re-pull from /sdcard/RIGGED/ if wiped; extractor warns + falls
+    back to UNCORRECTED if missing).
+  · Mixamo side: PreRotation chains vs Deformer TransformLink = 0.000° on
+    all bones; Lcl Rotation defaults absent → curves are pure bind-relative
+    deltas. FBX eEulerXYZ row-convention transposes to the same column
+    Rz·Ry·Rx the Kotlin runtime builds — only the bind FRAMES differed
+    (C angles 91-134°, which is why uncorrected data gull-winged).
+- THE acceptance signal hit: forearm drives migrated AXIS_Z → AXIS_X (Tripo
+  elbow-flex, the axis Tier-4 found empirically), rests +20..+97° = bent
+  elbows; twerk rest pose points forearms forward, HH arms down+asymmetric.
+- All 31 presets regenerated + spliced (623 JointDrive rows); 2 dup twerk
+  clips dropped as before. Source clips: C:\tmp\mixamo_dances\ (33 FBX).
+
+### Runtime (FilamentModelActivity + JointDriveLayer)
+- evaluate() ENABLED (~:3905): args snap.phase1bar (measure phase — NOT
+  phaseAtSnap(snap,1), which falls through the snapshot cache to volatile
+  loads) + ampGain (accent·mood·fill·musicalLevel; effInt deliberately
+  excluded — mocap degrees are absolute).
+- COMPOSITION MODEL CHANGED (supersedes the 2026-04-20 "compose on top"
+  design, documented in JointDriveLayer class doc): the layer OWNS its 9
+  joints — evaluate() re-bases the FULL owned set to bind every frame, then
+  composes rest+drives. Load-bearing: compose reads live localPose; with
+  Tier-4 arm SETs gated off, anything short of a per-frame re-base
+  accumulates → spinning arms. Groove/counter-twist writes on owned joints
+  are superseded by design (mocap spine motion is hips-relative already;
+  the hand-tuned counters would double-count it). IdleLayer breath still
+  composes after the dance pass — unaffected.
+- Tier-4 arm+elbow writes gated on `armLayer == null ||
+  !armLayer.ownsArms(stanceSkel)` — the gate the old comments CLAIMED
+  existed, now real, plus the ownsArms() refinement (see review fix 2).
+
+### Review (4 lenses × 3 refuters; TRUNCATED by the monthly spend limit —
+17 verifier agents died; 4 findings confirmed with code-cited verifications,
+3 more auto-rejected UNVERIFIED, triaged by hand below). All 4 fixed:
+1. MAJOR scene save/load dropped jointLayer (restore path never rehydrates;
+   saved Mixamo scene reloaded as Tier-4 arms with the Mixamo name in the
+   UI). loadScene() now rehydrates per model from dancePresets by
+   currentPresetName.
+2. MAJOR unbounded arm spin on ALIAS-named rigs (Mixamo-named GLBs): layer
+   resolves exact Tripo names only → no re-base, stance SETs gated off,
+   groove composes accumulate ~4°/frame. ownsArms() gate keeps Tier-4 arms
+   on such rigs; layer rebases its full owned set (incl. drive-less joints)
+   on Tripo rigs.
+3. minor evaluate phase arg — see above.
+4. minor shared layer instance across models (cache thrash with 2 dancers
+   on one preset + retained removed-model skeleton) → fresh per-model
+   instances sharing the immutable drives array (alloc at preset-switch
+   only, Invariant 6 clean).
+Hand-triage of the 3 unverified-rejected: PostRotation gap → loud warning
+added in bind_pose (Mixamo never sets it, verified); Properties70 tracker
+risk → empirically covered by the 0.000° TransformLink match; hardcoded
+C:\tmp GLB path → warned-fallback accepted, noted above.
+
+### ON-HEAD VERIFICATION (D9 Phase A) — run on the BIKINI rig FIRST
+1. Pick TWERK 1 MIXAMO from the dance picker: arms should read as REAL
+   mocap (bent elbows ~90°, hands forward, asymmetric L/R) — not the old
+   windshield drop+sway, not gull-wing, not spinning. Compare TWERK
+   (hand-tuned, layer-less) — its arms must be UNCHANGED.
+2. Walk several Mixamo presets (ARMS HIP HOP, SALSA, BELLY, YMCA, SHUFFLING,
+   MACARENA): each should have DISTINCT arm/spine/head character now. Watch
+   for any joint folding through the body or hyper-extended elbows (would
+   mean a bad axis on that bone — note WHICH bone+preset, the correction is
+   per-bone so one bad C doesn't indict the rest).
+3. Accumulation check: let one Mixamo preset run 5+ minutes — arms must NOT
+   drift/wind up. Then IMPROV through the full library twice.
+4. Spine: Mixamo presets should show mocap torso character; verify the
+   shoulders still read natural against the rigid-body yaw (the hand-tuned
+   counter-twist is superseded on layer presets — if shoulders now
+   over-rotate WITH the hips, that call was wrong and we re-blend).
+5. Scene round-trip: save a scene with a Mixamo preset active, reload it,
+   confirm the arms still dance mocap (review fix 1).
+6. SQUAT SHAKE / TWERK / CLUB HEAT (layer-less): zero behavior change
+   expected — handsOnKnees pose, elbow pulse, drop+sway all as yesterday.
+7. Perf: ~20 drives × sin ×2 + 9 rebases per layer model per frame — noise
+   vs budget, but confirm no new frame drops with 2 dancers on Mixamo
+   presets simultaneously (per-model instances, no cache thrash expected).
+
+### Parked / next
+- Groove arm micro-seasoning is dead on layer presets (superseded by
+  design). If mocap arms read flat on-head, re-blend groove as a small
+  compose AFTER evaluate rather than before.
+- D9 Phase B (EDGE clips on the 5090 → ClipDriveLayer) unblocked — the
+  axis-correction machinery it needs now exists and is validated.
+- D12 Phase 1 (twist bones) value partially unlocked: corrected Upperarm
+  AXIS_Y drives are live; twist redistribution worth doing after Phase A
+  verifies on-head.
+- Review fleet died on the MONTHLY SPEND LIMIT mid-verification — future
+  sessions: verifier-vote thinning, prefer 1 refuter/finding until reset.

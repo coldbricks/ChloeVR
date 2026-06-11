@@ -29,6 +29,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 from fbx_anim import extract_animation
+from bind_pose import (compute_corrections, euler_xyz_deg_to_matrices,
+                       matrices_to_euler_xyz_deg, rotation_angle_deg)
+
+# Tripo bind pose source for the per-bone axis correction (D9 Phase A).
+# This is the PRODUCTION GLB the app loads — pulled from the headset's
+# /sdcard/RIGGED/. The correction conjugates each Mixamo bone-local delta
+# into the Tripo bone's local frame: D_tgt = C @ D_src @ C^T with
+# C = W_tripoBind^-1 @ W_mixamoBind (world bind rotations, per bone).
+TRIPO_BIND_GLB = r"C:\tmp\mixamo_inspect\ChloeVR_Bikini_FootPivot.glb"
 
 
 # DancePreset runtime clamps (from FilamentModelActivity.kt:818-820).
@@ -233,22 +242,120 @@ def detrend(x):
     return x - (slope * t + intercept)
 
 
-def extract_joint_drives(anim, f_bob, fps, verbose=False):
+def fit_axis_drive(vs, f_bob, fps, tgt_name, axis_idx):
+    """Fit one decomposed angle track (degrees, unwrapped) into a JointDrive dict.
+
+    Shared by the corrected (conjugated) and legacy paths. Returns None when
+    both the oscillation and the rest offset are below MIN_JOINT_AMP_DEG.
+
+    The rest offset is the time-averaged value of the unwrapped track —
+    the Mixamo dancer's natural rest pose for this axis, now expressed in the
+    TARGET bone's local frame. Wrapped into (-180, 180] because unwrap() can
+    accumulate full turns on spin-through clips (ARMS HIP HOP / YMCA).
+    """
+    BPM_MIN, BPM_MAX = 60.0, 180.0
+    if len(vs) < 8:
+        return None
+    rest_angle_deg = float(np.mean(vs))
+    rest_angle_deg = ((rest_angle_deg + 180.0) % 360.0) - 180.0
+    vd = detrend(vs)
+    # Prefer a fundamental in the musical beat range; fall back to
+    # unconstrained search so a slow spine undulation at 0.5 Hz still
+    # emits a drive (rate will snap to 1 → one cycle per measure).
+    f, a1, phi_cos = dominant_sine(vd, fps, min_freq=BPM_MIN / 60, max_freq=BPM_MAX / 60)
+    if a1 < MIN_JOINT_AMP_DEG:
+        f, a1, phi_cos = dominant_sine(vd, fps)
+    if a1 < MIN_JOINT_AMP_DEG or f <= 0:
+        # No oscillation above threshold — emit a rest-only drive if the rest
+        # offset matters, else drop the axis entirely.
+        if abs(rest_angle_deg) < MIN_JOINT_AMP_DEG:
+            return None
+        return {
+            "jointName": tgt_name,
+            "axis": axis_idx,
+            "rate": 1,
+            "phase_offset": 0.0,
+            "amp_deg": 0.0,
+            "amp_2nd_deg": 0.0,
+            "phase_2nd_offset": 0.0,
+            "rest_angle_deg": rest_angle_deg,
+        }
+    rate = snap_rate(4.0 * f / f_bob)
+    phase_offset = phase_to_unit_sin(phi_cos)
+    # 2nd harmonic — relative to the joint's own fundamental (at 2*f).
+    a2, phi2_cos = harmonic_amp_phase(vd, fps, f, 2)
+    if a2 < MIN_JOINT_H2_AMP_DEG:
+        a2 = 0.0
+        phi2 = 0.0
+    else:
+        phi2 = phase_to_unit_sin(phi2_cos)
+    return {
+        "jointName": tgt_name,
+        "axis": axis_idx,
+        "rate": rate,
+        "phase_offset": phase_offset,
+        "amp_deg": min(a1, 30.0),   # safety cap — any single joint past 30° reads as broken
+        "amp_2nd_deg": a2,
+        "phase_2nd_offset": phi2,
+        "rest_angle_deg": rest_angle_deg,
+    }
+
+
+def corrected_bone_tracks(rot, correction, fps):
+    """Conjugate a bone's sampled Lcl Rotation track into the Tripo local frame.
+
+    rot: {"X": [(t, v), ...], ...} raw FBX curve samples (degrees).
+    correction: (C, rest_inv) from bind_pose.compute_corrections.
+
+    Per 60fps sample: D_src = Rz·Ry·Rx of the curve Eulers (bind-relative on
+    Mixamo exports — Lcl Rotation defaults are absent, verified);
+    D_tgt = C @ D_src @ C^T; decompose back to euler-xyz in the runtime's
+    Rz·Ry·Rx convention; unwrap each output track.
+
+    Returns {"X": ndarray, "Y": ndarray, "Z": ndarray} or None if too short.
+    """
+    c_mat, rest_inv = correction
+    series = {ax: rot.get(ax) for ax in ("X", "Y", "Z")}
+    present = [s for s in series.values() if s]
+    if not present:
+        return None
+    t0 = min(s[0][0] for s in present)
+    t1 = max(s[-1][0] for s in present)
+    n = int(round((t1 - t0) * fps)) + 1
+    if n < 8:
+        return None
+    ts = np.linspace(t0, t1, n)
+    tracks = {}
+    for ax, s in series.items():
+        if s:
+            tt = np.array([p[0] for p in s], dtype=np.float64)
+            vv = np.array([p[1] for p in s], dtype=np.float64)
+            vv = np.degrees(np.unwrap(np.radians(vv)))
+            tracks[ax] = np.interp(ts, tt, vv)
+        else:
+            tracks[ax] = np.zeros(n)
+    d_src = euler_xyz_deg_to_matrices(tracks["X"], tracks["Y"], tracks["Z"])
+    if not np.allclose(rest_inv, np.eye(3), atol=1e-9):
+        # Nonzero Lcl Rotation default: rebase curves to bind-relative first.
+        d_src = np.einsum('ij,njk->nik', rest_inv, d_src)
+    d_tgt = np.einsum('ij,njk,lk->nil', c_mat, d_src, c_mat)
+    xs, ys, zs = matrices_to_euler_xyz_deg(d_tgt)
+    return {
+        "X": np.degrees(np.unwrap(np.radians(xs))),
+        "Y": np.degrees(np.unwrap(np.radians(ys))),
+        "Z": np.degrees(np.unwrap(np.radians(zs))),
+    }
+
+
+def extract_joint_drives(anim, f_bob, fps, corrections=None, verbose=False):
     """Extract per-joint articulation drives for the Phase 2 JointDriveLayer.
 
-    Walks every bone in JOINT_MAP, decomposes each Lcl Rotation axis into
-    a single-harmonic drive at the beat-relative rate (plus an optional
-    2nd harmonic for double-time accents) AND a DC rest-pose offset.
-
-    The rest offset is the time-averaged value of the unwrapped Euler signal
-    — it captures the Mixamo dancer's natural rest pose so the runtime can
-    pose the target rig out of its T-pose bind into a sensible base before
-    layering the oscillatory drives on top.
-
-    Drives with BOTH oscillation amplitude AND rest offset below
-    MIN_JOINT_AMP_DEG are dropped — they'd clutter the literal with noise.
-    Axes that have a meaningful rest but below-threshold oscillation are
-    emitted as zero-amplitude rest-only drives.
+    Walks every bone in JOINT_MAP. With a correction table (D9 Phase A), the
+    bone's full rotation track is conjugated into the Tripo bone-local frame
+    BEFORE per-axis Fourier fitting — this is what moves Mixamo elbow flex
+    (forearm Z) onto the Tripo flex axis (forearm X) instead of gull-winging.
+    Without a correction entry the legacy uncorrected per-axis path runs
+    (loud warning — those drives are in the wrong frame on Tripo rigs).
 
     Returns a list of dicts ready for Kotlin emission:
         [{jointName, axis, rate, phase_offset, amp_deg, amp_2nd_deg,
@@ -257,7 +364,6 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
     if f_bob <= 0:
         return []
     drives = []
-    BPM_MIN, BPM_MAX = 60.0, 180.0
     for src_name, tgt_name in JOINT_MAP.items():
         bone = anim.get(src_name)
         if not bone:
@@ -267,85 +373,46 @@ def extract_joint_drives(anim, f_bob, fps, verbose=False):
         rot = bone.get("Lcl Rotation", {})
         if not rot:
             continue
-        for axis_name, axis_idx in (("X", 0), ("Y", 1), ("Z", 2)):
-            raw = rot.get(axis_name)
-            if not raw:
+        correction = (corrections or {}).get(src_name)
+        if correction is not None:
+            tracks = corrected_bone_tracks(rot, correction, fps)
+            if tracks is None:
                 continue
-            vs, _ = resample_uniform(raw, fps, unwrap_degrees=True)
-            if len(vs) < 8:
-                continue
-            # Mean rest pose offset: the time-averaged Euler value in the
-            # UNWRAPPED, un-detrended signal. This is what the Mixamo dancer's
-            # natural rest orientation is for this axis, relative to the
-            # source rig's bind-zero. At runtime JointDriveLayer adds this as
-            # a DC term to the Fourier drive so the bind-pose character
-            # actually sits in the Mixamo author's intended rest (arms bent
-            # and hanging) rather than wiggling around a T-pose zero.
-            #
-            # Wrap into (-180, 180] because unwrap() can accumulate full-turn
-            # offsets on spin-through clips (e.g. ARMS HIP HOP, YMCA) — the
-            # mean then sits at e.g. +344° which is geometrically the same
-            # pose as -16° but numerically unhelpful for the runtime.
-            rest_angle_deg = float(np.mean(vs))
-            rest_angle_deg = ((rest_angle_deg + 180.0) % 360.0) - 180.0
-            vd = detrend(vs)
-            # Prefer a fundamental in the musical beat range; fall back to
-            # unconstrained search so a slow spine undulation at 0.5 Hz still
-            # emits a drive (rate will snap to 1 → one cycle per measure).
-            f, a1, phi_cos = dominant_sine(vd, fps, min_freq=BPM_MIN / 60, max_freq=BPM_MAX / 60)
-            if a1 < MIN_JOINT_AMP_DEG:
-                f, a1, phi_cos = dominant_sine(vd, fps)
-            if a1 < MIN_JOINT_AMP_DEG or f <= 0:
-                # No oscillation above threshold — but if the joint has a
-                # substantial rest offset, we still want to emit a drive so
-                # the runtime can pose the bind to the Mixamo rest. Skip only
-                # if BOTH the oscillation AND the rest offset are tiny.
-                if abs(rest_angle_deg) < MIN_JOINT_AMP_DEG:
+            for axis_name, axis_idx in (("X", 0), ("Y", 1), ("Z", 2)):
+                d = fit_axis_drive(tracks[axis_name], f_bob, fps, tgt_name, axis_idx)
+                if d is not None:
+                    drives.append(d)
+        else:
+            print(f"  [!] {src_name}: NO axis correction — emitting in Mixamo "
+                  f"frame (WRONG on Tripo rigs)")
+            for axis_name, axis_idx in (("X", 0), ("Y", 1), ("Z", 2)):
+                raw = rot.get(axis_name)
+                if not raw:
                     continue
-                # Emit a zero-amplitude drive carrying only the rest offset.
-                # rate/phase don't matter when amp==0 but must be valid for
-                # the Kotlin data class; pick sane defaults.
-                drives.append({
-                    "jointName": tgt_name,
-                    "axis": axis_idx,
-                    "rate": 1,
-                    "phase_offset": 0.0,
-                    "amp_deg": 0.0,
-                    "amp_2nd_deg": 0.0,
-                    "phase_2nd_offset": 0.0,
-                    "rest_angle_deg": rest_angle_deg,
-                })
-                continue
-            rate = snap_rate(4.0 * f / f_bob)
-            phase_offset = phase_to_unit_sin(phi_cos)
-            # 2nd harmonic — relative to the joint's own fundamental (at 2*f),
-            # not to f_bob. Most dance clips have clean fundamentals, so this
-            # is usually small, but TWERK-style double-bob moves use it.
-            a2, phi2_cos = harmonic_amp_phase(vd, fps, f, 2)
-            if a2 < MIN_JOINT_H2_AMP_DEG:
-                a2 = 0.0
-                phi2 = 0.0
-            else:
-                phi2 = phase_to_unit_sin(phi2_cos)
-            drives.append({
-                "jointName": tgt_name,
-                "axis": axis_idx,
-                "rate": rate,
-                "phase_offset": phase_offset,
-                "amp_deg": min(a1, 30.0),   # safety cap — any single joint past 30° reads as broken
-                "amp_2nd_deg": a2,
-                "phase_2nd_offset": phi2,
-                "rest_angle_deg": rest_angle_deg,
-            })
+                vs, _ = resample_uniform(raw, fps, unwrap_degrees=True)
+                d = fit_axis_drive(vs, f_bob, fps, tgt_name, axis_idx)
+                if d is not None:
+                    drives.append(d)
     return drives
 
 
-def extract(fbx_path, clip_name, verbose=True):
+def extract(fbx_path, clip_name, verbose=True, corrections=None):
     want = {"mixamorig:Hips", "mixamorig:Spine2"} | set(JOINT_MAP.keys())
     anim, _, _ = extract_animation(fbx_path, bone_filter=want)
     hips = anim.get("mixamorig:Hips")
     if not hips:
         raise RuntimeError("mixamorig:Hips animation not found")
+
+    # D9 Phase A: per-bone axis-correction table. Computed from THIS clip's
+    # own skeleton (Mixamo rigs are identical across clips, but per-clip is
+    # self-consistent and costs ~1s) against the production Tripo GLB.
+    if corrections is None:
+        if Path(TRIPO_BIND_GLB).exists():
+            corrections = compute_corrections(TRIPO_BIND_GLB, fbx_path, JOINT_MAP)
+        else:
+            print(f"[!] TRIPO_BIND_GLB missing ({TRIPO_BIND_GLB}) — drives will "
+                  f"be emitted UNCORRECTED in the Mixamo frame")
+            corrections = {}
 
     fps = 60
     rx_raw = hips["Lcl Rotation"]["X"]
@@ -470,7 +537,8 @@ def extract(fbx_path, clip_name, verbose=True):
     # keeps authority over pelvis/waist/thigh/calf. Empty list = pure rigid-body
     # preset (current Phase 1 behaviour). For clips where we can't resolve
     # any upper-body joints, this naturally degrades to Phase 1.
-    joint_drives = extract_joint_drives(anim, f_bob, fps, verbose=verbose)
+    joint_drives = extract_joint_drives(anim, f_bob, fps, corrections=corrections,
+                                        verbose=verbose)
 
     preset = {
         "name": clip_name,

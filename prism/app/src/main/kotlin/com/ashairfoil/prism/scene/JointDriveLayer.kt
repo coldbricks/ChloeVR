@@ -4,25 +4,35 @@ import kotlin.math.PI
 import kotlin.math.sin
 
 /**
- * Phase 2 per-joint articulation layer. Composes WITH the rigid-body DancePreset
- * engine — does NOT replace Tier 4 joint writes.
+ * Phase 2 per-joint articulation layer — the Mixamo-mocap half of the dance
+ * engine. Runs alongside the rigid-body DancePreset engine.
  *
- * Composition model (locked in with user, captured in NOTES.md 2026-04-20):
+ * Composition model (D9 Phase A, 2026-06-10 — supersedes the 2026-04-20
+ * "compose on top of Tier 4" model):
  *   - Tier 4 owns Pelvis, Waist, Root, L/R_Thigh, L/R_Calf (biomechanics-coded).
- *   - JointDriveLayer owns Spine01, Spine02, L/R_Clavicle, L/R_Upperarm,
- *     L/R_Forearm, Head, optionally twist bones.
- *   - Overlap is tolerated: the layer calls [SkeletonRuntime.composeJointEulerXYZ]
- *     which right-multiplies the rotation onto whatever the prior writer left
- *     in `localPose`. Tier 4 writes its baseline via `setJointEulerXYZ` FIRST,
- *     then the layer composes its oscillation on top.
+ *   - JointDriveLayer OWNS Spine01, Spine02, L/R_Clavicle, L/R_Upperarm,
+ *     L/R_Forearm, Head outright: [evaluate] re-bases every owned joint to
+ *     bind each frame, then composes its drives. Tier-4 arm writes are gated
+ *     off when a layer is present (FilamentModelActivity stance block), and
+ *     earlier same-frame groove/counter-twist writes on owned joints are
+ *     deliberately superseded — the mocap drives are relative to the (rigid-
+ *     body-yawing) hips already, so the hand-tuned spine counters would
+ *     double-count. The per-frame re-base is load-bearing: compose reads the
+ *     LIVE localPose, so without it drives accumulate frame-over-frame
+ *     (spinning joints) the moment no other writer re-bases the joint.
+ *   - IdleLayer breath/sway still composes ON TOP (it runs after the dance
+ *     pass, including this layer).
  *
  * Each [JointDrive] describes a single Euler axis of a single joint as a
  * two-harmonic Fourier function of beat-phase plus a rest-pose offset:
  *     angle(ph) = restDeg + A1 * sin(2π*rate*ph + phi1) + A2 * sin(4π*rate*ph + phi2)
  *
- * The extractor (tools/mixamo_extract/extract_preset.py, Phase 2 widening)
+ * The extractor (tools/mixamo_extract/extract_preset.py + bind_pose.py)
  * produces these parameters from Mixamo clips with per-bone axis calibration
- * baked in OFFLINE — the runtime never calibrates, it just evaluates.
+ * baked in OFFLINE (each bone's sampled rotation track is conjugated from the
+ * Mixamo bone-local frame into the Tripo bone-local frame using world bind
+ * rotations from the production GLB and the clip's PreRotation chain, then
+ * re-fitted) — the runtime never calibrates, it just evaluates.
  *
  * Zero-alloc hot path per CLAUDE.md invariant #6:
  *   - [drives] is Array<JointDrive>, not List — no iterator allocation.
@@ -57,6 +67,56 @@ class JointDriveLayer(val drives: Array<JointDrive>) {
     /** Number of distinct joints referenced by any resolved drive. */
     private var uniqueCount: Int = 0
     private var lastSkelIdentity: SkeletonRuntime? = null
+    /**
+     * The layer's fixed ownership set resolved against the current skeleton
+     * (same order as [OWNED_JOINTS], -1 = bone absent). Resolved by EXACT
+     * Tripo name only — on alias-named rigs (Mixamo etc.) the entries stay -1,
+     * [ownsArms] returns false, and Tier 4 keeps the arms (the drives were
+     * conjugated into TRIPO bone frames; driving alias rigs with them would
+     * re-create the wrong-axis problem this work removed).
+     */
+    private val ownedIdx = IntArray(OWNED_JOINTS.size) { -1 }
+
+    /** Resolve drive + ownership joint indices once per skeleton identity. */
+    private fun ensureResolved(skel: SkeletonRuntime) {
+        if (skel === lastSkelIdentity) return
+        lastSkelIdentity = skel
+        uniqueCount = 0
+        for (i in drives.indices) {
+            val jIdx = skel.indexOf(drives[i].jointName)
+            jointIndexCache[i] = jIdx
+            if (jIdx < 0) {
+                accumIdxPerDrive[i] = -1
+                continue
+            }
+            // Find an existing slot for this joint, else allocate one.
+            var slot = -1
+            for (s in 0 until uniqueCount) {
+                if (accumJointIdx[s] == jIdx) { slot = s; break }
+            }
+            if (slot < 0) {
+                slot = uniqueCount
+                accumJointIdx[slot] = jIdx
+                uniqueCount++
+            }
+            accumIdxPerDrive[i] = slot
+        }
+        for (o in OWNED_JOINTS.indices) {
+            ownedIdx[o] = skel.indexOf(OWNED_JOINTS[o])
+        }
+    }
+
+    /**
+     * True when this skeleton carries the exact Tripo arm bones the layer
+     * owns (both upperarms AND both forearms). The Tier-4 arm gate uses this:
+     * gating Tier 4 off without the layer re-basing the arms would leave the
+     * groove block's composes accumulating without bound.
+     */
+    fun ownsArms(skel: SkeletonRuntime): Boolean {
+        ensureResolved(skel)
+        // OWNED_JOINTS[4..7] = L/R_Upperarm, L/R_Forearm.
+        return ownedIdx[4] >= 0 && ownedIdx[5] >= 0 && ownedIdx[6] >= 0 && ownedIdx[7] >= 0
+    }
 
     /**
      * Write posed rotations into [skel.localPose] for every drive in this layer.
@@ -70,29 +130,18 @@ class JointDriveLayer(val drives: Array<JointDrive>) {
      *                   scaled by ampGain — it's a fixed bind-relative bias.
      */
     fun evaluate(beatPhase: Float, skel: SkeletonRuntime, ampGain: Float) {
-        // Re-resolve joint indices + accumulator layout if the skeleton changed.
-        if (skel !== lastSkelIdentity) {
-            lastSkelIdentity = skel
-            uniqueCount = 0
-            for (i in drives.indices) {
-                val jIdx = skel.indexOf(drives[i].jointName)
-                jointIndexCache[i] = jIdx
-                if (jIdx < 0) {
-                    accumIdxPerDrive[i] = -1
-                    continue
-                }
-                // Find an existing slot for this joint, else allocate one.
-                var slot = -1
-                for (s in 0 until uniqueCount) {
-                    if (accumJointIdx[s] == jIdx) { slot = s; break }
-                }
-                if (slot < 0) {
-                    slot = uniqueCount
-                    accumJointIdx[slot] = jIdx
-                    uniqueCount++
-                }
-                accumIdxPerDrive[i] = slot
-            }
+        ensureResolved(skel)
+
+        // Re-base the ENTIRE owned set to bind — not just drive-referenced
+        // joints. Tier-4 arm writers are gated off when a layer owns the arms
+        // and compose reads the LIVE localPose — without this, earlier
+        // same-frame composes (groove arms) accumulate frame-over-frame
+        // (spinning arms), including on owned joints this preset happens to
+        // carry no drives for. Joints that earlier writers SET this frame
+        // (groove spine/head/clavicles) are deliberately re-based too: with a
+        // layer active, the layer owns its joints' base pose (see class doc).
+        for (o in ownedIdx.indices) {
+            if (ownedIdx[o] >= 0) skel.resetJointToBind(ownedIdx[o])
         }
 
         // Zero the accumulator slice for this frame.
@@ -121,8 +170,8 @@ class JointDriveLayer(val drives: Array<JointDrive>) {
         }
 
         // Single compose call per unique joint — combines all axes in Z→Y→X
-        // order inside composeJointEulerXYZ. Right-multiplies onto whatever
-        // Tier 4 left in localPose, so biomechanics writes survive.
+        // order inside composeJointEulerXYZ. Right-multiplies onto the bind
+        // local restored above, i.e. effectively bind * rotXYZ(accum).
         for (s in 0 until uniqueCount) {
             skel.composeJointEulerXYZ(accumJointIdx[s], accumX[s], accumY[s], accumZ[s])
         }
@@ -132,6 +181,12 @@ class JointDriveLayer(val drives: Array<JointDrive>) {
         const val AXIS_X = 0
         const val AXIS_Y = 1
         const val AXIS_Z = 2
+
+        // Fixed ownership set (class doc). Order matters: [ownsArms] reads
+        // slots 4..7 (L/R_Upperarm, L/R_Forearm).
+        private val OWNED_JOINTS = arrayOf(
+            "Spine01", "Spine02", "L_Clavicle", "R_Clavicle",
+            "L_Upperarm", "R_Upperarm", "L_Forearm", "R_Forearm", "Head")
     }
 }
 

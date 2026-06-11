@@ -112,17 +112,27 @@ Phase conversion: the Phase 2 runtime evaluator uses `sin(2π * ph)` directly
 converts cleanly to sin-phase in the preset — this fixes the 0.25-cycle
 mis-alignment that Phase 1 punted.
 
-### What's still NOT calibrated
+### Per-bone axis correction (D9 Phase A — landed 2026-06-10)
 
-- No per-bone axis-correction quaternion. Drives are emitted in Mixamo's
-  local-rotation frame. The user's rig is Tripo-authored; although both are
-  Y-up with approximately matching orientation conventions, individual bones
-  (especially the clavicles and forearms) have subtly different local-frame
-  bases. On-device testing will show which bones look wrong — at that point
-  we bake a correction quat per bone from the target rig's bind pose and
-  rerun. The target bind pose for the user's rigged character
-  (`BIKINI+GIRL+WITH+BONES+MIXAMO.zip`) hasn't been parsed into an extractor
-  input yet.
+`bind_pose.py` bakes the correction the old "NOT calibrated" note asked for:
+
+- Tripo side: per-joint world bind rotations from the PRODUCTION GLB
+  (`C:\tmp\mixamo_inspect\ChloeVR_Bikini_FootPivot.glb`, pulled from the
+  headset's /sdcard/RIGGED/) — node-quaternion chains, validated 0.000 deg
+  against the skin's inverseBindMatrices.
+- Mixamo side: per-bone PreRotation chains from the clip's own FBX (Lcl
+  Rotation defaults are absent on Mixamo exports, so the curves are pure
+  bind-relative deltas) — validated 0.000 deg against the Deformer
+  TransformLink matrices.
+- Per bone: `C = W_tripoBind^-1 @ W_mixamoBind`; the SAMPLED rotation track
+  is conjugated `D_tgt(t) = C @ D_src(t) @ C^T` (matrix track, not
+  coefficients — conjugation mixes axes), Euler-decomposed in the runtime's
+  Rz@Ry@Rx convention, unwrapped, and re-fitted per axis.
+- Verified: Mixamo elbow flex (forearm Z) lands on Tripo forearm X — the
+  flex axis Tier 4 established empirically ("Z gull-winged her").
+
+Conventions are self-tested on import (compose/decompose round-trips); a
+missing GLB falls back to UNCORRECTED emission with a loud warning.
 - Head motion is extracted from Mixamo alongside the body, but gaze tracking
   in `FilamentModelActivity` writes a whole-model quaternion (not the Head
   joint) for viewer-facing bias, so the two layers compose additively with
