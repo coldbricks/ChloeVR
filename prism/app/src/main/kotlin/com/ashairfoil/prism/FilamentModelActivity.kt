@@ -2713,14 +2713,22 @@ class FilamentModelActivity : ComponentActivity() {
                                 if (uiRenderer.pendingUiBitmap != null) {
                                     uiRenderer.pendingUiBitmap = null
                                 }
-                                // tryLock BEFORE acquiring a swapchain image. Acquiring
+                                // Lock BEFORE acquiring a swapchain image. Acquiring
                                 // first and releasing without an upload composited that
                                 // image's ~3-frame-old content (rotating swapchain) —
                                 // the cursor visibly snapped BACKWARD whenever the UI
                                 // thread held the lock mid flip-copy. Skipping the
                                 // acquire entirely keeps the compositor on the last
                                 // released image instead: no stall, no time travel.
-                                if (uiRenderer.bitmapLock.tryLock()) {
+                                // BOUNDED wait, not instant tryLock: the coalescing UI
+                                // thread holds this lock for a flip-copy nearly every
+                                // frame, and an instant tryLock lost the race so often
+                                // that the FIRST upload never happened — uiHasContent_
+                                // stayed false and the menu quad was INVISIBLE forever.
+                                val uploadLocked = try {
+                                    uiRenderer.bitmapLock.tryLock(4L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                                } catch (ie: InterruptedException) { false }
+                                if (uploadLocked) {
                                     try {
                                         val fb = uiRenderer.uiFlipBitmap
                                         if (fb != null) {
@@ -4785,8 +4793,17 @@ class FilamentModelActivity : ComponentActivity() {
             try {
                 renderUiToBitmap()
             } finally {
-                uiRenderQueued = false
-                if (uiRenderDirty) requestUiRender()
+                if (uiRenderDirty) {
+                    // Re-render needed, but BREATHE: an immediate re-post kept
+                    // this thread flip-copying back-to-back, holding bitmapLock
+                    // so hot the render thread could never win its upload
+                    // tryLock — the menu quad starved and never appeared.
+                    // 8ms ≈ one display frame of air. uiRenderQueued stays true
+                    // so callers keep coalescing into this scheduled run.
+                    uiRenderHandler.postDelayed(this, 8L)
+                } else {
+                    uiRenderQueued = false
+                }
             }
         }
     }

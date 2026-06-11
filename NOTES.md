@@ -1388,3 +1388,29 @@ NEXT SESSION #1: self-heal — render loop detects N consecutive FBO-incomplete
 frames in the first seconds and tears down/recreates the GL targets (or
 defers GlesModelRenderer FBO creation until session FOCUSED + first valid
 frame). Check WHERE the FBOs are created relative to xrBeginSession.
+
+### Addendum 3 — VOCABULARY + the real "main intro menu" (read this first next session)
+The user''s "main intro menu" / "main ChloeVR launch screen" / "THE LOBBY" =
+**MainActivity, the galaxyxr media home (photos/videos/browser)**. It does
+NOT exist on Quest (port scope: dancer viewer only) — half of tonight''s
+"menu is invisible" chase was this missing-by-design screen, not a bug.
+User asked for it on Quest, then decided **"Not now"** (2026-06-11) — it is
+a live future want, not rejected. If ported: native OpenXR/GLES path
+(MediaCodec→OES texture, equirect/fisheye shaders, reuse panel UI +
+MediaLibrary + FileNameParser).
+
+### Addendum 4 — late-night fixes after v2.6.0
+- UI upload starvation: coalescing re-post made the UiRender thread hold
+  bitmapLock nearly continuously while the upload path used an instant
+  tryLock → first upload could lose every race → quad stuck invisible.
+  Fix: bounded tryLock(4ms) + 8ms breathing room on the dirty re-post.
+- HOME (quest) reworked AGAIN — final behavior: IN-APP intro. autosave →
+  clear scenario → fresh main panel + rigged-GLB picker open. finish() was
+  wrong too: Horizon home = passthrough + dock = read as "broken blank
+  window with a cryptic Meta bar". EXIT remains the real quit.
+- OPERATIONAL (important): adb `am start` of the immersive activity while
+  the headset is DOFFED = Horizon kills the undrawn launch in seconds
+  (user sees launch-splash-in → exit-splash-out back to back). Never
+  remote-launch; let the user launch from the library while wearing it.
+  Also: `am force-stop com.oculus.vrshell` cleared the stale 2D-panel
+  placement records that earlier poisoned launches.

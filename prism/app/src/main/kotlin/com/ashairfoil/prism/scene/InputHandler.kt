@@ -2388,14 +2388,59 @@ class InputHandler(private val activity: FilamentModelActivity) {
                     })
                     activity.finish()
                 } else {
-                    // Horizon gotchas, both live-verified: moveTaskToBack is a
-                    // no-op for immersive apps, and launching the HOME intent
-                    // DEMOTES the app to an invisible empty 2D panel (user saw
-                    // only passthrough + a floating panel handle). finish() is
-                    // the clean exit: onDestroy autosaves the scene (LAST
-                    // restores it) and Horizon home takes over.
-                    Log.i(TAG, "Action: HOME — finishing to system home (scene autosaves)")
-                    activity.runOnUiThread { activity.finish() }
+                    // Quest HOME = ChloeVR's own intro, IN-APP. Every escape
+                    // hatch Horizon offers was live-verified broken or wrong:
+                    // moveTaskToBack = no-op; HOME intent = demoted to an
+                    // invisible 2D panel; finish() = Horizon home, which the
+                    // user reads as a broken "blank passthrough window with a
+                    // cryptic Meta bar" (his home environment IS passthrough).
+                    // What he means by HOME is "back to the start screen":
+                    // autosave, clear the scenario, fresh panel + girl picker.
+                    // EXIT remains the real quit.
+                    Log.i(TAG, "Action: HOME — autosave + clear scenario + intro panel")
+                    if (models.isNotEmpty()) {
+                        try {
+                            activity.saveScene("_autosave")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "HOME autosave failed", e)
+                        }
+                        val grH = activity.glesRenderer
+                        if (grH != null) {
+                            for (m in models) grH.removeModel(m.gpuModelId)
+                        }
+                        models.clear()
+                        selectedModelIndex = -1
+                    }
+                    // Collapse every sub-mode back to the main panel, then
+                    // open the rigged-GLB library: "pick your girl" IS the
+                    // intro screen on Quest.
+                    activity.beatSettingsMode = false
+                    activity.audioPlayerMode = false
+                    activity.audioPickerMode = false
+                    activity.scenePickerMode = false
+                    activity.lightingPresetMode = false
+                    activity.saveNameMode = false
+                    activity.riggedOnlyMode = true
+                    activity.glbPickerMode = true
+                    hoveredGlbIndex = -1
+                    activity.glbPickerScrollOffset = 0
+                    // Re-place the panel in front of the user (same math as
+                    // the B-button open path).
+                    val grP = activity.glesRenderer
+                    if (grP != null) {
+                        grP.panelW = activity.PANEL_WIDTH * activity.panelScale
+                        grP.panelH = activity.PANEL_HEIGHT * activity.panelScale
+                        grP.panelX = activity.camPosX + activity.camFwdX * 1.2f
+                        grP.panelY = activity.camPosY + activity.camFwdY * 1.2f
+                        grP.panelZ = activity.camPosZ + activity.camFwdZ * 1.2f
+                        val yawH = kotlin.math.atan2(-activity.camFwdX, -activity.camFwdZ)
+                        activity.panelRotX = 0f
+                        activity.panelRotY = kotlin.math.sin(yawH * 0.5f)
+                        activity.panelRotZ = 0f
+                        activity.panelRotW = kotlin.math.cos(yawH * 0.5f)
+                    }
+                    activity.uiRenderer.showMessage("Fresh scene — pick a girl (old scene saved to LAST)")
+                    activity.uiNeedsRefresh = true
                 }
                 return
             } else if (activity.menuVisible && hoveredActionButton == 102) {
