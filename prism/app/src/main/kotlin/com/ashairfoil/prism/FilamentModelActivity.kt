@@ -4978,6 +4978,13 @@ class FilamentModelActivity : ComponentActivity() {
         uiRenderHandler.removeCallbacksAndMessages(null)
         uiRenderThread.quitSafely()
         super.onDestroy()
+        // The native OpenXR renderer + GL stack do NOT survive re-init in a
+        // reused process — relaunching after finish() produced endless "FBO
+        // incomplete 0x0", dead input, and an invisible menu (live-verified).
+        // Exit so the next launch always gets a fresh process. Never reached
+        // on the permission-gate bounce path (early return above), where the
+        // gate activity still needs this process.
+        Runtime.getRuntime().exit(0)
     }
 
     // ── JNI ──
