@@ -106,6 +106,21 @@ def main():
     print(f"meshes[0] '{mesh0.get('name')}' primitives={len(mesh0['primitives'])} "
           f"verts={pos_acc['count']}")
     check(pos_acc["count"] > 10000, "meshes[0].primitives[0] is the body (loader reads ONLY this)")
+    # Review #8: a multi-material body round-trips into MULTIPLE primitives and
+    # the loader silently drops everything past [0][0].
+    check(len(mesh0["primitives"]) == 1,
+          f"meshes[0] has exactly 1 primitive (got {len(mesh0['primitives'])} — extras are DROPPED on device)")
+    if len(gltf["meshes"]) > 1:
+        def mesh_verts(mi):
+            return sum(gltf["accessors"][pr["attributes"]["POSITION"]]["count"]
+                       for pr in gltf["meshes"][mi]["primitives"]
+                       if "POSITION" in pr.get("attributes", {}))
+        total = sum(mesh_verts(mi) for mi in range(len(gltf["meshes"])))
+        check(mesh_verts(0) >= 0.9 * total,
+              f"meshes[0] dominates vertex count ({mesh_verts(0)}/{total}) — other meshes are dropped")
+    body_nodes = [ni for ni, nd in enumerate(nodes) if nd.get("mesh") == 0]
+    check(any("skin" in nodes[ni] for ni in body_nodes),
+          "the node referencing meshes[0] carries the skin")
     for a in ("NORMAL", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0"):
         check(a in attrs, f"attribute {a} present")
 
@@ -116,6 +131,9 @@ def main():
 
     bad_norm = sum(1 for w in wdata if abs(sum(w) - 1.0) > 0.01 and sum(w) > 0)
     check(bad_norm < len(wdata) * 0.01, f"weights normalized ({bad_norm} rows off)")
+    # Review #9: all-zero rows skin to a zero matrix and collapse to the origin.
+    zero_rows = sum(1 for w in wdata if sum(w) == 0)
+    check(zero_rows == 0, f"no zero-weight rows ({zero_rows} found — they collapse to the origin on device)")
 
     helper_idx = {names.index(h) for h in ("Breast_L", "Breast_R", "Glute_L", "Glute_R") if h in names}
     counts = Counter()
@@ -130,6 +148,14 @@ def main():
     check(all(counts.get(j, 0) >= 50 for j in helper_idx), "every helper bone skins >= 50 verts")
     check(all(maxw.get(j, 0) <= 0.45 for j in helper_idx),
           "helper influence SHARES (max weight <= 0.45, never owns the flesh)")
+    # Review #10: the per-bone cap missed verts inside TWO helper spheres
+    # (cleavage) stacking combined share past the intent.
+    comb = 0.0
+    for jrow, wrow in zip(jdata, wdata):
+        s = sum(w for j, w in zip(jrow, wrow) if j in helper_idx)
+        if s > comb:
+            comb = s
+    check(comb <= 0.45, f"combined helper share per vertex <= 0.45 (max {comb:.2f})")
 
     mat_ok = bool(gltf.get("materials")) and "pbrMetallicRoughness" in gltf["materials"][0]
     tex_ok = bool(gltf.get("images"))

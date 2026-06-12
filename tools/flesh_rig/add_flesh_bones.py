@@ -100,10 +100,28 @@ def main():
     lat.normalize()
     fwd = lat.cross(up).normalized()  # sign resolved below
 
+    # One vertex space for everything (review #15): the apex/sign searches AND
+    # the weight pass below all use the EVALUATED mesh's world positions. The
+    # vertex-group reads index the raw mesh, so the counts must line up.
+    me = mesh_obj.data
     deps = bpy.context.evaluated_depsgraph_get()
     mesh_eval = mesh_obj.evaluated_get(deps)
+    if len(mesh_eval.data.vertices) != len(me.vertices):
+        fail("evaluated vertex count differs from raw mesh — generative modifier present, refusing")
     mw = mesh_eval.matrix_world
     verts = [mw @ v.co for v in mesh_eval.data.vertices]
+
+    # Per-vertex body-region skinning mass: keeps hair/props/accessories out
+    # of the axis + apex searches (review #7/#11) — long back hair could
+    # previously flip "forward" and put the breast bones on the back.
+    gi = {g.name: g.index for g in mesh_obj.vertex_groups}
+
+    def region_mass(group_names):
+        idx = {gi[r] for r in group_names if r in gi}
+        return [sum(ge.weight for ge in v.groups if ge.group in idx) for v in me.vertices]
+
+    chest_mass = region_mass(("Spine02", "Spine01"))
+    lower_mass = region_mass(("Pelvis", "Waist", "Hip", "L_Thigh", "R_Thigh"))
 
     ys = [v.dot(up) for v in verts]
     height = max(ys) - min(ys)
@@ -112,10 +130,12 @@ def main():
 
     shoulder_half = (l_arm - r_arm).length * 0.5
 
-    def band_apexes(y_lo, y_hi, direction, lat_lo, lat_hi):
+    def band_apexes(y_lo, y_hi, direction, lat_lo, lat_hi, mask):
         """Per-side apex = CENTROID of the verts within 1.5cm of the side's
         max along `direction`, inside the height band AND an anatomical
-        lateral window. Centroid beats single-vertex (one outlier on an
+        lateral window, considering only verts skinned to the body region
+        (`mask` — review #11: hair draping into the band must not drag the
+        centroid). Centroid beats single-vertex (one outlier on an
         asymmetric Tripo bind pose moved a glute 11cm); the lateral floor
         keeps the search out of the push-up cleavage, the ceiling off the
         T-pose arms. Result is then SYMMETRIZED: both sides get the mean
@@ -123,7 +143,9 @@ def main():
         placement even on an asymmetric mesh."""
         center_l = (spine02.dot(lat))
         cands = {1: [], -1: []}
-        for v in verts:
+        for vi, v in enumerate(verts):
+            if mask[vi] < 0.25:
+                continue
             if not (y_lo <= v.dot(up) <= y_hi):
                 continue
             side_off = v.dot(lat) - center_l
@@ -151,12 +173,29 @@ def main():
         return out
 
     # Resolve forward sign: at chest height the bust protrudes farther from
-    # the spine plane than the back does.
+    # the spine plane than the back does. Candidates are restricted to verts
+    # skinned to the chest region inside a lateral window, and the two sides
+    # compare SLAB CENTROIDS — a single stray hair/prop vertex behind the
+    # back can no longer flip "forward" (review #7/#11).
     chest_lo = spine02.dot(up) - 0.02 * scale
     chest_hi = spine02.dot(up) + (head.dot(up) - spine02.dot(up)) * 0.55
-    spine_f = spine02.dot(fwd)
-    plus = max((v.dot(fwd) - spine_f) for v in verts if chest_lo <= v.dot(up) <= chest_hi)
-    minus = max((spine_f - v.dot(fwd)) for v in verts if chest_lo <= v.dot(up) <= chest_hi)
+    center_l = spine02.dot(lat)
+    chest_cands = [v for vi, v in enumerate(verts)
+                   if chest_mass[vi] >= 0.25
+                   and chest_lo <= v.dot(up) <= chest_hi
+                   and abs(v.dot(lat) - center_l) <= 0.12 * height]
+    if len(chest_cands) < 50:
+        fail(f"only {len(chest_cands)} chest-region verts for the forward-sign test")
+
+    def slab_centroid_depth(direction):
+        dmax = max(v.dot(direction) for v in chest_cands)
+        slab = [v.dot(direction) for v in chest_cands if v.dot(direction) >= dmax - 0.015 * height]
+        return sum(slab) / len(slab) - spine02.dot(direction)
+
+    plus = slab_centroid_depth(fwd)
+    minus = slab_centroid_depth(-fwd)
+    if max(plus, minus) < 1.05 * min(plus, minus):
+        fail(f"forward sign ambiguous (bulge +{plus:.3f} vs -{minus:.3f}) — inspect this mesh")
     if minus > plus:
         fwd = -fwd
     log(f"forward={tuple(round(c, 2) for c in fwd)} (bulge +{max(plus, minus):.3f} vs {min(plus, minus):.3f})")
@@ -167,10 +206,10 @@ def main():
     h = height
     breast_apex = band_apexes(chest_lo,
                               spine02.dot(up) + (head.dot(up) - spine02.dot(up)) * 0.40,
-                              fwd, 0.030 * h, 0.105 * h)
+                              fwd, 0.030 * h, 0.105 * h, chest_mass)
     glute_lo = pelvis.dot(up) - 0.16 * scale
     glute_hi = pelvis.dot(up) + 0.06 * scale
-    glute_apex = band_apexes(glute_lo, glute_hi, -fwd, 0.022 * h, 0.095 * h)
+    glute_apex = band_apexes(glute_lo, glute_hi, -fwd, 0.022 * h, 0.095 * h, lower_mass)
     for side, v in {**{f"breast{s}": breast_apex[s] for s in (1, -1)},
                     **{f"glute{s}": glute_apex[s] for s in (1, -1)}}.items():
         if v is None:
@@ -214,20 +253,27 @@ def main():
         "Glute_L": ("Pelvis", "Waist", "Hip", "L_Thigh", "R_Thigh"),
         "Glute_R": ("Pelvis", "Waist", "Hip", "L_Thigh", "R_Thigh"),
     }
-    me = mesh_obj.data
-    gi = {g.name: g.index for g in mesh_obj.vertex_groups}
     for name, parent, head_w, dir_w, radius in specs:
         region_idx = {gi[r] for r in REGION[name] if r in gi}
         vg = mesh_obj.vertex_groups.new(name=name)
         n = 0
         r_in = radius * 0.3
+        side = 1.0 if name.endswith("_L") else -1.0
         for vi, v in enumerate(me.vertices):
-            wv = mesh_obj.matrix_world @ v.co
+            wv = verts[vi]  # evaluated world position — same space as placement (review #15)
             d = (wv - head_w).length
             if d >= radius:
                 continue
             region_w = sum(ge.weight for ge in v.groups if ge.group in region_idx)
             w = 0.5 * (1.0 - smoothstep(r_in, radius, d)) * min(1.0, region_w * 1.5)
+            if name.startswith("Breast"):
+                # Midline gate (review #10): cleavage verts sit inside BOTH
+                # breast spheres — weight must not stack across the midline.
+                w *= smoothstep(0.0, 0.01 * height, (wv.dot(lat) - center_l) * side)
+            else:
+                # Rear-hemisphere gate (review #10): the glute sphere reaches
+                # the groin by construction; keep weight behind the bone head.
+                w *= smoothstep(-0.01 * height, 0.01 * height, (wv - head_w).dot(dir_w))
             if w > 0.01:
                 vg.add([vi], w, "REPLACE")
                 n += 1

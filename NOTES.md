@@ -1414,3 +1414,99 @@ MediaLibrary + FileNameParser).
   remote-launch; let the user launch from the library while wearing it.
   Also: `am force-stop com.oculus.vrshell` cleared the stale 2D-panel
   placement records that earlier poisoned launches.
+
+## [Claude] 2026-06-12 — Void-launch FIX + D10 adversarial review landed (fleet session)
+
+Two background fleets ran (void-launch recon 8 agents; D10 review 73 agents,
+15 confirmed / 8 refuted findings). Everything below is implemented and
+BUILD SUCCESSFUL both flavors. UNCOMMITTED — commit after on-head verification.
+
+### Void launch: ROOT CAUSE = EGL context handoff race (Addendum 2 solved)
+The onCreate init thread makes the EGL context current (xr_renderer initEGL)
+and NEVER releases it; the render thread's sole bind attempt DISCARDED its
+Boolean (old fma:2187). EGL forbids binding a context current on another
+thread (EGL_BAD_ACCESS 0x3002) — whether launch works was a race on the init
+thread dying before the render thread binds; the "Reprojected OS dialog"
+stretches that window. A lost race = every GL call no-ops, status checks
+return 0x0 forever (frameCount never advances, so the <5/<10 log throttles
+never engage = the ENDLESS spam), menu quad invisible while uiHasContent_
+stays true. Adversarially judged fix (Design 3 + Design 1 safety graft):
+- NEW nativeReleaseGLContext (renderer_jni_bridge.cpp): init thread releases
+  the context RIGHT BEFORE startRenderLoop() — removes the race in program
+  order. Idiom = shutdownEGL's exact call shape.
+- Render thread: checked bind w/ bounded retry (400x5ms); on final failure
+  finish() for a clean process (rides the existing exit-on-destroy).
+- Self-heal net (covers bind-succeeds-but-GL-dead): GlesModelRenderer counts
+  consecutive failed eye-FBO passes (fboFailStreak/lastFboStatus, armed only
+  until hasRenderedOnce); at 20, render loop re-makes current + calls NEW
+  recreateRenderTargets() (deletes/recreates eye+shadow+bloom targets via the
+  destroy() glIdBuf idiom; shadow-FBO completeness = the canary). 3 attempts,
+  then finish() on the NEXT overflow unconditionally. Zero-alloc steady state.
+- LOGCAT MARKERS for the next void repro: "EGL context released from init
+  thread" → "EGL context made current on render thread" (0 retries) = healthy.
+  "eglMakeCurrent on render thread failed: 0x3002" in any SAVED void logcat
+  confirms the mechanism FOR FREE — check that before any sideload test.
+- Open verifications: dialog-blocked launches on both flavors; Galaxy XR
+  tolerance of the brief unbound window (Samsung diverges); permission-gate
+  bounce path; healthy-launch regression (no self-heal lines expected).
+
+### D10 SpringBoneLayer fixes (all in SpringBoneLayer.kt, build-verified)
+1. Front-hemisphere clamp after the length constraint — anti-parallel was a
+   REACHABLE stiffness-proof fixed point (fast axial grab/reel parked the
+   tail; flesh rendered flipped/garbled ~0.5s; refuters reproduced it
+   numerically). The "can't happen" comment was false.
+2. Frame-rate-independent damping: inertia = exp(ln(1-drag)·dt·72) — exactly
+   matches the on-head 72Hz tuning at 72Hz; Quest 90/120Hz + 36Hz
+   reprojection now feel identical (was ~12x deader at 120Hz).
+3. Teleport guard: head moved >4 tail-lengths in one frame (pose snap, SHAKE
+   reset, scene load) → re-seed at rest instead of integrating the jump.
+4. NaN fail-safe: every guard comparison inverted so non-finite values take
+   the safe branch (was: one NaN frame permanently corrupted the helper).
+5. Non-uniform-scale correctness: directions go through NORMALIZED parent
+   columns (positions keep scale); transpose-back divides by squared column
+   norms; tail len from geometric mean of all 3 model columns (beat
+   squash-stretch biased directions up to ~8° and breathed the lever arm).
+6. resolve() provenance gate: helper adopted only if parented to
+   Spine02/Pelvis AND a leaf — rigs that merely name a bone Breast_L keep
+   their authored skinning.
+On-head checks: hard grab-yank + full-stick reel along the bust/glute axis
+(no flip/snap), feel parity Quest vs Galaxy, old GLBs unchanged.
+
+### Flesh-rig tool hardening (add_flesh_bones.py + verify_flesh_glb.py)
+- Forward-sign + apex searches now masked to body-region-skinned verts and
+  the sign test compares slab CENTROIDS in a lateral window — long back hair
+  could previously flip "forward" and put breast bones on the BACK; ambiguous
+  sign now fails loudly.
+- One vertex space everywhere (evaluated mesh; count-mismatch fails loudly).
+- Weight gates: breasts get a midline gate (no cleavage double-cover),
+  glutes get a rear-hemisphere gate (sphere reached the groin by construction).
+- Verifier new gates: exactly 1 primitive in meshes[0] (multi-material body
+  = silent geometry loss), mesh-0 vertex dominance when multi-mesh, skin on
+  the body node, zero-weight rows (origin-collapse), combined helper share
+  ≤0.45/vertex. Deliberately NOT added: bind-translation placement assertion
+  (circular without trusting forward; root cause fixed tool-side).
+- REGRESSION: deployed ChloeVR_Bikini_Flesh.glb PASSES the hardened verifier
+  (combined share 0.35) — no re-export needed for her.
+
+### Tripo export recipe LOCKED (same day, pipeline session)
+Generate texture NON-PBR (PBR-generated skin = "renders all shiny" — David's
+standing verdict; GLB exports ship normal+MR maps REGARDLESS of the toggle,
+only basecolor gen differs). Export GLB · 4K · quad · Export Skeleton ON ·
+Bottom Center Pivot ON. FBX-only Blender/Mixamo/3dsmax buttons do NOT change
+bone names (all emit the Tripo production skeleton — sniff-verified on 7
+exports). Quad vs tri is mild on GLB (89k vs 150k tris, same girl). NEW TOOL:
+scripts\tripo_repack\repack_glb.py — Lanczos-downscales 8K-texture GLBs to a
+supersampled 4K (beats both Tripo's native 4K bake and the app loader's fast
+subsample; JPEG re-encode is 4:4:4 to avoid the MR chroma-bleed disease).
+A/B pair in Downloads: female+figure+3d+model.glb (native 4K) vs
+female+figure+3d+model+8k_ss4k.glb (supersampled).
+
+### Combined on-head queue (next headset session, Quest first)
+1. FREE pre-check: grep any saved void logcat for 0x3002 (confirms mechanism).
+2. Yesterday's batch: PCM spectrum bars + LOCK BPM, FLASH default-off, VIBES
+   auto-pair with toy powered, HOME = in-app intro.
+3. Void fix: several launches incl. a dialog-blocked one; expect the healthy
+   logcat marker pair; no "Void self-heal" lines on clean launches.
+4. Spring fixes: yank/reel the flesh girl hard along the bust axis — no flip.
+5. Supersample A/B: native-4K girl vs _ss4k girl side by side.
+6. Galaxy XR regression pass after Quest clears.
