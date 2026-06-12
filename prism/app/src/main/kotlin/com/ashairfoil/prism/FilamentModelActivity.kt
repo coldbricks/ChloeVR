@@ -29,6 +29,10 @@ class FilamentModelActivity : ComponentActivity() {
         const val TAG = "ChloeVR-ModelActivity"
         const val EXTRA_MODEL_PATH = "model_path"
         const val EXTRA_MODEL_PATHS = "model_paths"
+        // Void self-heal: 20 consecutive failed eye passes = 10 frames ≈ 110ms
+        // @90Hz — far above the 1-2 passes the legitimate MSAA fallback eats.
+        const val FBO_HEAL_STREAK = 20
+        const val FBO_HEAL_MAX_ATTEMPTS = 3
     }
 
     // Rendering
@@ -707,6 +711,14 @@ class FilamentModelActivity : ComponentActivity() {
                     Log.i(TAG, "Restoring last scene from autosave")
                     loadScene(autosave)
                 }
+            }
+
+            // Deterministic context handoff: release the EGL binding from THIS
+            // thread BEFORE the render thread exists, so its eglMakeCurrent can
+            // never hit EGL_BAD_ACCESS (the void-launch race — NOTES.md
+            // Addendum 2). Must stay AFTER the last init-thread GL work above.
+            if (!nativeReleaseGLContext()) {
+                Log.w(TAG, "Init-thread EGL release failed — render thread will retry bind")
             }
 
             startRenderLoop()
@@ -2182,9 +2194,27 @@ class FilamentModelActivity : ComponentActivity() {
         running = true
         renderThread = Thread({
             val frameData = FloatArray(69)
+            var healAttempts = 0
+            var voidFinishRequested = false
 
             Log.i(TAG, "Render loop started")
-            nativeMakeGLContextCurrent()
+            // Checked, bounded bind: with the init-thread release this succeeds
+            // on attempt 1; the retry covers a slow libEGL TLS release. The
+            // native side logs the exact EGL error per failure.
+            var glCtxOk = nativeMakeGLContextCurrent()
+            var glCtxTries = 0
+            while (!glCtxOk && glCtxTries < 400 && running) {
+                try { Thread.sleep(5) } catch (_: Exception) {}
+                glCtxOk = nativeMakeGLContextCurrent()
+                glCtxTries++
+            }
+            if (glCtxTries > 0 && glCtxOk) Log.w(TAG, "EGL make-current needed $glCtxTries retries")
+            if (!glCtxOk) {
+                Log.e(TAG, "VOID LAUNCH: render thread never acquired the EGL context " +
+                    "($glCtxTries retries) — finishing for a clean process")
+                runOnUiThread { finish() }
+                return@Thread
+            }
 
             // Init XR compositor quad for stereo-correct menu panel
             if (nativeInitUiQuad(1024, 1280)) {
@@ -2234,6 +2264,30 @@ class FilamentModelActivity : ComponentActivity() {
 
                     val gr = glesRenderer
                     if (gr != null) {
+                        // Void self-heal: armed only until the first completed eye
+                        // pass. Covers the tail where the bind reported success
+                        // but GL is dead (driver context loss, runtime quirk).
+                        // Steady-state cost: one Boolean + one Int compare.
+                        if (!gr.hasRenderedOnce && gr.fboFailStreak >= FBO_HEAL_STREAK) {
+                            if (healAttempts < FBO_HEAL_MAX_ATTEMPTS) {
+                                healAttempts++
+                                val ctxOk = nativeMakeGLContextCurrent()
+                                val targetsOk = ctxOk && gr.recreateRenderTargets()
+                                Log.e(TAG, "Void self-heal #$healAttempts: ctx=$ctxOk " +
+                                    "targets=$targetsOk lastStatus=0x${Integer.toHexString(gr.lastFboStatus)}")
+                                gr.resetFboFailStreak()
+                                uiNeedsRefresh = true
+                                requestUiRender()
+                            } else if (!voidFinishRequested) {
+                                // Fires on the NEXT streak overflow after the cap,
+                                // regardless of what the last heal's canary said.
+                                voidFinishRequested = true
+                                Log.e(TAG, "Void persists after $healAttempts heals " +
+                                    "(lastStatus=0x${Integer.toHexString(gr.lastFboStatus)}) — " +
+                                    "finishing for clean relaunch")
+                                runOnUiThread { finish() }
+                            }
+                        }
                         // Process pending model loads on this thread (has GL context)
                         val pendingFile = pendingModelLoad
                         if (pendingFile != null) {
@@ -5022,6 +5076,7 @@ class FilamentModelActivity : ComponentActivity() {
     private external fun nativeRendererShutdown()
     private external fun nativeIsRunning(): Boolean
     private external fun nativeMakeGLContextCurrent(): Boolean
+    private external fun nativeReleaseGLContext(): Boolean
     private external fun nativePollLightEstimate(outData: FloatArray): Boolean
     private external fun nativeSetLightShAmbient(ambient: Boolean)
 

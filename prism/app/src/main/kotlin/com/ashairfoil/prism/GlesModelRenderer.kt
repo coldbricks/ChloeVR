@@ -409,6 +409,16 @@ class GlesModelRenderer {
     private var initialized = false
     private var frameCount = 0
 
+    // Void self-heal state — render-thread confined (written and read only on
+    // ChloeVR-RenderLoop), so no @Volatile. frameCount only advances after a
+    // completed eye pass, making hasRenderedOnce the healer's disarm signal.
+    var fboFailStreak = 0
+        private set
+    var lastFboStatus = 0
+        private set
+    val hasRenderedOnce: Boolean get() = frameCount > 0
+    internal fun resetFboFailStreak() { fboFailStreak = 0 }
+
     // ── Texture upload helpers ──
     // GLUtils.texImage2D's internalformat overload is unusable for sRGB: AOSP
     // passes the internalformat argument as the pixel FORMAT too, and
@@ -501,12 +511,7 @@ class GlesModelRenderer {
         }
 
         // Main FBO
-        val fboBuf = intArrayOf(0)
-        GLES30.glGenFramebuffers(1, fboBuf, 0)
-        fbo = fboBuf[0]
-        val rbBuf = intArrayOf(0)
-        GLES30.glGenRenderbuffers(1, rbBuf, 0)
-        depthRb = rbBuf[0]
+        genEyeFboObjects()
 
         // Shadow map
         shadowDepthProgramId = createProgram(SHADOW_VERTEX_SHADER, SHADOW_FRAGMENT_SHADER)
@@ -673,6 +678,16 @@ class GlesModelRenderer {
         return true
     }
 
+    // Shared by init() and recreateRenderTargets() so the two paths can't diverge.
+    private fun genEyeFboObjects() {
+        val fboBuf = intArrayOf(0)
+        GLES30.glGenFramebuffers(1, fboBuf, 0)
+        fbo = fboBuf[0]
+        val rbBuf = intArrayOf(0)
+        GLES30.glGenRenderbuffers(1, rbBuf, 0)
+        depthRb = rbBuf[0]
+    }
+
     private fun initShadowMap() {
         // R4: real depth texture (drops the old R32F color target — and with it
         // the silent EXT_color_buffer_float dependency). Compare params live on
@@ -720,6 +735,41 @@ class GlesModelRenderer {
             Log.i(TAG, "Shadow FBO complete (depth-only D24, hw-PCF), ${shadowMapSize}x${shadowMapSize}")
         }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    /**
+     * Void self-heal (render thread ONLY, EGL context verifiably current):
+     * deletes and recreates the eye/shadow/bloom GL targets after a launch
+     * where the FBO status checks fail from the first frames. Does NOT touch
+     * shader programs, model buffers/textures, or any XR swapchain — those
+     * were all proven created under a live init-thread context. Returns true
+     * when the recreated shadow FBO passes its completeness check (the canary
+     * proving the context is live and object creation works); the eye FBO is
+     * proven by the next renderEye, whose success disarms the healer.
+     */
+    fun recreateRenderTargets(): Boolean {
+        @Suppress("ControlFlowWithEmptyBody")
+        while (GLES30.glGetError() != GLES30.GL_NO_ERROR) {}  // drain stale errors
+        if (fbo != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = fbo }, 0)
+        if (depthRb != 0) GLES30.glDeleteRenderbuffers(1, glIdBuf.also { it[0] = depthRb }, 0)
+        if (shadowMapFbo != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = shadowMapFbo }, 0)
+        if (shadowMapTexId != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = shadowMapTexId }, 0)
+        if (shadowRawSampler != 0) GLES30.glDeleteSamplers(1, glIdBuf.also { it[0] = shadowRawSampler }, 0)
+        if (bloomTexA != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = bloomTexA }, 0)
+        if (bloomTexB != 0) GLES30.glDeleteTextures(1, glIdBuf.also { it[0] = bloomTexB }, 0)
+        if (bloomFboA != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = bloomFboA }, 0)
+        if (bloomFboB != 0) GLES30.glDeleteFramebuffers(1, glIdBuf.also { it[0] = bloomFboB }, 0)
+        fbo = 0; depthRb = 0; shadowMapFbo = 0; shadowMapTexId = 0; shadowRawSampler = 0
+        bloomTexA = 0; bloomTexB = 0; bloomFboA = 0; bloomFboB = 0
+        bloomW = 0; bloomH = 0  // renderBloom lazily rebuilds via initBloomFBOs
+        genEyeFboObjects()
+        lastDepthW = 0; lastDepthH = 0; lastDepthSamples = -1  // force ensureEyeDepth realloc+reattach
+        msaaStatusLogged = false
+        shadowEnabled = true
+        initShadowMap()  // re-runs its own completeness check; may clear shadowEnabled
+        val err = GLES30.glGetError()
+        Log.w(TAG, "recreateRenderTargets: shadowOk=$shadowEnabled err=0x${Integer.toHexString(err)}")
+        return shadowEnabled && err == GLES30.GL_NO_ERROR
     }
 
     private fun initLaserGeometry() {
@@ -1873,9 +1923,14 @@ class GlesModelRenderer {
                 msaaSamples = 0
             } else if (frameCount < 10 || frameCount % 500 == 0)
                 Log.e(TAG, "FBO incomplete: 0x${Integer.toHexString(fboStatus)}")
+            // Counted once per failed pass regardless of which branch ran —
+            // feeds the render loop's void self-heal gate.
+            lastFboStatus = fboStatus
+            fboFailStreak++
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
             return
         }
+        fboFailStreak = 0
         if (msaaSamples > 0 && !msaaStatusLogged) {
             msaaStatusLogged = true
             Log.i(TAG, "MSAA ${msaaSamples}x eye FBO complete ${width}x${height} " +

@@ -155,6 +155,26 @@ Java_com_ashairfoil_prism_FilamentModelActivity_nativeMakeGLContextCurrent(
     return JNI_TRUE;
 }
 
+// Deterministic context handoff: the onCreate init thread holds the EGL
+// context after initEGL; EGL forbids binding it on the render thread while
+// it is still current here (EGL_BAD_ACCESS -> the void launch). Called from
+// the init thread right before startRenderLoop(). Release idiom matches
+// shutdownEGL (xr_renderer.cpp).
+JNIEXPORT jboolean JNICALL
+Java_com_ashairfoil_prism_FilamentModelActivity_nativeReleaseGLContext(
+        JNIEnv* env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_renderer) return JNI_FALSE;
+    EGLDisplay display = g_renderer->getEglDisplay();
+    if (display == EGL_NO_DISPLAY) return JNI_FALSE;
+    if (!eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
+        XR_LOGE("eglMakeCurrent(NO_CONTEXT) on init thread failed: 0x%x", eglGetError());
+        return JNI_FALSE;
+    }
+    XR_LOGI("EGL context released from init thread");
+    return JNI_TRUE;
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_ashairfoil_prism_FilamentModelActivity_nativeInitUiQuad(
         JNIEnv* env, jobject thiz, jint width, jint height) {
